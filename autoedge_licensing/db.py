@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 
 class Database:
@@ -17,13 +18,22 @@ class Database:
         connection.execute("PRAGMA journal_mode = WAL")
         return connection
 
+    @contextmanager
+    def session(self) -> Iterator[sqlite3.Connection]:
+        connection = self.connect()
+        try:
+            yield connection
+            connection.commit()
+        finally:
+            connection.close()
+
 
 def migration_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "migrations"
 
 
 def apply_migrations(database: Database, migrations: Iterable[Path] | None = None) -> None:
-    with database.connect() as connection:
+    with database.session() as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (

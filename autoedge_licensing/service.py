@@ -85,7 +85,7 @@ class LicensingService:
     def create_admin_user(self, username: str, password: str) -> str:
         admin_id = uuid.uuid4().hex
         now = iso()
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             connection.execute(
                 """
                 INSERT INTO admin_users(id, username, password_hash, created_at)
@@ -105,7 +105,7 @@ class LicensingService:
         ip_address: str | None,
         user_agent: str | None,
     ) -> tuple[dict[str, Any], str] | None:
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             user = connection.execute(
                 "SELECT * FROM admin_users WHERE username = ? AND is_active = 1",
                 (username.strip(),),
@@ -133,7 +133,7 @@ class LicensingService:
         if not token:
             return None
         now = iso()
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             row = connection.execute(
                 """
                 SELECT admin_users.*
@@ -155,7 +155,7 @@ class LicensingService:
             return dict(row)
 
     def revoke_session(self, token: str, admin_id: str | None = None) -> None:
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             connection.execute(
                 "UPDATE admin_sessions SET revoked_at = ? WHERE token_hash = ?",
                 (iso(), sha256_hex(token)),
@@ -165,7 +165,7 @@ class LicensingService:
 
     def list_products(self, include_inactive: bool = True) -> list[dict[str, Any]]:
         where = "" if include_inactive else "WHERE is_active = 1"
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             rows = connection.execute(
                 f"SELECT * FROM products {where} ORDER BY is_active DESC, name ASC"
             ).fetchall()
@@ -186,7 +186,7 @@ class LicensingService:
         now = iso()
         normalized_slug = slugify(slug)
         metadata_json = json.dumps(metadata or {}, sort_keys=True)
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             row = connection.execute(
                 "SELECT * FROM products WHERE slug = ? OR feature_id = ? OR (whop_product_id IS NOT NULL AND whop_product_id = ?)",
                 (normalized_slug, feature_id, whop_product_id),
@@ -253,7 +253,7 @@ class LicensingService:
         where = " OR ".join(lookup_conditions)
         generated_key = None
         now = iso()
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             row = connection.execute(f"SELECT * FROM customers WHERE {where}", parameters).fetchone() if where else None
             if row is None:
                 customer_id = uuid.uuid4().hex
@@ -315,7 +315,7 @@ class LicensingService:
 
     def search_customers(self, query: str = "", limit: int = 50) -> list[dict[str, Any]]:
         pattern = f"%{query.strip().lower()}%"
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             if query.strip():
                 rows = connection.execute(
                     """
@@ -354,7 +354,7 @@ class LicensingService:
         return [dict(row) for row in rows]
 
     def customer_detail(self, customer_id: str) -> dict[str, Any] | None:
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             customer = connection.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
             if customer is None:
                 return None
@@ -415,7 +415,7 @@ class LicensingService:
         now = iso()
         external_id = f"manual:{customer_id}:{product_id}"
         revoked_at = now if status == "revoked" else None
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             existing = connection.execute(
                 "SELECT * FROM entitlements WHERE source = 'manual' AND external_id = ?",
                 (external_id,),
@@ -466,7 +466,7 @@ class LicensingService:
         actor_id: str,
         ip_address: str | None,
     ) -> None:
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             connection.execute(
                 "UPDATE devices SET is_blocked = ?, note = COALESCE(?, note) WHERE id = ?",
                 (int(is_blocked), note, device_id),
@@ -486,7 +486,7 @@ class LicensingService:
         event_type = str(payload.get("type") or payload.get("event") or payload.get("event_type") or "unknown")
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
         now = iso()
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             existing_event = connection.execute("SELECT * FROM webhook_events WHERE webhook_id = ?", (webhook_id,)).fetchone()
             if existing_event and existing_event["status"] == "processed":
                 return {"status": "duplicate", "webhook_id": webhook_id}
@@ -507,13 +507,13 @@ class LicensingService:
         try:
             result = self._upsert_whop_entitlement(data, event_type, webhook_id, ip_address)
         except Exception as exc:
-            with self.database.connect() as connection:
+            with self.database.session() as connection:
                 connection.execute(
                     "UPDATE webhook_events SET status = 'failed', error = ? WHERE webhook_id = ?",
                     (str(exc), webhook_id),
                 )
             raise
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             connection.execute(
                 "UPDATE webhook_events SET status = 'processed', processed_at = ? WHERE webhook_id = ?",
                 (iso(), webhook_id),
@@ -543,7 +543,7 @@ class LicensingService:
         status = normalize_entitlement_status(subscription_info["status"], event_type)
         sub_status = normalize_subscription_status(subscription_info["status"], event_type)
         now = iso()
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             subscription_id = None
             if subscription_info["membership_id"]:
                 existing_sub = connection.execute(
@@ -685,7 +685,7 @@ class LicensingService:
         if not machine_fingerprint or not machine_fingerprint.strip():
             return self._license_response("invalid_request", "machine_fingerprint is required", [], check_interval_seconds, grace_period_seconds)
 
-        with self.database.connect() as connection:
+        with self.database.session() as connection:
             customer = self._find_customer(connection, license_key, email, customer_id, whop_user_id)
             if customer is None:
                 response = self._license_response("unknown_customer", "No customer matched the supplied license identifier.", [], check_interval_seconds, grace_period_seconds)
