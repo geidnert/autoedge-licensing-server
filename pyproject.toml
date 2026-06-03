@@ -1,0 +1,9 @@
+[project]
+name = "autoedge-licensing-server"
+version = "0.1.0"
+description = "AutoEdge licensing and entitlement server for Whop-backed Trader strategy access."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools]
+packages = ["autoedge_licensing"]

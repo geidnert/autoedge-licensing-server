@@ -1,0 +1,23 @@
+[Unit]
+Description=AutoEdge Licensing Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=autoedge
+Group=autoedge
+WorkingDirectory=/opt/autoedge-licensing
+EnvironmentFile=/etc/autoedge-licensing.env
+ExecStart=/usr/bin/python3 -m autoedge_licensing.app
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/autoedge-licensing
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
