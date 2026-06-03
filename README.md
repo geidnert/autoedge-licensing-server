@@ -136,14 +136,14 @@ python3 -m unittest discover -s tests
 Assumptions:
 
 - Debian host with Python 3.11+.
-- DNS for `licenses.example.com` points to the server.
-- Caddy terminates HTTPS and proxies to the local Python service.
+- DNS for the chosen HTTPS host points to the server.
+- nginx or Caddy terminates HTTPS and proxies to the local Python service.
 
 Install packages:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv caddy git
+sudo apt install -y python3 git nginx certbot python3-certbot-nginx
 ```
 
 Create service user and directories:
@@ -192,7 +192,27 @@ sudo systemctl enable --now autoedge-licensing
 sudo systemctl status autoedge-licensing
 ```
 
-Install Caddy config:
+Install nginx routing:
+
+```bash
+sudo cp /opt/autoedge-licensing/deploy/nginx-autoedge-locations.conf \
+  /etc/nginx/snippets/autoedge-licensing.conf
+```
+
+Include the snippet inside the HTTPS `server { ... }` block for the chosen hostname:
+
+```nginx
+include /etc/nginx/snippets/autoedge-licensing.conf;
+```
+
+Then validate and reload nginx:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+If this is a fresh host and you prefer Caddy, use the included Caddyfile instead:
 
 ```bash
 sudo cp /opt/autoedge-licensing/deploy/Caddyfile /etc/caddy/Caddyfile
@@ -217,6 +237,20 @@ Configure Whop webhook:
 - URL: `https://your-real-domain.example/api/whop/entitlements`
 - Events: membership activation/update/deactivation and any payment/refund/dispute events you want reflected in access state.
 - Secret: copy into `WHOP_WEBHOOK_SECRET`.
+
+## Current Deployment
+
+The current Debian deployment runs on `solidparts.se` behind nginx:
+
+- Admin UI: `https://solidparts.se/admin/login`
+- Trader endpoint: `https://solidparts.se/api/trader/license/check`
+- Whop endpoint: `https://solidparts.se/api/whop/entitlements`
+- Service unit: `autoedge-licensing.service`
+- App directory: `/opt/autoedge-licensing`
+- Database: `/var/lib/autoedge-licensing/autoedge.db`
+- Environment file: `/etc/autoedge-licensing.env`
+
+The current environment uses a temporary bearer token fallback. Replace it with Whop's webhook secret by setting `WHOP_WEBHOOK_SECRET`, and remove `AUTOEDGE_WHOP_BEARER_TOKEN` once Whop Standard Webhooks delivery is verified.
 
 ## Backups
 
