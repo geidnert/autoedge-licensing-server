@@ -132,6 +132,8 @@ class AutoEdgeApp:
             return self.with_admin(request, self.admin_customers)
         if request.path == "/admin/products":
             return self.with_admin(request, self.admin_products)
+        if request.path == "/admin/packages":
+            return self.with_admin(request, self.admin_packages)
         if request.path.startswith("/admin/customers/"):
             return self.with_admin(request, self.admin_customer_detail)
         if request.path.startswith("/admin/devices/"):
@@ -240,12 +242,13 @@ class AutoEdgeApp:
             internal_slug = form.get("slug") or name
             internal_feature_id = form.get("feature_id") or f"strategy.{slugify(internal_slug)}.runtime"
             if product_id:
+                existing = self.service.get_product(product_id)
                 self.service.update_product(
                     product_id=product_id,
                     slug=internal_slug,
                     name=name,
                     feature_id=internal_feature_id,
-                    whop_product_id=form.get("whop_product_id") or None,
+                    whop_product_id=existing.get("whop_product_id") if existing else None,
                     is_active=form.get("is_active") == "on",
                     actor_id=admin["id"],
                     ip_address=request.ip,
@@ -265,6 +268,42 @@ class AutoEdgeApp:
         edit_id = request.query_value("edit")
         selected_product = self.service.get_product(edit_id) if edit_id else None
         return html_response(self.page("Products", products_page(products, csrf, selected_product), admin))
+
+    def admin_packages(self, request: Request, admin: dict[str, Any]) -> Response:
+        csrf = self.csrf_token(self.session_token(request) or "")
+        products = self.service.list_products()
+        if request.method == "POST":
+            form = request.form()
+            default_days = parse_optional_int(form.get("default_days"))
+            grants: list[dict[str, Any]] = []
+            for product in products:
+                product_id = product["id"]
+                if form.get(f"grant_{product_id}") != "on":
+                    continue
+                grants.append(
+                    {
+                        "product_id": product_id,
+                        "days": parse_optional_int(form.get(f"days_{product_id}")),
+                        "legacy_nt_product_id": form.get(f"legacy_{product_id}") or None,
+                    }
+                )
+            self.service.upsert_whop_package(
+                package_id=form.get("package_id") or None,
+                whop_id=form.get("whop_id", ""),
+                whop_id_type=form.get("whop_id_type", "plan"),
+                name=form.get("name", ""),
+                default_days=default_days,
+                is_active=form.get("is_active") == "on",
+                is_ignored=form.get("is_ignored") == "on",
+                grants=grants,
+                actor_id=admin["id"],
+                ip_address=request.ip,
+            )
+            return redirect("/admin/packages")
+        packages = self.service.list_whop_packages()
+        edit_id = request.query_value("edit")
+        selected_package = self.service.get_whop_package(edit_id) if edit_id else None
+        return html_response(self.page("Whop Packages", packages_page(packages, products, csrf, selected_package), admin))
 
     def admin_password(self, request: Request, admin: dict[str, Any]) -> Response:
         csrf = self.csrf_token(self.session_token(request) or "")
@@ -359,6 +398,7 @@ class AutoEdgeApp:
             <nav>
               <a href="/admin/customers">Customers</a>
               <a href="/admin/products">Products</a>
+              <a href="/admin/packages">Whop Packages</a>
               <span class="spacer"></span>
               <span>{username}</span>
               <a href="/admin/password">Change password</a>
@@ -408,6 +448,12 @@ def format_json(value: str | None) -> str:
         return json.dumps(json.loads(value), indent=2, sort_keys=True)
     except json.JSONDecodeError:
         return value
+
+
+def parse_optional_int(value: str | None) -> int | None:
+    if value is None or not value.strip():
+        return None
+    return int(value)
 
 
 def json_response(data: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> Response:
@@ -523,10 +569,9 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
         f"""
         <tr>
           <td>{e(display_product_name(product.get('name')))}</td>
-          <td>{e(product.get('whop_product_id'))}</td>
           <td>{format_bool(product.get('is_active'))}</td>
           <td>{e(product.get('updated_at'))}</td>
-          <td><a class="button small" href="/admin/products?edit={e(product['id'])}">{'Edit' if product.get('whop_product_id') else 'Add Whop ID'}</a></td>
+          <td><a class="button small" href="/admin/products?edit={e(product['id'])}">Edit</a></td>
         </tr>
         """
         for product in products
@@ -535,7 +580,7 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     <header class="title-row">
       <div>
         <h1>Products</h1>
-        <p>Products map Whop access passes to Trader strategies.</p>
+        <p>Products define Trader strategies. Whop plan mappings are managed on the Whop Packages page.</p>
       </div>
     </header>
     <section class="panel">
@@ -546,7 +591,6 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
         <input type="hidden" name="slug" value="{e(selected.get('slug'))}">
         <input type="hidden" name="feature_id" value="{e(selected.get('feature_id'))}">
         <label>Strategy <input name="name" required placeholder="DUO" value="{e(selected_name)}"></label>
-        <label>Whop product id <input name="whop_product_id" value="{e(selected.get('whop_product_id'))}"></label>
         <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
         <button type="submit">{button_text}</button>
         {cancel_link}
@@ -554,8 +598,108 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Strategy</th><th>Whop product</th><th>Active</th><th>Updated</th><th></th></tr></thead>
-        <tbody>{rows or '<tr><td colspan="5">No products configured.</td></tr>'}</tbody>
+        <thead><tr><th>Strategy</th><th>Active</th><th>Updated</th><th></th></tr></thead>
+        <tbody>{rows or '<tr><td colspan="4">No products configured.</td></tr>'}</tbody>
+      </table>
+    </section>
+    """
+
+
+def packages_page(
+    packages: list[dict[str, Any]],
+    products: list[dict[str, Any]],
+    csrf: str,
+    selected_package: dict[str, Any] | None = None,
+) -> str:
+    selected = selected_package or {}
+    is_editing = selected_package is not None
+    selected_grants = {grant["product_id"]: grant for grant in selected.get("grants", [])}
+    type_options = "\n".join(
+        f'<option value="{value}" {"selected" if selected.get("whop_id_type", "plan") == value else ""}>{label}</option>'
+        for value, label in (("plan", "Plan"), ("product", "Product"), ("unknown", "Unknown"))
+    )
+    active_checked = "checked" if selected.get("is_active", 1) else ""
+    ignored_checked = "checked" if selected.get("is_ignored", 0) else ""
+    form_title = "Edit Whop package" if is_editing else "Add Whop package"
+    button_text = "Save changes" if is_editing else "Save package"
+    cancel_link = '<a class="button secondary" href="/admin/packages">Cancel</a>' if is_editing else ""
+
+    grant_rows = "\n".join(
+        f"""
+        <tr>
+          <td>
+            <label class="checkbox">
+              <input name="grant_{e(product['id'])}" type="checkbox" {'checked' if product['id'] in selected_grants else ''}>
+              {e(display_product_name(product.get('name')))}
+            </label>
+          </td>
+          <td><input name="days_{e(product['id'])}" type="number" min="0" placeholder="default" value="{e(selected_grants.get(product['id'], {}).get('days'))}"></td>
+          <td><input name="legacy_{e(product['id'])}" placeholder="204" value="{e(selected_grants.get(product['id'], {}).get('legacy_nt_product_id'))}"></td>
+        </tr>
+        """
+        for product in products
+    )
+
+    def grant_summary(package: dict[str, Any]) -> str:
+        grants = package.get("grants", [])
+        if not grants:
+            return '<span class="muted">No grants</span>'
+        parts = []
+        for grant in grants:
+            days = grant.get("days") if grant.get("days") is not None else package.get("default_days")
+            label = f"{display_product_name(grant.get('product_name'))} {days}d" if days is not None else display_product_name(grant.get("product_name"))
+            legacy = f"<small>NT {e(grant.get('legacy_nt_product_id'))}</small>" if grant.get("legacy_nt_product_id") else ""
+            parts.append(f"<span>{e(label)}{legacy}</span>")
+        return '<div class="grant-list">' + "".join(parts) + "</div>"
+
+    rows = "\n".join(
+        f"""
+        <tr>
+          <td><strong>{e(package.get('name'))}</strong><small>{e(package.get('whop_id'))}</small></td>
+          <td>{e(package.get('whop_id_type'))}</td>
+          <td>{e(package.get('default_days'))}</td>
+          <td>{grant_summary(package)}</td>
+          <td>{format_bool(package.get('is_ignored'))}</td>
+          <td>{format_bool(package.get('is_active'))}</td>
+          <td><a class="button small" href="/admin/packages?edit={e(package['id'])}">Edit</a></td>
+        </tr>
+        """
+        for package in packages
+    )
+    return f"""
+    <header class="title-row">
+      <div>
+        <h1>Whop Packages</h1>
+        <p>Map Whop plans or products to Trader strategy access and day grants.</p>
+      </div>
+    </header>
+    <section class="panel">
+      <h2>{form_title}</h2>
+      <form method="post">
+        <input type="hidden" name="csrf" value="{e(csrf)}">
+        <input type="hidden" name="package_id" value="{e(selected.get('id'))}">
+        <div class="grid-form package-form">
+          <label>Name <input name="name" required placeholder="DUO 30 days" value="{e(selected.get('name'))}"></label>
+          <label>Whop id <input name="whop_id" required placeholder="plan_..." value="{e(selected.get('whop_id'))}"></label>
+          <label>Type <select name="whop_id_type">{type_options}</select></label>
+          <label>Default days <input name="default_days" type="number" min="0" placeholder="30" value="{e(selected.get('default_days'))}"></label>
+          <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
+          <label class="checkbox"><input name="is_ignored" type="checkbox" {ignored_checked}> Non-license</label>
+        </div>
+        <table class="grant-table">
+          <thead><tr><th>Strategy</th><th>Days</th><th>Legacy NT product id</th></tr></thead>
+          <tbody>{grant_rows or '<tr><td colspan="3">No strategies configured.</td></tr>'}</tbody>
+        </table>
+        <div class="form-actions">
+          <button type="submit">{button_text}</button>
+          {cancel_link}
+        </div>
+      </form>
+    </section>
+    <section class="panel">
+      <table>
+        <thead><tr><th>Package</th><th>Type</th><th>Default days</th><th>Grants</th><th>Ignored</th><th>Active</th><th></th></tr></thead>
+        <tbody>{rows or '<tr><td colspan="7">No Whop packages configured.</td></tr>'}</tbody>
       </table>
     </section>
     """
@@ -707,6 +851,7 @@ button:hover, .button:hover { background: #0f5d53; }
 input, select { min-height: 36px; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); }
 label { display: grid; gap: 6px; color: #34404c; font-weight: 600; }
 small { display: block; margin-top: 3px; color: var(--muted); font-weight: 400; }
+.muted { color: var(--muted); }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 th { color: #394652; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
@@ -723,8 +868,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .narrow-panel { max-width: 520px; }
 .stack-form { display: grid; gap: 14px; }
 .grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 12px; align-items: end; }
+.package-form { grid-template-columns: repeat(4, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 14px; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: auto; min-height: auto; }
+.grant-table { margin: 8px 0 14px; }
+.grant-table td:nth-child(2), .grant-table td:nth-child(3) { width: 180px; }
+.grant-list { display: grid; gap: 6px; }
+.grant-list span { display: block; }
+.form-actions { display: flex; gap: 10px; align-items: center; }
 .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .facts div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
 .facts span { display: block; color: var(--muted); margin-bottom: 6px; }
@@ -737,7 +888,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   nav { padding: 0 12px; gap: 10px; overflow-x: auto; }
   main { width: calc(100vw - 18px); margin-top: 12px; }
   .title-row, .search { display: grid; }
-  .grid-form, .facts { grid-template-columns: 1fr; }
+  .grid-form, .package-form, .facts { grid-template-columns: 1fr; }
   table { display: block; overflow-x: auto; }
 }
 """

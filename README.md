@@ -7,7 +7,7 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
 ## Features
 
 - HTTPS-ready deployment behind Caddy or another reverse proxy.
-- SQLite database with durable tables for customers, products/strategies, subscriptions, entitlements, devices, license checks, webhook events, admin users/sessions, and audit log.
+- SQLite database with durable tables for customers, products/strategies, Whop packages, package grants, grant ledger, subscriptions, entitlements, devices, license checks, webhook events, admin users/sessions, and audit log.
 - Whop server-to-server endpoint secured with Standard Webhooks HMAC headers or an explicit bearer token fallback.
 - Admin web UI:
   - search customers
@@ -15,7 +15,8 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
   - manually grant, revoke, suspend, or expire strategy access
   - set expiry dates
   - block or unblock devices
-  - manage product/strategy mappings
+  - manage Trader strategy products
+  - map Whop plans/products to one or more strategies with day grants
 - Trader client endpoint:
   - activate/check by license key, email, customer id, or Whop user id
   - stores machine fingerprint hash and app version
@@ -36,7 +37,35 @@ https://licenses.example.com/api/whop/entitlements
 
 Whop documents webhooks as Standard Webhooks and recommends storing the dashboard webhook secret as `WHOP_WEBHOOK_SECRET`. The server verifies `webhook-id`, `webhook-timestamp`, and `webhook-signature` against the exact raw request body before trusting the payload.
 
-The endpoint is idempotent by `webhook-id`. Duplicate deliveries return `{"status":"duplicate"}` after the first successful process.
+The endpoint is idempotent by `webhook-id`. Duplicate deliveries return `{"status":"duplicate"}` after the first successful process. Paid/trial grants also use a grant ledger so repeated Whop events for the same payment, membership period, or trial do not add days twice.
+
+### Whop Package Mappings
+
+Products are internal Trader strategies, such as DUO or DUOrc. Whop Packages describe what Whop sells.
+
+Configure packages in `/admin/packages`:
+
+- Whop id: normally the Whop `plan_id`; `plan_id` takes precedence over `product_id`.
+- Type: `plan`, `product`, or `unknown`.
+- Default days: the days granted by the package.
+- Non-license: marks a known Whop access pass as intentionally ignored.
+- Grants: select one or more Trader strategies, with optional per-strategy days and optional legacy NinjaTrader product id.
+
+Old Vercel mappings like:
+
+```text
+plan_AsxYJxMdnQJqW=204,30:337,30:1175,30
+```
+
+become one Whop Package for `plan_AsxYJxMdnQJqW` with separate grant rows. Each grant chooses a Trader strategy, stores the old NT id only for reference, and grants the configured days.
+
+Lifecycle handling:
+
+- Trialing events set access through `trial_ends_at` when Whop provides it.
+- Paid/valid/renewed events add the package days onto `max(existing expiry, now)`, so paid days can start after the trial expiry.
+- Duplicate paid events for the same payment id or membership period are suppressed by the grant ledger.
+- `refund.created`, chargebacks, disputes, and `membership.went_invalid` revoke package entitlements.
+- Expired, suspended, and revoked results are returned clearly to Trader so strategies can block access.
 
 ### Trader License Check
 
@@ -120,10 +149,10 @@ AUTOEDGE_DATABASE_PATH=data/autoedge.db python3 scripts/create_admin.py admin
 Seed initial strategy products:
 
 ```bash
-AUTOEDGE_DATABASE_PATH=data/autoedge.db python3 scripts/seed_products.py \
-  --duo-whop-product-id "replace-with-whop-product-id" \
-  --duorc-whop-product-id "replace-with-whop-product-id"
+AUTOEDGE_DATABASE_PATH=data/autoedge.db python3 scripts/seed_products.py
 ```
+
+Then sign in to the admin UI and configure Whop Packages for the plan ids and day grants.
 
 Run tests:
 
@@ -227,10 +256,10 @@ sudo -u autoedge env $(sudo cat /etc/autoedge-licensing.env | xargs) \
   python3 /opt/autoedge-licensing/scripts/create_admin.py admin
 
 sudo -u autoedge env $(sudo cat /etc/autoedge-licensing.env | xargs) \
-  python3 /opt/autoedge-licensing/scripts/seed_products.py \
-  --duo-whop-product-id "replace-with-whop-product-id" \
-  --duorc-whop-product-id "replace-with-whop-product-id"
+  python3 /opt/autoedge-licensing/scripts/seed_products.py
 ```
+
+After seeding products, configure Whop Packages in the admin UI.
 
 Configure Whop webhook:
 
@@ -251,7 +280,7 @@ The current Debian deployment runs on `solidparts.se` behind nginx:
 - Database: `/var/lib/autoedge-licensing/autoedge.db`
 - Environment file: `/etc/autoedge-licensing.env`
 
-The current environment uses a temporary bearer token fallback. Replace it with Whop's webhook secret by setting `WHOP_WEBHOOK_SECRET`, and remove `AUTOEDGE_WHOP_BEARER_TOKEN` once Whop Standard Webhooks delivery is verified.
+Production should use Whop Standard Webhooks with `WHOP_WEBHOOK_SECRET`. The bearer token fallback is intended only for local testing.
 
 ## Backups
 

@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 
-from autoedge_licensing.app import create_app, customer_detail_page, products_page
+from autoedge_licensing.app import create_app, customer_detail_page, packages_page, products_page
 from autoedge_licensing.config import Settings
 
 
@@ -43,6 +43,21 @@ class AppEndpointTests(unittest.TestCase):
         self.assertEqual("unauthorized", json.loads(body)["status"])
 
     def test_whop_endpoint_accepts_bearer_token(self) -> None:
+        product = self.app.service.upsert_product(
+            slug="http-strategy",
+            name="HTTP Strategy",
+            feature_id="strategy.http.runtime",
+        )
+        self.app.service.upsert_whop_package(
+            package_id=None,
+            whop_id="prod_http",
+            whop_id_type="product",
+            name="HTTP Strategy 30 days",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": product["id"], "days": 30, "legacy_nt_product_id": "999"}],
+        )
         status, _, body = self.call(
             "POST",
             "/api/whop/entitlements",
@@ -66,6 +81,7 @@ class AppEndpointTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertEqual("processed", payload["status"])
         self.assertEqual("active", payload["entitlement_status"])
+        self.assertEqual("whop_package", payload["mapping_mode"])
 
     def test_admin_product_list_hides_internal_slug_and_feature_ids(self) -> None:
         html = products_page(
@@ -84,9 +100,47 @@ class AppEndpointTests(unittest.TestCase):
         )
 
         self.assertIn("DUO", html)
-        self.assertIn("Add Whop ID", html)
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("duo-runtime", html)
+        self.assertNotIn("strategy.duo.runtime", html)
+
+    def test_packages_page_shows_bundle_without_internal_feature_ids(self) -> None:
+        html = packages_page(
+            [
+                {
+                    "id": "package-001",
+                    "name": "AutoEdge Bundle 30 days",
+                    "whop_id": "plan_bundle",
+                    "whop_id_type": "plan",
+                    "default_days": 30,
+                    "is_active": 1,
+                    "is_ignored": 0,
+                    "grants": [
+                        {
+                            "product_id": "product-001",
+                            "product_name": "DUO Runtime",
+                            "days": 30,
+                            "legacy_nt_product_id": "204",
+                        }
+                    ],
+                }
+            ],
+            [
+                {
+                    "id": "product-001",
+                    "name": "DUO Runtime",
+                    "slug": "duo-runtime",
+                    "feature_id": "strategy.duo.runtime",
+                }
+            ],
+            "csrf-token",
+        )
+
+        self.assertIn("AutoEdge Bundle 30 days", html)
+        self.assertIn("plan_bundle", html)
+        self.assertIn("DUO 30d", html)
+        self.assertIn("NT 204", html)
+        self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
 
     def test_customer_detail_hides_internal_feature_ids(self) -> None:

@@ -319,6 +319,159 @@ class LicensingService:
             product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
             return dict(product)
 
+    def list_whop_packages(self) -> list[dict[str, Any]]:
+        with self.database.session() as connection:
+            package_rows = connection.execute(
+                "SELECT * FROM whop_packages ORDER BY is_active DESC, is_ignored ASC, name ASC"
+            ).fetchall()
+            packages = [dict(row) for row in package_rows]
+            for package in packages:
+                package["grants"] = self._package_grants(connection, package["id"])
+        return packages
+
+    def get_whop_package(self, package_id: str) -> dict[str, Any] | None:
+        with self.database.session() as connection:
+            row = connection.execute("SELECT * FROM whop_packages WHERE id = ?", (package_id,)).fetchone()
+            if row is None:
+                return None
+            package = dict(row)
+            package["grants"] = self._package_grants(connection, package_id)
+            return package
+
+    def upsert_whop_package(
+        self,
+        *,
+        package_id: str | None,
+        whop_id: str,
+        whop_id_type: str,
+        name: str,
+        default_days: int | None,
+        is_active: bool,
+        is_ignored: bool,
+        grants: list[dict[str, Any]],
+        actor_id: str | None = None,
+        ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_whop_id = whop_id.strip()
+        normalized_type = whop_id_type if whop_id_type in {"plan", "product", "unknown"} else "unknown"
+        normalized_name = name.strip()
+        if not normalized_whop_id:
+            raise ValueError("Whop id is required.")
+        if not normalized_name:
+            raise ValueError("Package name is required.")
+        if default_days is not None and default_days < 0:
+            raise ValueError("Default days cannot be negative.")
+        if not is_ignored and grants and default_days is None:
+            for grant in grants:
+                if grant.get("days") is None:
+                    raise ValueError("Set default days or per-strategy days for every package grant.")
+
+        now = iso()
+        with self.database.session() as connection:
+            existing = None
+            if package_id:
+                existing = connection.execute("SELECT * FROM whop_packages WHERE id = ?", (package_id,)).fetchone()
+                if existing is None:
+                    raise ValueError("Whop package not found.")
+            if existing is None:
+                existing = connection.execute("SELECT * FROM whop_packages WHERE whop_id = ?", (normalized_whop_id,)).fetchone()
+
+            if existing is None:
+                saved_package_id = uuid.uuid4().hex
+                connection.execute(
+                    """
+                    INSERT INTO whop_packages(
+                        id, whop_id, whop_id_type, name, default_days, is_active,
+                        is_ignored, metadata_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        saved_package_id,
+                        normalized_whop_id,
+                        normalized_type,
+                        normalized_name,
+                        default_days,
+                        int(is_active),
+                        int(is_ignored),
+                        json.dumps({}, sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+                action = "whop_package.created"
+            else:
+                saved_package_id = existing["id"]
+                connection.execute(
+                    """
+                    UPDATE whop_packages
+                    SET whop_id = ?, whop_id_type = ?, name = ?, default_days = ?,
+                        is_active = ?, is_ignored = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        normalized_whop_id,
+                        normalized_type,
+                        normalized_name,
+                        default_days,
+                        int(is_active),
+                        int(is_ignored),
+                        now,
+                        saved_package_id,
+                    ),
+                )
+                action = "whop_package.updated"
+
+            connection.execute("DELETE FROM whop_package_grants WHERE package_id = ?", (saved_package_id,))
+            for grant in grants:
+                product_id = str(grant.get("product_id") or "").strip()
+                if not product_id:
+                    continue
+                product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+                if product is None:
+                    raise ValueError(f"Strategy product not found: {product_id}")
+                days = grant.get("days")
+                if days is not None and int(days) < 0:
+                    raise ValueError("Grant days cannot be negative.")
+                connection.execute(
+                    """
+                    INSERT INTO whop_package_grants(
+                        id, package_id, product_id, days, legacy_nt_product_id, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        uuid.uuid4().hex,
+                        saved_package_id,
+                        product_id,
+                        int(days) if days is not None else None,
+                        str(grant.get("legacy_nt_product_id") or "").strip() or None,
+                        now,
+                        now,
+                    ),
+                )
+
+            self.audit(
+                connection,
+                "admin" if actor_id else "system",
+                actor_id,
+                action,
+                "whop_package",
+                saved_package_id,
+                {
+                    "whop_id": normalized_whop_id,
+                    "whop_id_type": normalized_type,
+                    "default_days": default_days,
+                    "grant_count": len(grants),
+                    "is_ignored": is_ignored,
+                },
+                ip_address,
+            )
+            package = connection.execute("SELECT * FROM whop_packages WHERE id = ?", (saved_package_id,)).fetchone()
+            result = dict(package)
+            result["grants"] = self._package_grants(connection, saved_package_id)
+            return result
+
     def create_or_update_customer(
         self,
         *,
@@ -580,7 +733,7 @@ class LicensingService:
             )
 
     def process_whop_event(self, payload: dict[str, Any], webhook_id: str, *, signature_valid: bool, ip_address: str | None) -> dict[str, Any]:
-        event_type = str(payload.get("type") or payload.get("event") or payload.get("event_type") or "unknown")
+        event_type = str(payload.get("action") or payload.get("type") or payload.get("event") or payload.get("event_type") or "unknown")
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
         now = iso()
         with self.database.session() as connection:
@@ -620,7 +773,7 @@ class LicensingService:
 
     def _upsert_whop_entitlement(self, data: dict[str, Any], event_type: str, webhook_id: str, ip_address: str | None) -> dict[str, Any]:
         customer_info = self._extract_customer_info(data)
-        product_info = self._extract_product_info(data)
+        whop_ids = self._extract_whop_ids(data)
         subscription_info = self._extract_subscription_info(data)
         customer_result = self.create_or_update_customer(
             email=customer_info["email"],
@@ -630,140 +783,580 @@ class LicensingService:
             actor_type="whop",
             ip_address=ip_address,
         )
-        product = self.upsert_product(
-            slug=product_info["slug"],
-            name=product_info["name"],
-            feature_id=product_info["feature_id"],
-            whop_product_id=product_info["whop_product_id"],
-            metadata={"source": "whop", "event_type": event_type},
-        )
         status = normalize_entitlement_status(subscription_info["status"], event_type)
         sub_status = normalize_subscription_status(subscription_info["status"], event_type)
-        now = iso()
         with self.database.session() as connection:
-            subscription_id = None
-            if subscription_info["membership_id"]:
-                existing_sub = connection.execute(
-                    "SELECT * FROM subscriptions WHERE whop_membership_id = ?",
-                    (subscription_info["membership_id"],),
-                ).fetchone()
-                if existing_sub is None:
-                    subscription_id = uuid.uuid4().hex
-                    connection.execute(
-                        """
-                        INSERT INTO subscriptions(
-                            id, customer_id, whop_membership_id, whop_plan_id, status, raw_status,
-                            current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            subscription_id,
-                            customer_result.customer["id"],
-                            subscription_info["membership_id"],
-                            subscription_info["plan_id"],
-                            sub_status,
-                            subscription_info["status"],
-                            iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
-                            iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else None,
-                            int(subscription_info["cancel_at_period_end"]),
-                            now,
-                            now,
-                        ),
-                    )
-                else:
-                    subscription_id = existing_sub["id"]
-                    connection.execute(
-                        """
-                        UPDATE subscriptions
-                        SET customer_id = ?, whop_plan_id = COALESCE(?, whop_plan_id), status = ?, raw_status = ?,
-                            current_period_start = ?, current_period_end = ?, cancel_at_period_end = ?, updated_at = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            customer_result.customer["id"],
-                            subscription_info["plan_id"],
-                            sub_status,
-                            subscription_info["status"],
-                            iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
-                            iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else None,
-                            int(subscription_info["cancel_at_period_end"]),
-                            now,
-                            subscription_id,
-                        ),
-                    )
-            external_id = subscription_info["entitlement_id"] or subscription_info["membership_id"] or webhook_id
-            existing_entitlement = connection.execute(
-                "SELECT * FROM entitlements WHERE source = 'whop' AND external_id = ?",
-                (external_id,),
-            ).fetchone()
-            revoked_at = now if status == "revoked" else None
-            if existing_entitlement is None:
-                entitlement_id = uuid.uuid4().hex
-                connection.execute(
-                    """
-                    INSERT INTO entitlements(
-                        id, customer_id, product_id, subscription_id, external_id, source, status,
-                        starts_at, expires_at, revoked_at, whop_event_id, created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, 'whop', ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        entitlement_id,
-                        customer_result.customer["id"],
-                        product["id"],
-                        subscription_id,
-                        external_id,
-                        status,
-                        iso(subscription_info["period_start"]) if subscription_info["period_start"] else now,
-                        iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else None,
-                        revoked_at,
-                        webhook_id,
-                        now,
-                        now,
-                    ),
-                )
-                action = "entitlement.whop_created"
-            else:
-                entitlement_id = existing_entitlement["id"]
-                connection.execute(
-                    """
-                    UPDATE entitlements
-                    SET customer_id = ?, product_id = ?, subscription_id = ?, status = ?,
-                        starts_at = COALESCE(?, starts_at), expires_at = ?, revoked_at = ?, whop_event_id = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        customer_result.customer["id"],
-                        product["id"],
-                        subscription_id,
-                        status,
-                        iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
-                        iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else None,
-                        revoked_at,
-                        webhook_id,
-                        now,
-                        entitlement_id,
-                    ),
-                )
-                action = "entitlement.whop_updated"
-            self.audit(
+            subscription_id = self._upsert_whop_subscription(
                 connection,
-                "whop",
-                None,
-                action,
-                "entitlement",
-                entitlement_id,
-                {
-                    "customer_id": customer_result.customer["id"],
-                    "product_id": product["id"],
-                    "status": status,
-                    "event_type": event_type,
-                    "webhook_id": webhook_id,
-                },
-                ip_address,
+                customer_result.customer["id"],
+                subscription_info,
+                sub_status,
             )
-        return {"status": "processed", "customer_id": customer_result.customer["id"], "product_id": product["id"], "entitlement_status": status}
+            package = self._find_whop_package(connection, whop_ids)
+            if package is None:
+                direct_product = self._find_direct_whop_product(connection, whop_ids)
+                if direct_product is None:
+                    self.audit(
+                        connection,
+                        "whop",
+                        None,
+                        "whop_package.unmapped",
+                        "customer",
+                        customer_result.customer["id"],
+                        {
+                            "event_type": event_type,
+                            "webhook_id": webhook_id,
+                            "plan_id": whop_ids["plan_id"],
+                            "product_id": whop_ids["product_id"],
+                        },
+                        ip_address,
+                    )
+                    return {
+                        "status": "unmapped_package",
+                        "customer_id": customer_result.customer["id"],
+                        "whop_id": whop_ids["selected_id"],
+                        "message": "No Whop package mapping matched this event.",
+                    }
+                entitlement = self._upsert_direct_whop_entitlement(
+                    connection,
+                    customer_id=customer_result.customer["id"],
+                    product=direct_product,
+                    subscription_id=subscription_id,
+                    subscription_info=subscription_info,
+                    status=status,
+                    event_type=event_type,
+                    webhook_id=webhook_id,
+                    ip_address=ip_address,
+                )
+                return {
+                    "status": "processed",
+                    "customer_id": customer_result.customer["id"],
+                    "product_id": direct_product["id"],
+                    "entitlement_status": entitlement["status"],
+                    "mapping_mode": "direct_product",
+                }
+
+            if package["is_ignored"]:
+                self.audit(
+                    connection,
+                    "whop",
+                    None,
+                    "whop_package.ignored",
+                    "whop_package",
+                    package["id"],
+                    {"customer_id": customer_result.customer["id"], "event_type": event_type, "webhook_id": webhook_id},
+                    ip_address,
+                )
+                return {"status": "ignored", "customer_id": customer_result.customer["id"], "package_id": package["id"], "reason": "Whop package is marked non-license."}
+
+            if not package["is_active"]:
+                self.audit(
+                    connection,
+                    "whop",
+                    None,
+                    "whop_package.inactive",
+                    "whop_package",
+                    package["id"],
+                    {"customer_id": customer_result.customer["id"], "event_type": event_type, "webhook_id": webhook_id},
+                    ip_address,
+                )
+                return {"status": "inactive_package", "customer_id": customer_result.customer["id"], "package_id": package["id"]}
+
+            grants = self._package_grants(connection, package["id"])
+            if not grants:
+                self.audit(
+                    connection,
+                    "whop",
+                    None,
+                    "whop_package.no_grants",
+                    "whop_package",
+                    package["id"],
+                    {"customer_id": customer_result.customer["id"], "event_type": event_type, "webhook_id": webhook_id},
+                    ip_address,
+                )
+                return {"status": "no_package_grants", "customer_id": customer_result.customer["id"], "package_id": package["id"]}
+
+            applications = [
+                self._apply_whop_package_grant(
+                    connection,
+                    customer_id=customer_result.customer["id"],
+                    package=package,
+                    grant=grant,
+                    subscription_id=subscription_id,
+                    subscription_info=subscription_info,
+                    status=status,
+                    event_type=event_type,
+                    webhook_id=webhook_id,
+                    ip_address=ip_address,
+                )
+                for grant in grants
+            ]
+        return {
+            "status": "processed",
+            "customer_id": customer_result.customer["id"],
+            "package_id": package["id"],
+            "whop_id": package["whop_id"],
+            "entitlement_status": status,
+            "mapping_mode": "whop_package",
+            "applied_grants": applications,
+        }
+
+    def _upsert_whop_subscription(
+        self,
+        connection: sqlite3.Connection,
+        customer_id: str,
+        subscription_info: dict[str, Any],
+        sub_status: str,
+    ) -> str | None:
+        if not subscription_info["membership_id"]:
+            return None
+        now = iso()
+        existing_sub = connection.execute(
+            "SELECT * FROM subscriptions WHERE whop_membership_id = ?",
+            (subscription_info["membership_id"],),
+        ).fetchone()
+        if existing_sub is None:
+            subscription_id = uuid.uuid4().hex
+            connection.execute(
+                """
+                INSERT INTO subscriptions(
+                    id, customer_id, whop_membership_id, whop_plan_id, status, raw_status,
+                    current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    subscription_id,
+                    customer_id,
+                    subscription_info["membership_id"],
+                    subscription_info["plan_id"],
+                    sub_status,
+                    subscription_info["status"],
+                    iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
+                    iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else None,
+                    int(subscription_info["cancel_at_period_end"]),
+                    now,
+                    now,
+                ),
+            )
+            return subscription_id
+
+        connection.execute(
+            """
+            UPDATE subscriptions
+            SET customer_id = ?, whop_plan_id = COALESCE(?, whop_plan_id), status = ?, raw_status = ?,
+                current_period_start = ?, current_period_end = ?, cancel_at_period_end = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                customer_id,
+                subscription_info["plan_id"],
+                sub_status,
+                subscription_info["status"],
+                iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
+                iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else None,
+                int(subscription_info["cancel_at_period_end"]),
+                now,
+                existing_sub["id"],
+            ),
+        )
+        return existing_sub["id"]
+
+    def _upsert_direct_whop_entitlement(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        customer_id: str,
+        product: dict[str, Any] | sqlite3.Row,
+        subscription_id: str | None,
+        subscription_info: dict[str, Any],
+        status: str,
+        event_type: str,
+        webhook_id: str,
+        ip_address: str | None,
+    ) -> dict[str, Any]:
+        now = iso()
+        external_id = subscription_info["entitlement_id"] or subscription_info["membership_id"] or webhook_id
+        existing_entitlement = connection.execute(
+            "SELECT * FROM entitlements WHERE source = 'whop' AND external_id = ?",
+            (external_id,),
+        ).fetchone()
+        revoked_at = now if status == "revoked" else None
+        expires_at = iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else None
+        if existing_entitlement is None:
+            entitlement_id = uuid.uuid4().hex
+            connection.execute(
+                """
+                INSERT INTO entitlements(
+                    id, customer_id, product_id, subscription_id, external_id, source, status,
+                    starts_at, expires_at, revoked_at, whop_event_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'whop', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entitlement_id,
+                    customer_id,
+                    product["id"],
+                    subscription_id,
+                    external_id,
+                    status,
+                    iso(subscription_info["period_start"]) if subscription_info["period_start"] else now,
+                    expires_at,
+                    revoked_at,
+                    webhook_id,
+                    now,
+                    now,
+                ),
+            )
+            action = "entitlement.whop_created"
+        else:
+            entitlement_id = existing_entitlement["id"]
+            connection.execute(
+                """
+                UPDATE entitlements
+                SET customer_id = ?, product_id = ?, subscription_id = ?, status = ?,
+                    starts_at = COALESCE(?, starts_at), expires_at = ?, revoked_at = ?, whop_event_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    customer_id,
+                    product["id"],
+                    subscription_id,
+                    status,
+                    iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
+                    expires_at,
+                    revoked_at,
+                    webhook_id,
+                    now,
+                    entitlement_id,
+                ),
+            )
+            action = "entitlement.whop_updated"
+        self.audit(
+            connection,
+            "whop",
+            None,
+            action,
+            "entitlement",
+            entitlement_id,
+            {"customer_id": customer_id, "product_id": product["id"], "status": status, "event_type": event_type, "webhook_id": webhook_id},
+            ip_address,
+        )
+        row = connection.execute("SELECT * FROM entitlements WHERE id = ?", (entitlement_id,)).fetchone()
+        return dict(row)
+
+    def _apply_whop_package_grant(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        customer_id: str,
+        package: dict[str, Any] | sqlite3.Row,
+        grant: dict[str, Any],
+        subscription_id: str | None,
+        subscription_info: dict[str, Any],
+        status: str,
+        event_type: str,
+        webhook_id: str,
+        ip_address: str | None,
+    ) -> dict[str, Any]:
+        now_dt = utc_now()
+        now = iso(now_dt)
+        product_id = grant["product_id"]
+        external_root = subscription_info["membership_id"] or subscription_info["entitlement_id"] or f"{package['whop_id']}:{customer_id}"
+        external_id = f"{external_root}:{product_id}"
+        existing = connection.execute(
+            "SELECT * FROM entitlements WHERE source = 'whop' AND external_id = ?",
+            (external_id,),
+        ).fetchone()
+        before_expiry = parse_time(existing["expires_at"]) if existing else None
+        grant_days = grant["days"] if grant["days"] is not None else package["default_days"]
+        grant_days = int(grant_days) if grant_days is not None else None
+        grant_kind = self._grant_kind(status, event_type)
+        fingerprint = self._grant_fingerprint(
+            grant_kind,
+            customer_id=customer_id,
+            package_id=package["id"],
+            product_id=product_id,
+            subscription_info=subscription_info,
+            webhook_id=webhook_id,
+        )
+
+        if grant_kind in {"trial", "paid", "renewal"}:
+            duplicate = connection.execute(
+                "SELECT * FROM license_grant_ledger WHERE event_fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()
+            if duplicate is not None:
+                return {
+                    "product_id": product_id,
+                    "strategy": grant["product_name"],
+                    "status": "duplicate_grant",
+                    "grant_kind": grant_kind,
+                    "days_applied": 0,
+                }
+
+        expires_after = before_expiry
+        days_applied = 0
+        revoked_at = None
+        target_status = status
+
+        if grant_kind == "trial":
+            trial_end = subscription_info["trial_ends_at"] or subscription_info["expires_at"]
+            if trial_end and trial_end > now_dt:
+                expires_after = later_time(before_expiry, trial_end)
+                days_applied = ceil_days(trial_end - now_dt)
+            elif grant_days is not None:
+                base = later_time(before_expiry, now_dt) or now_dt
+                expires_after = base + timedelta(days=grant_days)
+                days_applied = grant_days
+        elif grant_kind in {"paid", "renewal"}:
+            if grant_days is not None:
+                base = later_time(before_expiry, now_dt) or now_dt
+                expires_after = base + timedelta(days=grant_days)
+                days_applied = grant_days
+            elif subscription_info["expires_at"]:
+                expires_after = later_time(before_expiry, subscription_info["expires_at"])
+        elif grant_kind == "revoke":
+            target_status = "revoked"
+            revoked_at = now
+        elif grant_kind == "expire":
+            target_status = "expired"
+            expires_after = before_expiry or now_dt
+        elif grant_kind == "suspend":
+            target_status = "suspended"
+            expires_after = before_expiry or subscription_info["expires_at"]
+
+        if existing is None:
+            entitlement_id = uuid.uuid4().hex
+            connection.execute(
+                """
+                INSERT INTO entitlements(
+                    id, customer_id, product_id, subscription_id, external_id, source, status,
+                    starts_at, expires_at, revoked_at, whop_event_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'whop', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entitlement_id,
+                    customer_id,
+                    product_id,
+                    subscription_id,
+                    external_id,
+                    target_status,
+                    iso(subscription_info["period_start"]) if subscription_info["period_start"] else now,
+                    iso(expires_after) if expires_after else None,
+                    revoked_at,
+                    webhook_id,
+                    now,
+                    now,
+                ),
+            )
+            action = "entitlement.whop_created"
+        else:
+            entitlement_id = existing["id"]
+            connection.execute(
+                """
+                UPDATE entitlements
+                SET customer_id = ?, product_id = ?, subscription_id = ?, status = ?,
+                    starts_at = COALESCE(?, starts_at), expires_at = ?, revoked_at = ?,
+                    whop_event_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    customer_id,
+                    product_id,
+                    subscription_id,
+                    target_status,
+                    iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
+                    iso(expires_after) if expires_after else None,
+                    revoked_at,
+                    webhook_id,
+                    now,
+                    entitlement_id,
+                ),
+            )
+            action = "entitlement.whop_updated"
+
+        self._record_grant_ledger(
+            connection,
+            customer_id=customer_id,
+            package_id=package["id"],
+            product_id=product_id,
+            subscription_id=subscription_id,
+            entitlement_id=entitlement_id,
+            webhook_id=webhook_id,
+            event_fingerprint=fingerprint,
+            grant_kind=grant_kind,
+            days_applied=days_applied,
+            period_start=subscription_info["period_start"],
+            period_end=subscription_info["expires_at"],
+            expires_at_before=before_expiry,
+            expires_at_after=expires_after,
+            details={
+                "event_type": event_type,
+                "status": status,
+                "package_whop_id": package["whop_id"],
+                "legacy_nt_product_id": grant.get("legacy_nt_product_id"),
+            },
+        )
+        self.audit(
+            connection,
+            "whop",
+            None,
+            action,
+            "entitlement",
+            entitlement_id,
+            {
+                "customer_id": customer_id,
+                "package_id": package["id"],
+                "product_id": product_id,
+                "status": target_status,
+                "grant_kind": grant_kind,
+                "days_applied": days_applied,
+                "webhook_id": webhook_id,
+            },
+            ip_address,
+        )
+        return {
+            "product_id": product_id,
+            "strategy": grant["product_name"],
+            "status": target_status,
+            "grant_kind": grant_kind,
+            "days_applied": days_applied,
+            "expires_at": iso(expires_after) if expires_after else None,
+        }
+
+    def _package_grants(self, connection: sqlite3.Connection, package_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            """
+            SELECT whop_package_grants.*,
+                   products.name AS product_name,
+                   products.slug AS product_slug,
+                   products.feature_id AS feature_id,
+                   products.is_active AS product_is_active
+            FROM whop_package_grants
+            JOIN products ON products.id = whop_package_grants.product_id
+            WHERE whop_package_grants.package_id = ?
+            ORDER BY products.name ASC
+            """,
+            (package_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _find_whop_package(self, connection: sqlite3.Connection, whop_ids: dict[str, str | None]) -> dict[str, Any] | None:
+        for candidate in (whop_ids["plan_id"], whop_ids["product_id"]):
+            if not candidate:
+                continue
+            row = connection.execute("SELECT * FROM whop_packages WHERE whop_id = ?", (candidate,)).fetchone()
+            if row is not None:
+                return dict(row)
+        return None
+
+    def _find_direct_whop_product(self, connection: sqlite3.Connection, whop_ids: dict[str, str | None]) -> dict[str, Any] | None:
+        for candidate in (whop_ids["product_id"], whop_ids["plan_id"]):
+            if not candidate:
+                continue
+            row = connection.execute(
+                "SELECT * FROM products WHERE whop_product_id IS NOT NULL AND whop_product_id = ?",
+                (candidate,),
+            ).fetchone()
+            if row is not None:
+                return dict(row)
+        return None
+
+    def _grant_kind(self, status: str, event_type: str) -> str:
+        combined = f"{status} {event_type}".lower()
+        if status == "revoked":
+            return "revoke"
+        if status == "expired":
+            return "expire"
+        if status == "suspended":
+            return "suspend"
+        if status == "trialing":
+            return "trial"
+        if "renew" in combined:
+            return "renewal"
+        if status == "active":
+            return "paid"
+        return "ignored"
+
+    def _grant_fingerprint(
+        self,
+        grant_kind: str,
+        *,
+        customer_id: str,
+        package_id: str,
+        product_id: str,
+        subscription_info: dict[str, Any],
+        webhook_id: str,
+    ) -> str:
+        membership_id = subscription_info["membership_id"] or subscription_info["entitlement_id"] or customer_id
+        payment_id = subscription_info["payment_id"]
+        period_start = iso(subscription_info["period_start"]) if subscription_info["period_start"] else ""
+        period_end = iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else ""
+        if grant_kind == "trial":
+            source = f"trial:{membership_id}:{package_id}:{product_id}"
+        elif grant_kind in {"paid", "renewal"} and payment_id:
+            source = f"{grant_kind}:payment:{payment_id}:{product_id}"
+        elif grant_kind in {"paid", "renewal"}:
+            source = f"{grant_kind}:period:{membership_id}:{package_id}:{product_id}:{period_start}:{period_end}"
+        else:
+            source = f"{grant_kind}:event:{webhook_id}:{product_id}"
+        return sha256_hex(source)
+
+    def _record_grant_ledger(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        customer_id: str,
+        package_id: str,
+        product_id: str,
+        subscription_id: str | None,
+        entitlement_id: str,
+        webhook_id: str,
+        event_fingerprint: str,
+        grant_kind: str,
+        days_applied: int,
+        period_start: datetime | None,
+        period_end: datetime | None,
+        expires_at_before: datetime | None,
+        expires_at_after: datetime | None,
+        details: dict[str, Any],
+    ) -> None:
+        existing = connection.execute(
+            "SELECT 1 FROM license_grant_ledger WHERE event_fingerprint = ?",
+            (event_fingerprint,),
+        ).fetchone()
+        if existing is not None:
+            return
+        connection.execute(
+            """
+            INSERT INTO license_grant_ledger(
+                id, customer_id, package_id, product_id, subscription_id, entitlement_id,
+                whop_event_id, event_fingerprint, grant_kind, days_applied, period_start,
+                period_end, expires_at_before, expires_at_after, details_json, applied_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uuid.uuid4().hex,
+                customer_id,
+                package_id,
+                product_id,
+                subscription_id,
+                entitlement_id,
+                webhook_id,
+                event_fingerprint,
+                grant_kind,
+                days_applied,
+                iso(period_start) if period_start else None,
+                iso(period_end) if period_end else None,
+                iso(expires_at_before) if expires_at_before else None,
+                iso(expires_at_after) if expires_at_after else None,
+                json.dumps(details, sort_keys=True),
+                iso(),
+            ),
+        )
 
     def check_license(
         self,
@@ -1027,10 +1620,35 @@ class LicensingService:
             "feature_id": feature_id,
         }
 
+    def _extract_whop_ids(self, data: dict[str, Any]) -> dict[str, str | None]:
+        subscription = nested_dict(data, "subscription") or nested_dict(data, "membership") or {}
+        product = nested_dict(data, "product") or nested_dict(data, "access_pass") or {}
+        plan_id = first_text(data, "plan_id") or first_text(subscription, "plan_id", "price_id")
+        product_id = (
+            first_text(data, "whop_product_id", "product_id", "access_pass_id")
+            or first_text(product, "id", "product_id", "access_pass_id")
+        )
+        return {
+            "plan_id": plan_id,
+            "product_id": product_id,
+            "selected_id": plan_id or product_id,
+            "selected_type": "plan" if plan_id else ("product" if product_id else None),
+        }
+
     def _extract_subscription_info(self, data: dict[str, Any]) -> dict[str, Any]:
         subscription = nested_dict(data, "subscription") or nested_dict(data, "membership") or {}
+        payment = nested_dict(data, "payment") or nested_dict(data, "invoice") or {}
+        event_is_membership = any(
+            key in data
+            for key in ("plan_id", "product_id", "trial_ends_at", "renewal_period_end", "valid_until")
+        )
+        membership_id = (
+            first_text(data, "membership_id", "subscription_id")
+            or first_text(subscription, "id", "membership_id")
+            or (first_text(data, "id") if event_is_membership else None)
+        )
         return {
-            "membership_id": first_text(data, "membership_id", "subscription_id") or first_text(subscription, "id", "membership_id"),
+            "membership_id": membership_id,
             "entitlement_id": first_text(data, "entitlement_id", "id"),
             "plan_id": first_text(data, "plan_id") or first_text(subscription, "plan_id", "price_id"),
             "status": first_text(data, "status") or first_text(subscription, "status") or "unknown",
@@ -1038,6 +1656,10 @@ class LicensingService:
             or first_time(subscription, "current_period_start", "starts_at", "created_at"),
             "expires_at": first_time(data, "current_period_end", "expires_at", "expiration_date", "valid_until", "renewal_period_end")
             or first_time(subscription, "current_period_end", "expires_at", "expiration_date", "valid_until"),
+            "trial_ends_at": first_time(data, "trial_ends_at")
+            or first_time(subscription, "trial_ends_at"),
+            "payment_id": first_text(data, "payment_id", "invoice_id", "charge_id")
+            or first_text(payment, "id", "payment_id", "invoice_id", "charge_id"),
             "cancel_at_period_end": bool(data.get("cancel_at_period_end") or subscription.get("cancel_at_period_end") or False),
         }
 
@@ -1095,9 +1717,22 @@ def first_time(data: dict[str, Any], *keys: str) -> datetime | None:
     return None
 
 
+def later_time(left: datetime | None, right: datetime | None) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return left if left >= right else right
+
+
+def ceil_days(delta: timedelta) -> int:
+    seconds = max(0, int(delta.total_seconds()))
+    return max(1, (seconds + 86399) // 86400) if seconds else 0
+
+
 def normalize_entitlement_status(raw_status: str | None, event_type: str) -> str:
     combined = f"{raw_status or ''} {event_type}".lower()
-    if any(word in combined for word in ("revoke", "ban", "terminate")):
+    if any(word in combined for word in ("refund", "chargeback", "dispute", "revoke", "ban", "terminate", "went_invalid")):
         return "revoked"
     if any(word in combined for word in ("suspend", "pause", "past_due", "payment_failed")):
         return "suspended"
@@ -1105,7 +1740,7 @@ def normalize_entitlement_status(raw_status: str | None, event_type: str) -> str
         return "expired"
     if "trial" in combined:
         return "trialing"
-    if any(word in combined for word in ("active", "valid", "create", "update", "renew")):
+    if any(word in combined for word in ("active", "valid", "renew", "payment.succeeded", "paid", "succeeded")):
         return "active"
     return "pending"
 

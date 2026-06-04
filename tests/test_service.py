@@ -5,7 +5,7 @@ import unittest
 from datetime import timedelta
 
 from autoedge_licensing.db import Database, apply_migrations
-from autoedge_licensing.service import LicensingService, iso, utc_now
+from autoedge_licensing.service import LicensingService, iso, parse_time, utc_now
 
 
 class LicensingServiceTests(unittest.TestCase):
@@ -111,6 +111,16 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual([], response["licensed_strategies"])
 
     def test_whop_upsert_is_idempotent_and_activates_customer(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="prod_duo",
+            whop_id_type="product",
+            name="DUO 30 days",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+        )
         payload = {
             "type": "membership.created",
             "data": {
@@ -136,6 +146,289 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertIsNotNone(detail)
         self.assertEqual(1, len(detail["entitlements"]))
         self.assertEqual("active", detail["entitlements"][0]["status"])
+
+    def test_whop_package_bundle_grants_multiple_strategies(self) -> None:
+        duorc = self.service.upsert_product(
+            slug="duorc-runtime",
+            name="DUOrc Runtime",
+            feature_id="strategy.duorc.runtime",
+        )
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_bundle_30",
+            whop_id_type="plan",
+            name="AutoEdge Bundle 30 days",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[
+                {"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"},
+                {"product_id": duorc["id"], "days": 30, "legacy_nt_product_id": "337"},
+            ],
+        )
+
+        result = self.service.process_whop_event(
+            {
+                "action": "membership.went_valid",
+                "data": {
+                    "id": "mem_bundle_001",
+                    "status": "active",
+                    "email": "bundle@example.com",
+                    "user_id": "user_bundle_001",
+                    "plan_id": "plan_bundle_30",
+                    "product_id": "prod_bundle",
+                    "renewal_period_end": iso(utc_now() + timedelta(days=30)),
+                },
+            },
+            "evt_bundle_001",
+            signature_valid=True,
+            ip_address="127.0.0.1",
+        )
+
+        detail = self.service.customer_detail(result["customer_id"])
+        self.assertEqual("whop_package", result["mapping_mode"])
+        self.assertEqual(2, len(detail["entitlements"]))
+
+        response = self.service.check_license(
+            license_key=None,
+            email="bundle@example.com",
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-bundle",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        self.assertEqual("active", response["status"])
+        self.assertEqual(
+            ["strategy.duo.runtime", "strategy.duorc.runtime"],
+            sorted(grant["feature_id"] for grant in response["licensed_strategies"]),
+        )
+
+    def test_trial_then_paid_adds_package_days_after_trial(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_duo_30",
+            whop_id_type="plan",
+            name="DUO 30 days",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+        )
+        trial_end = utc_now() + timedelta(days=7)
+        trial = self.service.process_whop_event(
+            {
+                "action": "membership.activated",
+                "data": {
+                    "id": "mem_trial_001",
+                    "status": "trialing",
+                    "email": "trial@example.com",
+                    "user_id": "user_trial_001",
+                    "plan_id": "plan_duo_30",
+                    "trial_ends_at": iso(trial_end),
+                },
+            },
+            "evt_trial_001",
+            signature_valid=True,
+            ip_address=None,
+        )
+        paid = self.service.process_whop_event(
+            {
+                "action": "membership.went_valid",
+                "data": {
+                    "id": "mem_trial_001",
+                    "status": "active",
+                    "email": "trial@example.com",
+                    "user_id": "user_trial_001",
+                    "plan_id": "plan_duo_30",
+                    "payment_id": "pay_trial_001",
+                    "renewal_period_end": iso(trial_end + timedelta(days=30)),
+                },
+            },
+            "evt_paid_001",
+            signature_valid=True,
+            ip_address=None,
+        )
+
+        detail = self.service.customer_detail(trial["customer_id"])
+        expires_at = parse_time(detail["entitlements"][0]["expires_at"])
+        self.assertEqual("paid", paid["applied_grants"][0]["grant_kind"])
+        self.assertGreaterEqual(expires_at, trial_end + timedelta(days=29))
+
+    def test_paid_duplicate_for_same_period_does_not_add_days_twice(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_dupe_30",
+            whop_id_type="plan",
+            name="DUO 30 days",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+        )
+        payload = {
+            "action": "membership.went_valid",
+            "data": {
+                "id": "mem_dupe_001",
+                "status": "active",
+                "email": "dupe@example.com",
+                "user_id": "user_dupe_001",
+                "plan_id": "plan_dupe_30",
+                "current_period_start": iso(utc_now()),
+                "current_period_end": iso(utc_now() + timedelta(days=30)),
+            },
+        }
+
+        first = self.service.process_whop_event(payload, "evt_dupe_001", signature_valid=True, ip_address=None)
+        second = self.service.process_whop_event(payload, "evt_dupe_002", signature_valid=True, ip_address=None)
+        detail = self.service.customer_detail(first["customer_id"])
+        expires_at = parse_time(detail["entitlements"][0]["expires_at"])
+
+        self.assertEqual("duplicate_grant", second["applied_grants"][0]["status"])
+        self.assertLess(expires_at, utc_now() + timedelta(days=32))
+
+    def test_ignored_package_does_not_create_entitlement(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_non_license",
+            whop_id_type="plan",
+            name="Community access",
+            default_days=None,
+            is_active=True,
+            is_ignored=True,
+            grants=[],
+        )
+
+        result = self.service.process_whop_event(
+            {
+                "action": "membership.went_valid",
+                "data": {
+                    "id": "mem_ignore_001",
+                    "status": "active",
+                    "email": "ignore@example.com",
+                    "user_id": "user_ignore_001",
+                    "plan_id": "plan_non_license",
+                },
+            },
+            "evt_ignore_001",
+            signature_valid=True,
+            ip_address=None,
+        )
+        detail = self.service.customer_detail(result["customer_id"])
+
+        self.assertEqual("ignored", result["status"])
+        self.assertEqual([], detail["entitlements"])
+
+    def test_refund_revokes_package_entitlement(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_refund_30",
+            whop_id_type="plan",
+            name="DUO 30 days",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+        )
+        active = self.service.process_whop_event(
+            {
+                "action": "membership.went_valid",
+                "data": {
+                    "id": "mem_refund_001",
+                    "status": "active",
+                    "email": "refund@example.com",
+                    "user_id": "user_refund_001",
+                    "plan_id": "plan_refund_30",
+                    "payment_id": "pay_refund_001",
+                },
+            },
+            "evt_refund_active",
+            signature_valid=True,
+            ip_address=None,
+        )
+        self.service.process_whop_event(
+            {
+                "action": "refund.created",
+                "data": {
+                    "id": "mem_refund_001",
+                    "status": "refunded",
+                    "email": "refund@example.com",
+                    "user_id": "user_refund_001",
+                    "plan_id": "plan_refund_30",
+                },
+            },
+            "evt_refund_001",
+            signature_valid=True,
+            ip_address=None,
+        )
+
+        response = self.service.check_license(
+            license_key=None,
+            email="refund@example.com",
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-refund",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        detail = self.service.customer_detail(active["customer_id"])
+        self.assertEqual("revoked", response["status"])
+        self.assertEqual("revoked", detail["entitlements"][0]["status"])
+
+    def test_plan_id_takes_precedence_over_product_id(self) -> None:
+        duorc = self.service.upsert_product(
+            slug="duorc-runtime",
+            name="DUOrc Runtime",
+            feature_id="strategy.duorc.runtime",
+        )
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_precedence",
+            whop_id_type="plan",
+            name="Plan DUO",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+        )
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="prod_precedence",
+            whop_id_type="product",
+            name="Product DUOrc",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": duorc["id"], "days": 30, "legacy_nt_product_id": "337"}],
+        )
+
+        result = self.service.process_whop_event(
+            {
+                "action": "membership.went_valid",
+                "data": {
+                    "id": "mem_precedence_001",
+                    "status": "active",
+                    "email": "precedence@example.com",
+                    "user_id": "user_precedence_001",
+                    "plan_id": "plan_precedence",
+                    "product_id": "prod_precedence",
+                    "payment_id": "pay_precedence_001",
+                },
+            },
+            "evt_precedence_001",
+            signature_valid=True,
+            ip_address=None,
+        )
+        detail = self.service.customer_detail(result["customer_id"])
+
+        self.assertEqual("plan_precedence", result["whop_id"])
+        self.assertEqual([self.product["id"]], [entitlement["product_id"] for entitlement in detail["entitlements"]])
 
     def test_update_product_adds_whop_product_id_to_existing_product(self) -> None:
         product = self.service.upsert_product(
