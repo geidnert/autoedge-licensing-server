@@ -137,6 +137,28 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(1, len(detail["entitlements"]))
         self.assertEqual("active", detail["entitlements"][0]["status"])
 
+    def test_update_product_adds_whop_product_id_to_existing_product(self) -> None:
+        product = self.service.upsert_product(
+            slug="duorc-runtime",
+            name="DUOrc Runtime",
+            feature_id="strategy.duorc.runtime",
+        )
+
+        updated = self.service.update_product(
+            product_id=product["id"],
+            slug="duorc-runtime",
+            name="DUOrc Runtime",
+            feature_id="strategy.duorc.runtime",
+            whop_product_id="prod_duorc",
+            is_active=True,
+            actor_id="admin",
+            ip_address="127.0.0.1",
+        )
+
+        self.assertEqual(product["id"], updated["id"])
+        self.assertEqual("prod_duorc", updated["whop_product_id"])
+        self.assertEqual(2, len(self.service.list_products()))
+
     def test_change_admin_password_revokes_sessions_and_accepts_new_password(self) -> None:
         admin_id = self.service.create_admin_user("admin", "old-password-123")
         first_login = self.service.authenticate_admin(

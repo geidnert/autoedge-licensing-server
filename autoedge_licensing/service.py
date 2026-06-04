@@ -211,6 +211,63 @@ class LicensingService:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_product(self, product_id: str) -> dict[str, Any] | None:
+        with self.database.session() as connection:
+            row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def update_product(
+        self,
+        *,
+        product_id: str,
+        slug: str,
+        name: str,
+        feature_id: str,
+        whop_product_id: str | None,
+        is_active: bool,
+        actor_id: str | None = None,
+        ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        now = iso()
+        normalized_slug = slugify(slug)
+        with self.database.session() as connection:
+            existing = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+            if existing is None:
+                raise ValueError("Product not found.")
+            connection.execute(
+                """
+                UPDATE products
+                SET whop_product_id = ?,
+                    slug = ?,
+                    name = ?,
+                    feature_id = ?,
+                    is_active = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    whop_product_id.strip() if whop_product_id else None,
+                    normalized_slug,
+                    name.strip(),
+                    feature_id.strip(),
+                    int(is_active),
+                    now,
+                    product_id,
+                ),
+            )
+            self.audit(
+                connection,
+                "admin" if actor_id else "system",
+                actor_id,
+                "product.updated",
+                "product",
+                product_id,
+                {"slug": normalized_slug, "whop_product_id": whop_product_id},
+                ip_address,
+            )
+            product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+            return dict(product)
+
     def upsert_product(
         self,
         *,

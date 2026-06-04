@@ -235,18 +235,33 @@ class AutoEdgeApp:
         csrf = self.csrf_token(self.session_token(request) or "")
         if request.method == "POST":
             form = request.form()
-            self.service.upsert_product(
-                slug=form.get("slug", ""),
-                name=form.get("name", ""),
-                feature_id=form.get("feature_id", ""),
-                whop_product_id=form.get("whop_product_id") or None,
-                is_active=form.get("is_active") == "on",
-                actor_id=admin["id"],
-                ip_address=request.ip,
-            )
+            product_id = form.get("product_id", "").strip()
+            if product_id:
+                self.service.update_product(
+                    product_id=product_id,
+                    slug=form.get("slug", ""),
+                    name=form.get("name", ""),
+                    feature_id=form.get("feature_id", ""),
+                    whop_product_id=form.get("whop_product_id") or None,
+                    is_active=form.get("is_active") == "on",
+                    actor_id=admin["id"],
+                    ip_address=request.ip,
+                )
+            else:
+                self.service.upsert_product(
+                    slug=form.get("slug", ""),
+                    name=form.get("name", ""),
+                    feature_id=form.get("feature_id", ""),
+                    whop_product_id=form.get("whop_product_id") or None,
+                    is_active=form.get("is_active") == "on",
+                    actor_id=admin["id"],
+                    ip_address=request.ip,
+                )
             return redirect("/admin/products")
         products = self.service.list_products()
-        return html_response(self.page("Products", products_page(products, csrf), admin))
+        edit_id = request.query_value("edit")
+        selected_product = self.service.get_product(edit_id) if edit_id else None
+        return html_response(self.page("Products", products_page(products, csrf, selected_product), admin))
 
     def admin_password(self, request: Request, admin: dict[str, Any]) -> Response:
         csrf = self.csrf_token(self.session_token(request) or "")
@@ -485,7 +500,13 @@ def customer_search_page(customers: list[dict[str, Any]], query: str, csrf: str)
     """
 
 
-def products_page(products: list[dict[str, Any]], csrf: str) -> str:
+def products_page(products: list[dict[str, Any]], csrf: str, selected_product: dict[str, Any] | None = None) -> str:
+    selected = selected_product or {}
+    is_editing = selected_product is not None
+    form_title = "Edit product" if is_editing else "Add or update product"
+    button_text = "Save changes" if is_editing else "Save product"
+    active_checked = "checked" if selected.get("is_active", 1) else ""
+    cancel_link = '<a class="button secondary" href="/admin/products">Cancel</a>' if is_editing else ""
     rows = "\n".join(
         f"""
         <tr>
@@ -494,6 +515,7 @@ def products_page(products: list[dict[str, Any]], csrf: str) -> str:
           <td>{e(product.get('whop_product_id'))}</td>
           <td>{format_bool(product.get('is_active'))}</td>
           <td>{e(product.get('updated_at'))}</td>
+          <td><a class="button small" href="/admin/products?edit={e(product['id'])}">{'Edit' if product.get('whop_product_id') else 'Add Whop ID'}</a></td>
         </tr>
         """
         for product in products
@@ -506,21 +528,23 @@ def products_page(products: list[dict[str, Any]], csrf: str) -> str:
       </div>
     </header>
     <section class="panel">
-      <h2>Add or update product</h2>
+      <h2>{form_title}</h2>
       <form class="grid-form" method="post">
         <input type="hidden" name="csrf" value="{e(csrf)}">
-        <label>Slug <input name="slug" required placeholder="duo-runtime"></label>
-        <label>Name <input name="name" required placeholder="Duo Runtime"></label>
-        <label>Feature id <input name="feature_id" required placeholder="strategy.duo.runtime"></label>
-        <label>Whop product id <input name="whop_product_id"></label>
-        <label class="checkbox"><input name="is_active" type="checkbox" checked> Active</label>
-        <button type="submit">Save product</button>
+        <input type="hidden" name="product_id" value="{e(selected.get('id'))}">
+        <label>Slug <input name="slug" required placeholder="duo-runtime" value="{e(selected.get('slug'))}"></label>
+        <label>Name <input name="name" required placeholder="Duo Runtime" value="{e(selected.get('name'))}"></label>
+        <label>Feature id <input name="feature_id" required placeholder="strategy.duo.runtime" value="{e(selected.get('feature_id'))}"></label>
+        <label>Whop product id <input name="whop_product_id" value="{e(selected.get('whop_product_id'))}"></label>
+        <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
+        <button type="submit">{button_text}</button>
+        {cancel_link}
       </form>
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Product</th><th>Feature</th><th>Whop product</th><th>Active</th><th>Updated</th></tr></thead>
-        <tbody>{rows or '<tr><td colspan="5">No products configured.</td></tr>'}</tbody>
+        <thead><tr><th>Product</th><th>Feature</th><th>Whop product</th><th>Active</th><th>Updated</th><th></th></tr></thead>
+        <tbody>{rows or '<tr><td colspan="6">No products configured.</td></tr>'}</tbody>
       </table>
     </section>
     """
@@ -666,6 +690,9 @@ p { margin: 6px 0 0; color: var(--muted); }
 a { color: #0f5d53; }
 button, .button { min-height: 36px; padding: 0 14px; border: 1px solid #0f5d53; border-radius: 6px; background: #136f63; color: #fff; font-weight: 650; text-decoration: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 button:hover, .button:hover { background: #0f5d53; }
+.button.secondary { background: #fff; color: #0f5d53; }
+.button.secondary:hover { background: #eef9f6; }
+.button.small { min-height: 30px; padding: 0 10px; font-size: 13px; }
 input, select { min-height: 36px; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); }
 label { display: grid; gap: 6px; color: #34404c; font-weight: 600; }
 small { display: block; margin-top: 3px; color: var(--muted); font-weight: 400; }
