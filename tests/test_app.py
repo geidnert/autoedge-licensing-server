@@ -4,9 +4,12 @@ import io
 import json
 import tempfile
 import unittest
+from datetime import timedelta
+from pathlib import Path
 
 from autoedge_licensing.app import create_app, customer_detail_page, packages_page, products_page
 from autoedge_licensing.config import Settings
+from autoedge_licensing.service import iso, utc_now
 
 
 class AppEndpointTests(unittest.TestCase):
@@ -25,6 +28,8 @@ class AppEndpointTests(unittest.TestCase):
             license_check_interval_seconds=3600,
             grace_period_seconds=86400,
             rate_limit_per_minute=60,
+            release_artifact_dir=f"{self.tmp.name}/artifacts",
+            release_download_token_seconds=600,
         )
         self.app = create_app(settings)
 
@@ -183,19 +188,144 @@ class AppEndpointTests(unittest.TestCase):
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
 
+    def test_release_manifest_and_download_endpoint(self) -> None:
+        product = self.app.service.upsert_product(
+            slug="duo-runtime",
+            name="DUO Runtime",
+            feature_id="strategy.duo.runtime",
+        )
+        created = self.app.service.create_or_update_customer(email="release-http@example.com")
+        self.app.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="http release",
+            actor_id="admin",
+            ip_address=None,
+        )
+        artifact_dir = Path(self.tmp.name) / "artifacts"
+        artifact_dir.mkdir()
+        artifact = artifact_dir / "duo-http.zip"
+        artifact.write_bytes(b"http artifact")
+        release = self.app.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=product["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="2.0.0",
+            min_supported_version=None,
+            is_required=True,
+            is_active=True,
+            artifact_path="duo-http.zip",
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        status, _, manifest_body = self.call(
+            "POST",
+            "/api/trader/releases/manifest",
+            {
+                "license_key": created.license_key,
+                "machine_fingerprint": "http-release-machine",
+                "app_version": "1.0.0",
+                "channel": "stable",
+                "platform": "windows-x64",
+            },
+            {},
+        )
+        token_status, _, token_body = self.call(
+            "POST",
+            "/api/trader/releases/download-token",
+            {
+                "license_key": created.license_key,
+                "machine_fingerprint": "http-release-machine",
+                "app_version": "1.0.0",
+                "release_id": release["id"],
+            },
+            {},
+        )
+        token_payload = json.loads(token_body)
+        download_status, download_headers, download_body = self.call_raw(
+            "GET",
+            f"/api/trader/releases/download/{token_payload['token']}",
+            b"",
+            {},
+        )
+
+        self.assertTrue(status.startswith("200"), manifest_body)
+        manifest = json.loads(manifest_body)
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual("2.0.0", manifest["releases"][0]["version"])
+        self.assertTrue(token_status.startswith("200"), token_body)
+        self.assertTrue(download_status.startswith("200"), download_status)
+        self.assertIn(("Content-Disposition", 'attachment; filename="duo-http.zip"'), download_headers)
+        self.assertEqual("http artifact", download_body)
+
+    def test_release_download_token_requires_license(self) -> None:
+        product = self.app.service.upsert_product(
+            slug="duo-runtime",
+            name="DUO Runtime",
+            feature_id="strategy.duo.runtime",
+        )
+        artifact_dir = Path(self.tmp.name) / "artifacts"
+        artifact_dir.mkdir()
+        release = self.app.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=product["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="2.0.0",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path="missing.zip",
+            artifact_filename=None,
+            size_bytes=1,
+            sha256_value="abc",
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        status, _, body = self.call(
+            "POST",
+            "/api/trader/releases/download-token",
+            {
+                "email": "unknown@example.com",
+                "machine_fingerprint": "unknown-machine",
+                "release_id": release["id"],
+            },
+            {},
+        )
+
+        self.assertTrue(status.startswith("400"), body)
+        self.assertEqual("unknown_customer", json.loads(body)["status"])
+
     def call(self, method: str, path: str, payload: dict, headers: dict[str, str]) -> tuple[str, list[tuple[str, str]], str]:
         body = json.dumps(payload).encode("utf-8")
+        return self.call_raw(method, path, body, {"Content-Type": "application/json", **headers})
+
+    def call_raw(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> tuple[str, list[tuple[str, str]], str]:
         environ = {
             "REQUEST_METHOD": method,
             "PATH_INFO": path,
             "QUERY_STRING": "",
             "CONTENT_LENGTH": str(len(body)),
-            "CONTENT_TYPE": "application/json",
             "wsgi.input": io.BytesIO(body),
             "REMOTE_ADDR": "127.0.0.1",
         }
         for key, value in headers.items():
-            environ["HTTP_" + key.upper().replace("-", "_")] = value
+            if key.lower() == "content-type":
+                environ["CONTENT_TYPE"] = value
+            else:
+                environ["HTTP_" + key.upper().replace("-", "_")] = value
         captured: dict[str, object] = {}
 
         def start_response(status: str, response_headers: list[tuple[str, str]]) -> None:

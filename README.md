@@ -126,11 +126,96 @@ Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `expired`, `re
 
 Trader should allow strategy access only when `status == "active"` and the required `feature_id` is present in `licensed_strategies`.
 
+### Trader Release Manifest
+
+`POST /api/trader/releases/manifest`
+
+Request:
+
+```json
+{
+  "license_key": "AE-XXXX-XXXX-XXXX-XXXX-XXXX",
+  "email": "customer@example.com",
+  "machine_fingerprint": "stable-client-machine-fingerprint",
+  "app_version": "0.5.0",
+  "channel": "stable",
+  "platform": "windows-x64"
+}
+```
+
+The same license identifiers as `/api/trader/license/check` are accepted. The response includes the normal license decision plus release metadata for active Trader app releases and active strategy releases only for strategies the customer is licensed to use.
+
+Response:
+
+```json
+{
+  "status": "active",
+  "message": "Release manifest available.",
+  "channel": "stable",
+  "platform": "windows-x64",
+  "releases": [
+    {
+      "id": "release-id",
+      "scope": "strategy",
+      "strategy": "DUO",
+      "feature_id": "strategy.duo.runtime",
+      "version": "1.2.0",
+      "required": false,
+      "update_available": true,
+      "artifact": {
+        "filename": "duo-1.2.0.zip",
+        "size_bytes": 123456,
+        "sha256": "hex-sha256",
+        "signature": "optional-signature"
+      },
+      "release_notes": "Optional notes"
+    }
+  ],
+  "license": {
+    "status": "active"
+  }
+}
+```
+
+Trader should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, or unknown customers receive an empty release list and the same blocking license status.
+
+### Trader Release Download
+
+`POST /api/trader/releases/download-token`
+
+Request:
+
+```json
+{
+  "release_id": "release-id-from-manifest",
+  "license_key": "AE-XXXX-XXXX-XXXX-XXXX-XXXX",
+  "machine_fingerprint": "stable-client-machine-fingerprint",
+  "app_version": "0.5.0"
+}
+```
+
+The server checks the license again before issuing a short-lived download token. Strategy package downloads are allowed only when the license includes that strategy. Trader app downloads are allowed for any active license.
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "download_url": "https://licenses.example.com/api/trader/releases/download/token-value",
+  "expires_at": "2026-06-04T12:00:00Z"
+}
+```
+
+`GET /api/trader/releases/download/{token}` streams the artifact. Tokens are stored as hashes, expire quickly, and each download attempt is recorded in `release_downloads`.
+
+Configure releases in `/admin/releases`. Artifact uploads are not handled by the web UI yet; copy package files under `AUTOEDGE_RELEASE_ARTIFACT_DIR` first, then register their relative path in the release form. If the file exists, the server calculates size and SHA-256 automatically.
+
 ## Local Development
 
 ```bash
 cd /Users/andreas.geidnert/Dev/autoedge-licensing-server
 cp .env.example .env
+mkdir -p data/artifacts
 AUTOEDGE_ADMIN_COOKIE_SECRET="$(openssl rand -base64 48)" \
 AUTOEDGE_WHOP_BEARER_TOKEN="local-test-token" \
 AUTOEDGE_COOKIE_SECURE=false \
@@ -179,7 +264,7 @@ Create service user and directories:
 
 ```bash
 sudo useradd --system --home /var/lib/autoedge-licensing --shell /usr/sbin/nologin autoedge
-sudo mkdir -p /opt/autoedge-licensing /var/lib/autoedge-licensing
+sudo mkdir -p /opt/autoedge-licensing /var/lib/autoedge-licensing/artifacts
 sudo chown -R autoedge:autoedge /var/lib/autoedge-licensing
 ```
 
@@ -203,6 +288,8 @@ WHOP_WEBHOOK_SECRET=replace-with-whop-webhook-secret
 AUTOEDGE_LICENSE_CHECK_INTERVAL_SECONDS=21600
 AUTOEDGE_GRACE_PERIOD_SECONDS=259200
 AUTOEDGE_RATE_LIMIT_PER_MINUTE=60
+AUTOEDGE_RELEASE_ARTIFACT_DIR=/var/lib/autoedge-licensing/artifacts
+AUTOEDGE_RELEASE_DOWNLOAD_TOKEN_SECONDS=600
 ```
 
 Protect the environment file:
@@ -274,10 +361,13 @@ The current Debian deployment runs on `solidparts.se` behind nginx:
 - Admin UI: `https://solidparts.se/admin/login`
 - Admin password rotation: sign in, then use `Change password` in the top navigation.
 - Trader endpoint: `https://solidparts.se/api/trader/license/check`
+- Trader release manifest: `https://solidparts.se/api/trader/releases/manifest`
+- Trader release downloads: `https://solidparts.se/api/trader/releases/download/{token}`
 - Whop endpoint: `https://solidparts.se/api/whop/entitlements`
 - Service unit: `autoedge-licensing.service`
 - App directory: `/opt/autoedge-licensing`
 - Database: `/var/lib/autoedge-licensing/autoedge.db`
+- Release artifacts: `/var/lib/autoedge-licensing/artifacts`
 - Environment file: `/etc/autoedge-licensing.env`
 
 Production should use Whop Standard Webhooks with `WHOP_WEBHOOK_SECRET`. The bearer token fallback is intended only for local testing.

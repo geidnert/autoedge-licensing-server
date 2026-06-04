@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import timedelta
+from pathlib import Path
 
 from autoedge_licensing.db import Database, apply_migrations
 from autoedge_licensing.service import LicensingService, iso, parse_time, utc_now
@@ -451,6 +452,197 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(product["id"], updated["id"])
         self.assertEqual("prod_duorc", updated["whop_product_id"])
         self.assertEqual(2, len(self.service.list_products()))
+
+    def test_release_manifest_returns_only_licensed_strategy_releases(self) -> None:
+        duorc = self.service.upsert_product(
+            slug="duorc-runtime",
+            name="DUOrc Runtime",
+            feature_id="strategy.duorc.runtime",
+        )
+        created = self.service.create_or_update_customer(email="release@example.com")
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="release test",
+            actor_id="admin",
+            ip_address=None,
+        )
+        artifact_dir = Path(self.tmp.name) / "artifacts"
+        artifact_dir.mkdir()
+        artifact = artifact_dir / "duo-1.2.0.zip"
+        artifact.write_bytes(b"duo package")
+        self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=self.product["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="1.2.0",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path="duo-1.2.0.zip",
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes="DUO update",
+            artifact_dir=str(artifact_dir),
+        )
+        self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=duorc["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="1.2.0",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path="duorc-1.2.0.zip",
+            artifact_filename=None,
+            size_bytes=10,
+            sha256_value="abc",
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="release-machine",
+            app_version="1.1.0",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual(["DUO"], [release["strategy"] for release in manifest["releases"]])
+        self.assertTrue(manifest["releases"][0]["update_available"])
+        self.assertEqual(len(b"duo package"), manifest["releases"][0]["artifact"]["size_bytes"])
+
+    def test_release_download_token_and_resolution_are_license_gated(self) -> None:
+        created = self.service.create_or_update_customer(email="download@example.com")
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="download test",
+            actor_id="admin",
+            ip_address=None,
+        )
+        artifact_dir = Path(self.tmp.name) / "artifacts"
+        artifact_dir.mkdir()
+        artifact = artifact_dir / "duo-1.3.0.zip"
+        artifact.write_bytes(b"download bytes")
+        release = self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=self.product["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="1.3.0",
+            min_supported_version=None,
+            is_required=True,
+            is_active=True,
+            artifact_path="duo-1.3.0.zip",
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature="sig",
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        token_result = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="download-machine",
+            app_version="1.2.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
+        resolved = self.service.resolve_release_download(
+            token=token_result["token"],
+            artifact_dir=str(artifact_dir),
+            ip_address=None,
+            user_agent=None,
+        )
+
+        self.assertEqual("ok", token_result["status"])
+        self.assertEqual("ok", resolved["status"])
+        self.assertEqual(artifact.resolve(), resolved["artifact_path"])
+        self.assertEqual("duo-1.3.0.zip", resolved["artifact_filename"])
+
+    def test_release_download_token_rejects_unlicensed_strategy(self) -> None:
+        duorc = self.service.upsert_product(
+            slug="duorc-runtime",
+            name="DUOrc Runtime",
+            feature_id="strategy.duorc.runtime",
+        )
+        created = self.service.create_or_update_customer(email="notlicensed@example.com")
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="download test",
+            actor_id="admin",
+            ip_address=None,
+        )
+        artifact_dir = Path(self.tmp.name) / "artifacts"
+        artifact_dir.mkdir()
+        release = self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=duorc["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="1.0.0",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path="duorc.zip",
+            artifact_filename=None,
+            size_bytes=10,
+            sha256_value="abc",
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        result = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="download-machine-2",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
+
+        self.assertEqual("not_licensed", result["status"])
 
     def test_change_admin_password_revokes_sessions_and_accepts_new_password(self) -> None:
         admin_id = self.service.create_admin_user("admin", "old-password-123")

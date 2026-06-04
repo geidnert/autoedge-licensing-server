@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs
 from wsgiref.simple_server import make_server
@@ -96,6 +97,22 @@ class Response:
         return [self.body]
 
 
+class FileResponse:
+    def __init__(self, path: Path, filename: str, size_bytes: int):
+        self.path = path
+        self.filename = filename
+        self.size_bytes = size_bytes
+
+    def __call__(self, start_response: StartResponse):
+        headers = [
+            ("Content-Length", str(self.size_bytes)),
+            ("Content-Type", "application/octet-stream"),
+            ("Content-Disposition", f'attachment; filename="{download_filename(self.filename)}"'),
+        ]
+        start_response(f"{HTTPStatus.OK.value} {HTTPStatus.OK.phrase}", headers)
+        return stream_file(self.path)
+
+
 class AutoEdgeApp:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -117,6 +134,12 @@ class AutoEdgeApp:
             return json_response({"status": "ok"})
         if request.path in {"/api/trader/license/check", "/api/trader/license/activate"} and request.method == "POST":
             return self.trader_license_check(request)
+        if request.path == "/api/trader/releases/manifest" and request.method == "POST":
+            return self.trader_release_manifest(request)
+        if request.path == "/api/trader/releases/download-token" and request.method == "POST":
+            return self.trader_release_download_token(request)
+        if request.path.startswith("/api/trader/releases/download/") and request.method == "GET":
+            return self.trader_release_download(request)
         if request.path == "/api/whop/entitlements" and request.method == "POST":
             return self.whop_entitlement_update(request)
 
@@ -134,6 +157,8 @@ class AutoEdgeApp:
             return self.with_admin(request, self.admin_products)
         if request.path == "/admin/packages":
             return self.with_admin(request, self.admin_packages)
+        if request.path == "/admin/releases":
+            return self.with_admin(request, self.admin_releases)
         if request.path.startswith("/admin/customers/"):
             return self.with_admin(request, self.admin_customer_detail)
         if request.path.startswith("/admin/devices/"):
@@ -157,6 +182,75 @@ class AutoEdgeApp:
             grace_period_seconds=self.settings.grace_period_seconds,
         )
         return json_response(response)
+
+    def trader_release_manifest(self, request: Request) -> Response:
+        if not self.rate_limiter.allow(f"release-manifest:{request.ip}"):
+            return json_response({"status": "rate_limited", "message": "Too many release manifest requests."}, HTTPStatus.TOO_MANY_REQUESTS)
+        payload = request.json()
+        response = self.service.release_manifest(
+            license_key=payload.get("license_key"),
+            email=payload.get("email"),
+            customer_id=payload.get("customer_id"),
+            whop_user_id=payload.get("whop_user_id"),
+            machine_fingerprint=payload.get("machine_fingerprint") or "",
+            app_version=payload.get("app_version"),
+            channel=payload.get("channel") or "stable",
+            platform=payload.get("platform") or "windows-x64",
+            ip_address=request.ip,
+            user_agent=request.user_agent,
+            check_interval_seconds=self.settings.license_check_interval_seconds,
+            grace_period_seconds=self.settings.grace_period_seconds,
+        )
+        return json_response(response)
+
+    def trader_release_download_token(self, request: Request) -> Response:
+        if not self.rate_limiter.allow(f"release-token:{request.ip}"):
+            return json_response({"status": "rate_limited", "message": "Too many download token requests."}, HTTPStatus.TOO_MANY_REQUESTS)
+        payload = request.json()
+        result = self.service.create_release_download_token(
+            release_id=payload.get("release_id") or "",
+            license_key=payload.get("license_key"),
+            email=payload.get("email"),
+            customer_id=payload.get("customer_id"),
+            whop_user_id=payload.get("whop_user_id"),
+            machine_fingerprint=payload.get("machine_fingerprint") or "",
+            app_version=payload.get("app_version"),
+            ip_address=request.ip,
+            user_agent=request.user_agent,
+            check_interval_seconds=self.settings.license_check_interval_seconds,
+            grace_period_seconds=self.settings.grace_period_seconds,
+            token_seconds=self.settings.release_download_token_seconds,
+        )
+        if result.get("token"):
+            result["download_url"] = f"{self.settings.public_base_url.rstrip('/')}/api/trader/releases/download/{result['token']}"
+        status = HTTPStatus.OK if result["status"] == "ok" else HTTPStatus.FORBIDDEN
+        if result["status"] == "not_found":
+            status = HTTPStatus.NOT_FOUND
+        if result["status"] in {"invalid_request", "device_blocked", "unknown_customer"}:
+            status = HTTPStatus.BAD_REQUEST
+        return json_response(result, status)
+
+    def trader_release_download(self, request: Request) -> Response:
+        if not self.rate_limiter.allow(f"release-download:{request.ip}"):
+            return json_response({"status": "rate_limited", "message": "Too many download requests."}, HTTPStatus.TOO_MANY_REQUESTS)
+        token = request.path.rsplit("/", 1)[-1]
+        result = self.service.resolve_release_download(
+            token=token,
+            artifact_dir=self.settings.release_artifact_dir,
+            ip_address=request.ip,
+            user_agent=request.user_agent,
+        )
+        if result["status"] != "ok":
+            status = HTTPStatus.FORBIDDEN
+            if result["status"] == "artifact_missing":
+                status = HTTPStatus.NOT_FOUND
+            return json_response({"status": result["status"], "message": result["message"]}, status)
+        artifact_path = result["artifact_path"]
+        return file_response(
+            artifact_path,
+            result["artifact_filename"],
+            size_bytes=result["size_bytes"],
+        )
 
     def whop_entitlement_update(self, request: Request) -> Response:
         if not self.rate_limiter.allow(f"whop:{request.ip}"):
@@ -304,6 +398,39 @@ class AutoEdgeApp:
         selected_package = self.service.get_whop_package(edit_id) if edit_id else None
         return html_response(self.page("Whop Packages", packages_page(packages, products, csrf, selected_package), admin))
 
+    def admin_releases(self, request: Request, admin: dict[str, Any]) -> Response:
+        csrf = self.csrf_token(self.session_token(request) or "")
+        products = self.service.list_products(include_inactive=False)
+        if request.method == "POST":
+            form = request.form()
+            scope = form.get("scope", "strategy")
+            product_id = form.get("product_id") or None
+            self.service.upsert_release(
+                release_id=form.get("release_id") or None,
+                scope=scope,
+                product_id=product_id if scope == "strategy" else None,
+                channel=form.get("channel", "stable"),
+                platform=form.get("platform", "windows-x64"),
+                version=form.get("version", ""),
+                min_supported_version=form.get("min_supported_version") or None,
+                is_required=form.get("is_required") == "on",
+                is_active=form.get("is_active") == "on",
+                artifact_path=form.get("artifact_path", ""),
+                artifact_filename=form.get("artifact_filename") or None,
+                size_bytes=parse_optional_int(form.get("size_bytes")),
+                sha256_value=form.get("sha256") or None,
+                signature=form.get("signature") or None,
+                release_notes=form.get("release_notes") or None,
+                artifact_dir=self.settings.release_artifact_dir,
+                actor_id=admin["id"],
+                ip_address=request.ip,
+            )
+            return redirect("/admin/releases")
+        releases = self.service.list_releases()
+        edit_id = request.query_value("edit")
+        selected_release = self.service.get_release(edit_id) if edit_id else None
+        return html_response(self.page("Releases", releases_page(releases, products, csrf, selected_release, self.settings.release_artifact_dir), admin))
+
     def admin_password(self, request: Request, admin: dict[str, Any]) -> Response:
         csrf = self.csrf_token(self.session_token(request) or "")
         if request.method == "GET":
@@ -398,6 +525,7 @@ class AutoEdgeApp:
               <a href="/admin/customers">Customers</a>
               <a href="/admin/products">Products</a>
               <a href="/admin/packages">Whop Packages</a>
+              <a href="/admin/releases">Releases</a>
               <span class="spacer"></span>
               <span>{username}</span>
               <a href="/admin/password">Change password</a>
@@ -449,6 +577,10 @@ def format_json(value: str | None) -> str:
         return value
 
 
+def short_hash(value: str | None) -> str:
+    return value[:12] + "..." if value and len(value) > 15 else (value or "")
+
+
 def parse_optional_int(value: str | None) -> int | None:
     if value is None or not value.strip():
         return None
@@ -466,6 +598,24 @@ def text_response(status: HTTPStatus, text: str) -> Response:
 
 def html_response(html_body: str, status: HTTPStatus = HTTPStatus.OK) -> Response:
     return Response(status, html_body.encode("utf-8"), [("Content-Type", "text/html; charset=utf-8")])
+
+
+def file_response(path: Path, filename: str, size_bytes: int) -> FileResponse:
+    return FileResponse(path, filename, size_bytes)
+
+
+def stream_file(path: Path, chunk_size: int = 1024 * 1024):
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+
+def download_filename(value: str) -> str:
+    cleaned = "".join(char for char in value if char.isalnum() or char in {".", "-", "_", " "}).strip()
+    return cleaned or "download.bin"
 
 
 def redirect(location: str, headers: HeaderList | None = None) -> Response:
@@ -702,6 +852,90 @@ def packages_page(
     """
 
 
+def releases_page(
+    releases: list[dict[str, Any]],
+    products: list[dict[str, Any]],
+    csrf: str,
+    selected_release: dict[str, Any] | None,
+    artifact_dir: str,
+) -> str:
+    selected = selected_release or {}
+    is_editing = selected_release is not None
+    form_title = "Edit release" if is_editing else "Add release"
+    button_text = "Save changes" if is_editing else "Save release"
+    cancel_link = '<a class="button secondary" href="/admin/releases">Cancel</a>' if is_editing else ""
+    scope = selected.get("scope", "strategy")
+    required_checked = "checked" if selected.get("is_required", 0) else ""
+    active_checked = "checked" if selected.get("is_active", 1) else ""
+    product_options = ['<option value="">Trader app</option>']
+    for product in products:
+        selected_attr = "selected" if selected.get("product_id") == product["id"] else ""
+        product_options.append(f'<option value="{e(product["id"])}" {selected_attr}>{e(display_product_name(product.get("name")))}</option>')
+    scope_options = "\n".join(
+        f'<option value="{value}" {"selected" if scope == value else ""}>{label}</option>'
+        for value, label in (("strategy", "Strategy"), ("app", "Trader app"))
+    )
+
+    rows = "\n".join(
+        f"""
+        <tr>
+          <td><strong>{e(release.get('version'))}</strong><small>{e(release.get('release_notes'))}</small></td>
+          <td>{e(release.get('scope'))}<small>{e(display_product_name(release.get('product_name')) if release.get('product_name') else 'Trader app')}</small></td>
+          <td>{e(release.get('channel'))}<small>{e(release.get('platform'))}</small></td>
+          <td>{format_bool(release.get('is_required'))}</td>
+          <td>{format_bool(release.get('is_active'))}</td>
+          <td>{e(release.get('artifact_filename'))}<small>{e(release.get('size_bytes'))} bytes</small></td>
+          <td><code>{e(short_hash(release.get('sha256')))}</code></td>
+          <td><a class="button small" href="/admin/releases?edit={e(release['id'])}">Edit</a></td>
+        </tr>
+        """
+        for release in releases
+    )
+    return f"""
+    <header class="title-row">
+      <div>
+        <h1>Releases</h1>
+        <p>Register Trader installers and strategy package artifacts. Files must live under <code>{e(artifact_dir)}</code>.</p>
+      </div>
+    </header>
+    <section class="panel">
+      <h2>{form_title}</h2>
+      <form method="post">
+        <input type="hidden" name="csrf" value="{e(csrf)}">
+        <input type="hidden" name="release_id" value="{e(selected.get('id'))}">
+        <div class="grid-form release-form">
+          <label>Scope <select name="scope">{scope_options}</select></label>
+          <label>Strategy <select name="product_id">{"".join(product_options)}</select></label>
+          <label>Channel <input name="channel" required value="{e(selected.get('channel', 'stable'))}"></label>
+          <label>Platform <input name="platform" required value="{e(selected.get('platform', 'windows-x64'))}"></label>
+          <label>Version <input name="version" required placeholder="1.0.0" value="{e(selected.get('version'))}"></label>
+          <label>Minimum supported <input name="min_supported_version" placeholder="optional" value="{e(selected.get('min_supported_version'))}"></label>
+          <label class="checkbox"><input name="is_required" type="checkbox" {required_checked}> Required</label>
+          <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
+        </div>
+        <div class="grid-form release-artifact-form">
+          <label>Artifact path <input name="artifact_path" required placeholder="trader/AutoEdgeTrader-1.0.0.zip" value="{e(selected.get('artifact_path'))}"></label>
+          <label>Download filename <input name="artifact_filename" placeholder="AutoEdgeTrader-1.0.0.zip" value="{e(selected.get('artifact_filename'))}"></label>
+          <label>Size bytes <input name="size_bytes" type="number" min="0" placeholder="auto if file exists" value="{e(selected.get('size_bytes'))}"></label>
+          <label>SHA-256 <input name="sha256" placeholder="auto if file exists" value="{e(selected.get('sha256'))}"></label>
+        </div>
+        <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
+        <label>Release notes <input name="release_notes" value="{e(selected.get('release_notes'))}"></label>
+        <div class="form-actions">
+          <button type="submit">{button_text}</button>
+          {cancel_link}
+        </div>
+      </form>
+    </section>
+    <section class="panel">
+      <table>
+        <thead><tr><th>Version</th><th>Scope</th><th>Channel</th><th>Required</th><th>Active</th><th>Artifact</th><th>SHA-256</th><th></th></tr></thead>
+        <tbody>{rows or '<tr><td colspan="8">No releases configured.</td></tr>'}</tbody>
+      </table>
+    </section>
+    """
+
+
 def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]], csrf: str, created_key: str) -> str:
     customer = detail["customer"]
     product_options = "\n".join(f'<option value="{e(product["id"])}">{e(display_product_name(product.get("name")))}</option>' for product in products)
@@ -866,6 +1100,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .stack-form { display: grid; gap: 14px; }
 .grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 12px; align-items: end; }
 .package-form { grid-template-columns: repeat(4, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 14px; }
+.release-form { grid-template-columns: repeat(6, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
+.release-artifact-form { grid-template-columns: 2fr 1fr 1fr 2fr; margin-bottom: 12px; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: auto; min-height: auto; }
 .grant-table { margin: 8px 0 14px; }
@@ -885,7 +1121,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   nav { padding: 0 12px; gap: 10px; overflow-x: auto; }
   main { width: calc(100vw - 18px); margin-top: 12px; }
   .title-row, .search { display: grid; }
-  .grid-form, .package-form, .facts { grid-template-columns: 1fr; }
+  .grid-form, .package-form, .release-form, .release-artifact-form, .facts { grid-template-columns: 1fr; }
   table { display: block; overflow-x: auto; }
 }
 """

@@ -6,6 +6,8 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
 from .db import Database
@@ -70,6 +72,22 @@ def slugify(value: str) -> str:
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
+
+
+def display_strategy_name(value: str | None) -> str:
+    if not value:
+        return ""
+    if value.endswith(" Runtime"):
+        return value[: -len(" Runtime")]
+    return value
+
+
+def file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -470,6 +488,176 @@ class LicensingService:
             result = dict(package)
             result["grants"] = self._package_grants(connection, saved_package_id)
             return result
+
+    def list_releases(self, include_inactive: bool = True) -> list[dict[str, Any]]:
+        where = "" if include_inactive else "WHERE trader_releases.is_active = 1"
+        with self.database.session() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug
+                FROM trader_releases
+                LEFT JOIN products ON products.id = trader_releases.product_id
+                {where}
+                ORDER BY trader_releases.is_active DESC, trader_releases.channel ASC,
+                         trader_releases.platform ASC, trader_releases.created_at DESC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_release(self, release_id: str) -> dict[str, Any] | None:
+        with self.database.session() as connection:
+            row = connection.execute(
+                """
+                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug
+                FROM trader_releases
+                LEFT JOIN products ON products.id = trader_releases.product_id
+                WHERE trader_releases.id = ?
+                """,
+                (release_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def upsert_release(
+        self,
+        *,
+        release_id: str | None,
+        scope: str,
+        product_id: str | None,
+        channel: str,
+        platform: str,
+        version: str,
+        min_supported_version: str | None,
+        is_required: bool,
+        is_active: bool,
+        artifact_path: str,
+        artifact_filename: str | None,
+        size_bytes: int | None,
+        sha256_value: str | None,
+        signature: str | None,
+        release_notes: str | None,
+        artifact_dir: str,
+        actor_id: str | None = None,
+        ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_scope = scope if scope in {"app", "strategy"} else "strategy"
+        normalized_channel = channel.strip().lower() or "stable"
+        normalized_platform = platform.strip().lower() or "windows-x64"
+        normalized_version = version.strip()
+        normalized_path = artifact_path.strip()
+        if not normalized_version:
+            raise ValueError("Version is required.")
+        if not normalized_path:
+            raise ValueError("Artifact path is required.")
+        if normalized_scope == "strategy" and not product_id:
+            raise ValueError("Strategy release requires a product.")
+        if normalized_scope == "app":
+            product_id = None
+
+        artifact_file = self._artifact_path(normalized_path, artifact_dir)
+        if not artifact_filename:
+            artifact_filename = artifact_file.name
+        calculated_size = size_bytes
+        calculated_sha = sha256_value.strip().lower() if sha256_value else None
+        if artifact_file.exists() and artifact_file.is_file():
+            calculated_size = artifact_file.stat().st_size if calculated_size is None else calculated_size
+            calculated_sha = file_sha256(artifact_file) if not calculated_sha else calculated_sha
+        if calculated_size is not None and calculated_size < 0:
+            raise ValueError("Artifact size cannot be negative.")
+
+        now = iso()
+        with self.database.session() as connection:
+            if product_id:
+                product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+                if product is None:
+                    raise ValueError("Strategy product not found.")
+            existing = None
+            if release_id:
+                existing = connection.execute("SELECT * FROM trader_releases WHERE id = ?", (release_id,)).fetchone()
+                if existing is None:
+                    raise ValueError("Release not found.")
+            saved_release_id = existing["id"] if existing else uuid.uuid4().hex
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO trader_releases(
+                        id, product_id, scope, channel, platform, version, min_supported_version,
+                        is_required, is_active, artifact_path, artifact_filename, size_bytes,
+                        sha256, signature, release_notes, created_by_admin_id, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        saved_release_id,
+                        product_id,
+                        normalized_scope,
+                        normalized_channel,
+                        normalized_platform,
+                        normalized_version,
+                        min_supported_version.strip() if min_supported_version else None,
+                        int(is_required),
+                        int(is_active),
+                        normalized_path,
+                        artifact_filename.strip(),
+                        calculated_size,
+                        calculated_sha,
+                        signature.strip() if signature else None,
+                        release_notes.strip() if release_notes else None,
+                        actor_id,
+                        now,
+                        now,
+                    ),
+                )
+                action = "release.created"
+            else:
+                connection.execute(
+                    """
+                    UPDATE trader_releases
+                    SET product_id = ?, scope = ?, channel = ?, platform = ?, version = ?,
+                        min_supported_version = ?, is_required = ?, is_active = ?,
+                        artifact_path = ?, artifact_filename = ?, size_bytes = ?, sha256 = ?,
+                        signature = ?, release_notes = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        product_id,
+                        normalized_scope,
+                        normalized_channel,
+                        normalized_platform,
+                        normalized_version,
+                        min_supported_version.strip() if min_supported_version else None,
+                        int(is_required),
+                        int(is_active),
+                        normalized_path,
+                        artifact_filename.strip(),
+                        calculated_size,
+                        calculated_sha,
+                        signature.strip() if signature else None,
+                        release_notes.strip() if release_notes else None,
+                        now,
+                        saved_release_id,
+                    ),
+                )
+                action = "release.updated"
+            self.audit(
+                connection,
+                "admin" if actor_id else "system",
+                actor_id,
+                action,
+                "release",
+                saved_release_id,
+                {"scope": normalized_scope, "product_id": product_id, "channel": normalized_channel, "platform": normalized_platform, "version": normalized_version},
+                ip_address,
+            )
+            release = connection.execute(
+                """
+                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug
+                FROM trader_releases
+                LEFT JOIN products ON products.id = trader_releases.product_id
+                WHERE trader_releases.id = ?
+                """,
+                (saved_release_id,),
+            ).fetchone()
+            return dict(release)
 
     def create_or_update_customer(
         self,
@@ -1355,6 +1543,274 @@ class LicensingService:
                 iso(),
             ),
         )
+
+    def release_manifest(
+        self,
+        *,
+        license_key: str | None,
+        email: str | None,
+        customer_id: str | None,
+        whop_user_id: str | None,
+        machine_fingerprint: str,
+        app_version: str | None,
+        channel: str,
+        platform: str,
+        ip_address: str | None,
+        user_agent: str | None,
+        check_interval_seconds: int,
+        grace_period_seconds: int,
+    ) -> dict[str, Any]:
+        license_response = self.check_license(
+            license_key=license_key,
+            email=email,
+            customer_id=customer_id,
+            whop_user_id=whop_user_id,
+            machine_fingerprint=machine_fingerprint,
+            app_version=app_version,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            check_interval_seconds=check_interval_seconds,
+            grace_period_seconds=grace_period_seconds,
+        )
+        if license_response["status"] != "active":
+            return {
+                "status": license_response["status"],
+                "message": license_response["message"],
+                "server_time": iso(),
+                "channel": channel or "stable",
+                "platform": platform or "windows-x64",
+                "releases": [],
+                "license": license_response,
+            }
+
+        licensed_product_ids = {grant["product_id"] for grant in license_response["licensed_strategies"]}
+        normalized_channel = (channel or "stable").strip().lower()
+        normalized_platform = (platform or "windows-x64").strip().lower()
+        with self.database.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
+                       products.feature_id AS feature_id
+                FROM trader_releases
+                LEFT JOIN products ON products.id = trader_releases.product_id
+                WHERE trader_releases.is_active = 1
+                  AND trader_releases.channel = ?
+                  AND trader_releases.platform = ?
+                  AND (
+                    trader_releases.scope = 'app'
+                    OR trader_releases.product_id IN ({placeholders})
+                  )
+                ORDER BY trader_releases.created_at DESC, trader_releases.updated_at DESC
+                """.format(placeholders=",".join("?" for _ in licensed_product_ids) or "NULL"),
+                (normalized_channel, normalized_platform, *licensed_product_ids),
+            ).fetchall()
+
+        latest: dict[tuple[str, str | None], dict[str, Any]] = {}
+        for row in rows:
+            release = dict(row)
+            key = (release["scope"], release["product_id"])
+            if key not in latest:
+                latest[key] = release
+        releases = [
+            self._release_manifest_item(release, app_version)
+            for release in latest.values()
+        ]
+        releases.sort(key=lambda item: (item["scope"], item.get("strategy") or "", item["version"]))
+        return {
+            "status": "active",
+            "message": "Release manifest available.",
+            "server_time": iso(),
+            "channel": normalized_channel,
+            "platform": normalized_platform,
+            "releases": releases,
+            "license": license_response,
+        }
+
+    def create_release_download_token(
+        self,
+        *,
+        release_id: str,
+        license_key: str | None,
+        email: str | None,
+        customer_id: str | None,
+        whop_user_id: str | None,
+        machine_fingerprint: str,
+        app_version: str | None,
+        ip_address: str | None,
+        user_agent: str | None,
+        check_interval_seconds: int,
+        grace_period_seconds: int,
+        token_seconds: int,
+    ) -> dict[str, Any]:
+        license_response = self.check_license(
+            license_key=license_key,
+            email=email,
+            customer_id=customer_id,
+            whop_user_id=whop_user_id,
+            machine_fingerprint=machine_fingerprint,
+            app_version=app_version,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            check_interval_seconds=check_interval_seconds,
+            grace_period_seconds=grace_period_seconds,
+        )
+        if license_response["status"] != "active":
+            return {
+                "status": license_response["status"],
+                "message": license_response["message"],
+                "release": None,
+                "token": None,
+                "expires_at": None,
+            }
+
+        licensed_product_ids = {grant["product_id"] for grant in license_response["licensed_strategies"]}
+        customer = license_response["customer"]
+        device = license_response["device"]
+        if not customer or not device:
+            return {"status": "invalid_request", "message": "Customer or device was not resolved.", "release": None, "token": None, "expires_at": None}
+
+        with self.database.session() as connection:
+            release = connection.execute(
+                """
+                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
+                       products.feature_id AS feature_id
+                FROM trader_releases
+                LEFT JOIN products ON products.id = trader_releases.product_id
+                WHERE trader_releases.id = ? AND trader_releases.is_active = 1
+                """,
+                (release_id,),
+            ).fetchone()
+            if release is None:
+                return {"status": "not_found", "message": "Release not found.", "release": None, "token": None, "expires_at": None}
+            if release["scope"] == "strategy" and release["product_id"] not in licensed_product_ids:
+                self._record_release_download(connection, dict(release), customer["id"], device["id"], None, "not_licensed", ip_address, user_agent)
+                return {"status": "not_licensed", "message": "The license does not allow this release.", "release": None, "token": None, "expires_at": None}
+
+            token = random_token()
+            token_hash = sha256_hex(token)
+            expires = utc_now() + timedelta(seconds=max(60, token_seconds))
+            connection.execute(
+                """
+                INSERT INTO release_download_tokens(token_hash, release_id, customer_id, device_id, expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (token_hash, release["id"], customer["id"], device["id"], iso(expires), iso()),
+            )
+            self.audit(
+                connection,
+                "client",
+                customer["id"],
+                "release.download_token_created",
+                "release",
+                release["id"],
+                {"device_id": device["id"], "expires_at": iso(expires)},
+                ip_address,
+            )
+            return {
+                "status": "ok",
+                "message": "Download token created.",
+                "release": self._release_manifest_item(dict(release), app_version),
+                "token": token,
+                "expires_at": iso(expires),
+            }
+
+    def resolve_release_download(
+        self,
+        *,
+        token: str,
+        artifact_dir: str,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> dict[str, Any]:
+        token_hash = sha256_hex(token)
+        with self.database.session() as connection:
+            row = connection.execute(
+                """
+                SELECT release_download_tokens.*, trader_releases.*,
+                       products.name AS product_name, products.slug AS product_slug,
+                       products.feature_id AS feature_id
+                FROM release_download_tokens
+                JOIN trader_releases ON trader_releases.id = release_download_tokens.release_id
+                LEFT JOIN products ON products.id = trader_releases.product_id
+                WHERE release_download_tokens.token_hash = ?
+                """,
+                (token_hash,),
+            ).fetchone()
+            if row is None:
+                return {"status": "invalid_token", "message": "Download token is invalid."}
+            release = dict(row)
+            if parse_time(row["expires_at"]) is None or parse_time(row["expires_at"]) <= utc_now():
+                self._record_release_download(connection, release, row["customer_id"], row["device_id"], token_hash, "expired_token", ip_address, user_agent)
+                return {"status": "expired_token", "message": "Download token has expired."}
+            if not row["is_active"]:
+                self._record_release_download(connection, release, row["customer_id"], row["device_id"], token_hash, "inactive_release", ip_address, user_agent)
+                return {"status": "inactive_release", "message": "Release is no longer active."}
+            artifact_file = self._artifact_path(row["artifact_path"], artifact_dir)
+            if not artifact_file.exists() or not artifact_file.is_file():
+                self._record_release_download(connection, release, row["customer_id"], row["device_id"], token_hash, "artifact_missing", ip_address, user_agent)
+                return {"status": "artifact_missing", "message": "Release artifact is missing on the server."}
+            connection.execute(
+                "UPDATE release_download_tokens SET last_used_at = ? WHERE token_hash = ?",
+                (iso(), token_hash),
+            )
+            self._record_release_download(connection, release, row["customer_id"], row["device_id"], token_hash, "served", ip_address, user_agent)
+            return {
+                "status": "ok",
+                "release": self._release_manifest_item(release, None),
+                "artifact_path": artifact_file,
+                "artifact_filename": row["artifact_filename"],
+                "size_bytes": artifact_file.stat().st_size,
+            }
+
+    def _release_manifest_item(self, release: dict[str, Any], app_version: str | None) -> dict[str, Any]:
+        return {
+            "id": release["id"],
+            "scope": release["scope"],
+            "strategy": display_strategy_name(release.get("product_name")) if release.get("product_name") else None,
+            "product_id": release.get("product_id"),
+            "feature_id": release.get("feature_id"),
+            "channel": release["channel"],
+            "platform": release["platform"],
+            "version": release["version"],
+            "min_supported_version": release.get("min_supported_version"),
+            "required": bool(release["is_required"]),
+            "update_available": bool(app_version and app_version.strip() != release["version"]),
+            "artifact": {
+                "filename": release["artifact_filename"],
+                "size_bytes": release.get("size_bytes"),
+                "sha256": release.get("sha256"),
+                "signature": release.get("signature"),
+            },
+            "release_notes": release.get("release_notes"),
+        }
+
+    def _record_release_download(
+        self,
+        connection: sqlite3.Connection,
+        release: dict[str, Any],
+        customer_id: str | None,
+        device_id: str | None,
+        token_hash: str | None,
+        status: str,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO release_downloads(id, release_id, customer_id, device_id, token_hash, status, ip_address, user_agent, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (uuid.uuid4().hex, release.get("id"), customer_id, device_id, token_hash, status, ip_address, user_agent, iso()),
+        )
+
+    def _artifact_path(self, artifact_path: str, artifact_dir: str) -> Path:
+        base = Path(artifact_dir).resolve()
+        raw_path = Path(artifact_path)
+        candidate = raw_path if raw_path.is_absolute() else base / raw_path
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(base):
+            raise ValueError("Artifact path must stay inside AUTOEDGE_RELEASE_ARTIFACT_DIR.")
+        return resolved
 
     def check_license(
         self,

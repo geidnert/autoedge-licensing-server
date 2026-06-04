@@ -32,6 +32,8 @@ class Settings:
     license_check_interval_seconds: int
     grace_period_seconds: int
     rate_limit_per_minute: int
+    release_artifact_dir: str
+    release_download_token_seconds: int
 
     @staticmethod
     def from_env() -> "Settings":
@@ -48,6 +50,8 @@ class Settings:
             license_check_interval_seconds=_int_env("AUTOEDGE_LICENSE_CHECK_INTERVAL_SECONDS", 21600),
             grace_period_seconds=_int_env("AUTOEDGE_GRACE_PERIOD_SECONDS", 259200),
             rate_limit_per_minute=_int_env("AUTOEDGE_RATE_LIMIT_PER_MINUTE", 60),
+            release_artifact_dir=os.environ.get("AUTOEDGE_RELEASE_ARTIFACT_DIR", "data/artifacts"),
+            release_download_token_seconds=_int_env("AUTOEDGE_RELEASE_DOWNLOAD_TOKEN_SECONDS", 600),
         )
 
     def validate_runtime(self) -> None:
