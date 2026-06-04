@@ -20,7 +20,7 @@ from .security import (
     verify_bearer,
     verify_standard_webhook,
 )
-from .service import LicensingService
+from .service import LicensingService, slugify
 
 
 HeaderList = list[tuple[str, str]]
@@ -236,12 +236,15 @@ class AutoEdgeApp:
         if request.method == "POST":
             form = request.form()
             product_id = form.get("product_id", "").strip()
+            name = form.get("name", "")
+            internal_slug = form.get("slug") or name
+            internal_feature_id = form.get("feature_id") or f"strategy.{slugify(internal_slug)}.runtime"
             if product_id:
                 self.service.update_product(
                     product_id=product_id,
-                    slug=form.get("slug", ""),
-                    name=form.get("name", ""),
-                    feature_id=form.get("feature_id", ""),
+                    slug=internal_slug,
+                    name=name,
+                    feature_id=internal_feature_id,
                     whop_product_id=form.get("whop_product_id") or None,
                     is_active=form.get("is_active") == "on",
                     actor_id=admin["id"],
@@ -249,9 +252,9 @@ class AutoEdgeApp:
                 )
             else:
                 self.service.upsert_product(
-                    slug=form.get("slug", ""),
-                    name=form.get("name", ""),
-                    feature_id=form.get("feature_id", ""),
+                    slug=internal_slug,
+                    name=name,
+                    feature_id=internal_feature_id,
                     whop_product_id=form.get("whop_product_id") or None,
                     is_active=form.get("is_active") == "on",
                     actor_id=admin["id"],
@@ -386,6 +389,14 @@ def e(value: Any) -> str:
     return html.escape("" if value is None else str(value))
 
 
+def display_product_name(value: str | None) -> str:
+    if not value:
+        return ""
+    if value.endswith(" Runtime"):
+        return value[: -len(" Runtime")]
+    return value
+
+
 def format_bool(value: Any) -> str:
     return "yes" if value else "no"
 
@@ -507,11 +518,11 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     button_text = "Save changes" if is_editing else "Save product"
     active_checked = "checked" if selected.get("is_active", 1) else ""
     cancel_link = '<a class="button secondary" href="/admin/products">Cancel</a>' if is_editing else ""
+    selected_name = display_product_name(selected.get("name"))
     rows = "\n".join(
         f"""
         <tr>
-          <td>{e(product['name'])}<small>{e(product['slug'])}</small></td>
-          <td>{e(product['feature_id'])}</td>
+          <td>{e(display_product_name(product.get('name')))}</td>
           <td>{e(product.get('whop_product_id'))}</td>
           <td>{format_bool(product.get('is_active'))}</td>
           <td>{e(product.get('updated_at'))}</td>
@@ -524,7 +535,7 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     <header class="title-row">
       <div>
         <h1>Products</h1>
-        <p>Products map Whop access passes to Trader strategy feature ids.</p>
+        <p>Products map Whop access passes to Trader strategies.</p>
       </div>
     </header>
     <section class="panel">
@@ -532,9 +543,9 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
       <form class="grid-form" method="post">
         <input type="hidden" name="csrf" value="{e(csrf)}">
         <input type="hidden" name="product_id" value="{e(selected.get('id'))}">
-        <label>Slug <input name="slug" required placeholder="duo-runtime" value="{e(selected.get('slug'))}"></label>
-        <label>Name <input name="name" required placeholder="Duo Runtime" value="{e(selected.get('name'))}"></label>
-        <label>Feature id <input name="feature_id" required placeholder="strategy.duo.runtime" value="{e(selected.get('feature_id'))}"></label>
+        <input type="hidden" name="slug" value="{e(selected.get('slug'))}">
+        <input type="hidden" name="feature_id" value="{e(selected.get('feature_id'))}">
+        <label>Strategy <input name="name" required placeholder="Duo" value="{e(selected_name)}"></label>
         <label>Whop product id <input name="whop_product_id" value="{e(selected.get('whop_product_id'))}"></label>
         <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
         <button type="submit">{button_text}</button>
@@ -543,8 +554,8 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Product</th><th>Feature</th><th>Whop product</th><th>Active</th><th>Updated</th><th></th></tr></thead>
-        <tbody>{rows or '<tr><td colspan="6">No products configured.</td></tr>'}</tbody>
+        <thead><tr><th>Strategy</th><th>Whop product</th><th>Active</th><th>Updated</th><th></th></tr></thead>
+        <tbody>{rows or '<tr><td colspan="5">No products configured.</td></tr>'}</tbody>
       </table>
     </section>
     """
@@ -552,12 +563,12 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
 
 def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]], csrf: str, created_key: str) -> str:
     customer = detail["customer"]
-    product_options = "\n".join(f'<option value="{e(product["id"])}">{e(product["name"])} · {e(product["feature_id"])}</option>' for product in products)
+    product_options = "\n".join(f'<option value="{e(product["id"])}">{e(display_product_name(product.get("name")))}</option>' for product in products)
     key_notice = f'<p class="notice">New license key: <code>{e(created_key)}</code>. Store it now; only the last four characters are retained.</p>' if created_key else ""
     entitlements = "\n".join(
         f"""
         <tr>
-          <td>{e(entitlement['product_name'])}<small>{e(entitlement['feature_id'])}</small></td>
+          <td>{e(display_product_name(entitlement.get('product_name')))}</td>
           <td><strong class="status {e(entitlement['status'])}">{e(entitlement['status'])}</strong><small>{e(entitlement['source'])}</small></td>
           <td>{e(entitlement.get('expires_at'))}</td>
           <td>{e(entitlement.get('manual_reason'))}</td>

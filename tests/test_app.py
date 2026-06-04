@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 
-from autoedge_licensing.app import create_app
+from autoedge_licensing.app import create_app, customer_detail_page, products_page
 from autoedge_licensing.config import Settings
 
 
@@ -66,6 +66,70 @@ class AppEndpointTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertEqual("processed", payload["status"])
         self.assertEqual("active", payload["entitlement_status"])
+
+    def test_admin_product_list_hides_internal_slug_and_feature_ids(self) -> None:
+        html = products_page(
+            [
+                {
+                    "id": "product-001",
+                    "name": "Duo Runtime",
+                    "slug": "duo-runtime",
+                    "feature_id": "strategy.duo.runtime",
+                    "whop_product_id": "",
+                    "is_active": 1,
+                    "updated_at": "2026-06-04T00:00:00Z",
+                }
+            ],
+            "csrf-token",
+        )
+
+        self.assertIn("Duo", html)
+        self.assertIn("Add Whop ID", html)
+        self.assertNotIn("Duo Runtime", html)
+        self.assertNotIn("duo-runtime", html)
+        self.assertNotIn("strategy.duo.runtime", html)
+
+    def test_customer_detail_hides_internal_feature_ids(self) -> None:
+        html = customer_detail_page(
+            {
+                "customer": {
+                    "id": "customer-001",
+                    "email": "customer@example.com",
+                    "name": "Customer",
+                    "whop_user_id": "user-001",
+                    "whop_member_id": "member-001",
+                    "license_key_last4": "ABCD",
+                },
+                "entitlements": [
+                    {
+                        "product_name": "Duo Runtime",
+                        "feature_id": "strategy.duo.runtime",
+                        "status": "active",
+                        "source": "manual",
+                        "expires_at": None,
+                        "manual_reason": None,
+                        "updated_at": "2026-06-04T00:00:00Z",
+                    }
+                ],
+                "subscriptions": [],
+                "devices": [],
+                "checks": [],
+                "audit": [],
+            },
+            [
+                {
+                    "id": "product-001",
+                    "name": "Duo Runtime",
+                    "feature_id": "strategy.duo.runtime",
+                }
+            ],
+            "csrf-token",
+            "",
+        )
+
+        self.assertIn("Duo", html)
+        self.assertNotIn("Duo Runtime", html)
+        self.assertNotIn("strategy.duo.runtime", html)
 
     def call(self, method: str, path: str, payload: dict, headers: dict[str, str]) -> tuple[str, list[tuple[str, str]], str]:
         body = json.dumps(payload).encode("utf-8")
