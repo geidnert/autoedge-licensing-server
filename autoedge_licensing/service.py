@@ -163,6 +163,46 @@ class LicensingService:
             if admin_id:
                 self.audit(connection, "admin", admin_id, "admin.logout", "admin_user", admin_id, None)
 
+    def change_admin_password(
+        self,
+        *,
+        admin_id: str,
+        current_password: str,
+        new_password: str,
+        ip_address: str | None,
+    ) -> tuple[bool, str]:
+        if len(new_password) < 12:
+            return False, "New password must be at least 12 characters."
+        now = iso()
+        with self.database.session() as connection:
+            user = connection.execute(
+                "SELECT * FROM admin_users WHERE id = ? AND is_active = 1",
+                (admin_id,),
+            ).fetchone()
+            if user is None:
+                return False, "Admin user is not active."
+            if not verify_password(current_password, user["password_hash"]):
+                return False, "Current password is incorrect."
+            connection.execute(
+                "UPDATE admin_users SET password_hash = ? WHERE id = ?",
+                (hash_password(new_password), admin_id),
+            )
+            connection.execute(
+                "UPDATE admin_sessions SET revoked_at = ? WHERE admin_user_id = ? AND revoked_at IS NULL",
+                (now, admin_id),
+            )
+            self.audit(
+                connection,
+                "admin",
+                admin_id,
+                "admin.password_changed",
+                "admin_user",
+                admin_id,
+                {"username": user["username"]},
+                ip_address,
+            )
+        return True, "Password changed. Sign in again."
+
     def list_products(self, include_inactive: bool = True) -> list[dict[str, Any]]:
         where = "" if include_inactive else "WHERE is_active = 1"
         with self.database.session() as connection:

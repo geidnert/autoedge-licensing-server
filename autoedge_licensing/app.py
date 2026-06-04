@@ -126,6 +126,8 @@ class AutoEdgeApp:
             return self.admin_logout(request)
         if request.path == "/admin":
             return redirect("/admin/customers")
+        if request.path == "/admin/password":
+            return self.with_admin(request, self.admin_password)
         if request.path == "/admin/customers":
             return self.with_admin(request, self.admin_customers)
         if request.path == "/admin/products":
@@ -175,7 +177,8 @@ class AutoEdgeApp:
 
     def admin_login(self, request: Request) -> Response:
         if request.method == "GET":
-            return html_response(self.page("Sign in", login_form()))
+            notice = "Password changed. Sign in again." if request.query_value("password_changed") == "1" else None
+            return html_response(self.page("Sign in", login_form(notice=notice)))
         if request.method != "POST":
             return text_response(HTTPStatus.METHOD_NOT_ALLOWED, "Method not allowed")
         form = request.form()
@@ -197,10 +200,7 @@ class AutoEdgeApp:
         admin = self.service.admin_from_session(token)
         if token:
             self.service.revoke_session(token, admin["id"] if admin else None)
-        expired = "autoedge_admin=; Path=/admin; Max-Age=0; HttpOnly; SameSite=Strict"
-        if self.settings.cookie_secure:
-            expired += "; Secure"
-        return redirect("/admin/login", [("Set-Cookie", expired)])
+        return redirect("/admin/login", [("Set-Cookie", self.expired_session_cookie())])
 
     def with_admin(self, request: Request, handler: Callable[[Request, dict[str, Any]], Response]) -> Response:
         token = self.session_token(request)
@@ -247,6 +247,29 @@ class AutoEdgeApp:
             return redirect("/admin/products")
         products = self.service.list_products()
         return html_response(self.page("Products", products_page(products, csrf), admin))
+
+    def admin_password(self, request: Request, admin: dict[str, Any]) -> Response:
+        csrf = self.csrf_token(self.session_token(request) or "")
+        if request.method == "GET":
+            return html_response(self.page("Change Password", password_page(csrf), admin))
+        if request.method != "POST":
+            return text_response(HTTPStatus.METHOD_NOT_ALLOWED, "Method not allowed")
+        form = request.form()
+        new_password = form.get("new_password", "")
+        if new_password != form.get("confirm_password", ""):
+            return html_response(
+                self.page("Change Password", password_page(csrf, "New password and confirmation do not match."), admin),
+                HTTPStatus.BAD_REQUEST,
+            )
+        changed, message = self.service.change_admin_password(
+            admin_id=admin["id"],
+            current_password=form.get("current_password", ""),
+            new_password=new_password,
+            ip_address=request.ip,
+        )
+        if not changed:
+            return html_response(self.page("Change Password", password_page(csrf, message), admin), HTTPStatus.BAD_REQUEST)
+        return redirect("/admin/login?password_changed=1", [("Set-Cookie", self.expired_session_cookie())])
 
     def admin_customer_detail(self, request: Request, admin: dict[str, Any]) -> Response:
         parts = [part for part in request.path.split("/") if part]
@@ -302,6 +325,12 @@ class AutoEdgeApp:
             cookie += "; Secure"
         return cookie
 
+    def expired_session_cookie(self) -> str:
+        cookie = "autoedge_admin=; Path=/admin; Max-Age=0; HttpOnly; SameSite=Strict"
+        if self.settings.cookie_secure:
+            cookie += "; Secure"
+        return cookie
+
     def csrf_token(self, session_token: str) -> str:
         return sha256_hex(f"{session_token}:{self.settings.admin_cookie_secret}")
 
@@ -314,6 +343,7 @@ class AutoEdgeApp:
               <a href="/admin/products">Products</a>
               <span class="spacer"></span>
               <span>{username}</span>
+              <a href="/admin/password">Change password</a>
               <a href="/admin/logout">Sign out</a>
             </nav>
             """.format(username=e(admin["username"]))
@@ -371,16 +401,40 @@ def redirect(location: str, headers: HeaderList | None = None) -> Response:
     return Response(HTTPStatus.SEE_OTHER, b"", [("Location", location), *(headers or [])])
 
 
-def login_form(error: str | None = None) -> str:
+def login_form(error: str | None = None, notice: str | None = None) -> str:
     message = f'<p class="error">{e(error)}</p>' if error else ""
+    notice_message = f'<p class="notice">{e(notice)}</p>' if notice else ""
     return f"""
     <section class="auth">
       <h1>AutoEdge Licensing</h1>
+      {notice_message}
       {message}
       <form method="post" action="/admin/login">
         <label>Username <input name="username" autocomplete="username" required></label>
         <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
         <button type="submit">Sign in</button>
+      </form>
+    </section>
+    """
+
+
+def password_page(csrf: str, error: str | None = None) -> str:
+    message = f'<p class="error">{e(error)}</p>' if error else ""
+    return f"""
+    <header class="title-row">
+      <div>
+        <h1>Change Password</h1>
+        <p>Changing the password signs out all active admin sessions.</p>
+      </div>
+    </header>
+    <section class="panel narrow-panel">
+      {message}
+      <form class="stack-form" method="post" action="/admin/password">
+        <input type="hidden" name="csrf" value="{e(csrf)}">
+        <label>Current password <input name="current_password" type="password" autocomplete="current-password" required></label>
+        <label>New password <input name="new_password" type="password" autocomplete="new-password" minlength="12" required></label>
+        <label>Confirm new password <input name="confirm_password" type="password" autocomplete="new-password" minlength="12" required></label>
+        <button type="submit">Change password</button>
       </form>
     </section>
     """
@@ -628,6 +682,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .search { display: flex; gap: 8px; margin-bottom: 16px; }
 .search input { max-width: 520px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.narrow-panel { max-width: 520px; }
+.stack-form { display: grid; gap: 14px; }
 .grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 12px; align-items: end; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: auto; min-height: auto; }

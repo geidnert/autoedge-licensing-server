@@ -137,6 +137,68 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(1, len(detail["entitlements"]))
         self.assertEqual("active", detail["entitlements"][0]["status"])
 
+    def test_change_admin_password_revokes_sessions_and_accepts_new_password(self) -> None:
+        admin_id = self.service.create_admin_user("admin", "old-password-123")
+        first_login = self.service.authenticate_admin(
+            "admin",
+            "old-password-123",
+            session_hours=12,
+            ip_address="127.0.0.1",
+            user_agent="test",
+        )
+        self.assertIsNotNone(first_login)
+        _, old_session_token = first_login
+
+        changed, message = self.service.change_admin_password(
+            admin_id=admin_id,
+            current_password="old-password-123",
+            new_password="new-password-456",
+            ip_address="127.0.0.1",
+        )
+
+        self.assertTrue(changed, message)
+        self.assertIsNone(self.service.admin_from_session(old_session_token))
+        self.assertIsNone(
+            self.service.authenticate_admin(
+                "admin",
+                "old-password-123",
+                session_hours=12,
+                ip_address="127.0.0.1",
+                user_agent="test",
+            )
+        )
+        self.assertIsNotNone(
+            self.service.authenticate_admin(
+                "admin",
+                "new-password-456",
+                session_hours=12,
+                ip_address="127.0.0.1",
+                user_agent="test",
+            )
+        )
+
+    def test_change_admin_password_rejects_wrong_current_password(self) -> None:
+        admin_id = self.service.create_admin_user("admin", "old-password-123")
+
+        changed, message = self.service.change_admin_password(
+            admin_id=admin_id,
+            current_password="wrong-password",
+            new_password="new-password-456",
+            ip_address="127.0.0.1",
+        )
+
+        self.assertFalse(changed)
+        self.assertIn("Current password", message)
+        self.assertIsNotNone(
+            self.service.authenticate_admin(
+                "admin",
+                "old-password-123",
+                session_hours=12,
+                ip_address="127.0.0.1",
+                user_agent="test",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

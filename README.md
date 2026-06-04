@@ -243,6 +243,7 @@ Configure Whop webhook:
 The current Debian deployment runs on `solidparts.se` behind nginx:
 
 - Admin UI: `https://solidparts.se/admin/login`
+- Admin password rotation: sign in, then use `Change password` in the top navigation.
 - Trader endpoint: `https://solidparts.se/api/trader/license/check`
 - Whop endpoint: `https://solidparts.se/api/whop/entitlements`
 - Service unit: `autoedge-licensing.service`
