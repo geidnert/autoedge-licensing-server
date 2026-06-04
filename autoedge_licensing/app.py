@@ -180,6 +180,7 @@ class AutoEdgeApp:
             user_agent=request.user_agent,
             check_interval_seconds=self.settings.license_check_interval_seconds,
             grace_period_seconds=self.settings.grace_period_seconds,
+            max_devices=self.settings.trader_max_devices,
         )
         return json_response(response)
 
@@ -200,6 +201,7 @@ class AutoEdgeApp:
             user_agent=request.user_agent,
             check_interval_seconds=self.settings.license_check_interval_seconds,
             grace_period_seconds=self.settings.grace_period_seconds,
+            max_devices=self.settings.trader_max_devices,
         )
         return json_response(response)
 
@@ -220,6 +222,7 @@ class AutoEdgeApp:
             check_interval_seconds=self.settings.license_check_interval_seconds,
             grace_period_seconds=self.settings.grace_period_seconds,
             token_seconds=self.settings.release_download_token_seconds,
+            max_devices=self.settings.trader_max_devices,
         )
         if result.get("token"):
             result["download_url"] = f"{self.settings.public_base_url.rstrip('/')}/api/trader/releases/download/{result['token']}"
@@ -471,7 +474,26 @@ class AutoEdgeApp:
                 ip_address=request.ip,
             )
             return redirect(f"/admin/customers/{customer_id}")
-        detail = self.service.customer_detail(customer_id)
+        if len(parts) == 4 and parts[3] == "device-limit" and request.method == "POST":
+            form = request.form()
+            self.service.set_customer_max_devices(
+                customer_id=customer_id,
+                max_devices=parse_optional_int(form.get("max_devices")),
+                actor_id=admin["id"],
+                ip_address=request.ip,
+            )
+            return redirect(f"/admin/customers/{customer_id}")
+        if len(parts) == 4 and parts[3] == "devices" and request.method == "POST":
+            form = request.form()
+            if form.get("action") == "block_all":
+                self.service.block_all_customer_devices(
+                    customer_id=customer_id,
+                    note=form.get("note") or "Device reset",
+                    actor_id=admin["id"],
+                    ip_address=request.ip,
+                )
+            return redirect(f"/admin/customers/{customer_id}")
+        detail = self.service.customer_detail(customer_id, default_max_devices=self.settings.trader_max_devices)
         if detail is None:
             return text_response(HTTPStatus.NOT_FOUND, "Customer not found")
         products = self.service.list_products(include_inactive=False)
@@ -938,6 +960,8 @@ def releases_page(
 
 def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]], csrf: str, created_key: str) -> str:
     customer = detail["customer"]
+    device_limit = detail.get("device_limit") or {}
+    max_devices_value = "" if device_limit.get("customer_max_devices") is None else str(device_limit.get("customer_max_devices"))
     product_options = "\n".join(f'<option value="{e(product["id"])}">{e(display_product_name(product.get("name")))}</option>' for product in products)
     key_notice = f'<p class="notice">New license key: <code>{e(created_key)}</code>. Store it now; only the last four characters are retained.</p>' if created_key else ""
     entitlements = "\n".join(
@@ -969,13 +993,15 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
           <td>{e(device.get('fingerprint_last8'))}<small>{e(device.get('id'))}</small></td>
           <td>{e(device.get('app_version'))}</td>
           <td>{e(device.get('ip_last'))}</td>
+          <td>{e(device.get('first_seen_at'))}</td>
           <td>{e(device.get('last_seen_at'))}</td>
+          <td>{e(device.get('first_licensed_at'))}<small>{e(device.get('last_licensed_at'))}</small></td>
           <td>{format_bool(device.get('is_blocked'))}</td>
           <td>
             <form method="post" action="/admin/devices/{e(device['id'])}/{'unblock' if device.get('is_blocked') else 'block'}">
               <input type="hidden" name="csrf" value="{e(csrf)}">
               <input type="hidden" name="return_to" value="/admin/customers/{e(customer['id'])}">
-              <button type="submit">{'Unblock' if device.get('is_blocked') else 'Block'}</button>
+              <button type="submit">{'Reauthorize' if device.get('is_blocked') else 'Deauthorize'}</button>
             </form>
           </td>
         </tr>
@@ -1019,6 +1045,21 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
       <div><span>Whop user</span><code>{e(customer.get('whop_user_id'))}</code></div>
       <div><span>Whop member</span><code>{e(customer.get('whop_member_id'))}</code></div>
       <div><span>License key</span><code>•••• {e(customer.get('license_key_last4'))}</code></div>
+      <div><span>Devices</span><code>{e(device_limit.get('active_devices', 0))} / {e(device_limit.get('max_devices', 1))}</code></div>
+    </section>
+    <section class="panel">
+      <h2>Device limit</h2>
+      <form class="grid-form device-limit-form" method="post" action="/admin/customers/{e(customer['id'])}/device-limit">
+        <input type="hidden" name="csrf" value="{e(csrf)}">
+        <label>Max devices <input name="max_devices" type="number" min="1" placeholder="{e(device_limit.get('default_max_devices', 1))}" value="{e(max_devices_value)}"></label>
+        <button type="submit">Save limit</button>
+      </form>
+      <form class="form-actions" method="post" action="/admin/customers/{e(customer['id'])}/devices">
+        <input type="hidden" name="csrf" value="{e(csrf)}">
+        <input type="hidden" name="action" value="block_all">
+        <input type="hidden" name="note" value="Device reset">
+        <button class="button secondary" type="submit">Reset devices</button>
+      </form>
     </section>
     <section class="panel">
       <h2>Manual strategy access</h2>
@@ -1049,7 +1090,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
     </section>
     <section class="panel">
       <h2>Devices</h2>
-      <table><thead><tr><th>Fingerprint</th><th>App</th><th>IP</th><th>Last seen</th><th>Blocked</th><th></th></tr></thead><tbody>{devices or '<tr><td colspan="6">No devices.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Fingerprint</th><th>App</th><th>IP</th><th>First seen</th><th>Last seen</th><th>Licensed</th><th>Blocked</th><th></th></tr></thead><tbody>{devices or '<tr><td colspan="8">No devices.</td></tr>'}</tbody></table>
     </section>
     <section class="panel">
       <h2>License check-ins</h2>
@@ -1102,6 +1143,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .package-form { grid-template-columns: repeat(4, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 14px; }
 .release-form { grid-template-columns: repeat(6, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
 .release-artifact-form { grid-template-columns: 2fr 1fr 1fr 2fr; margin-bottom: 12px; }
+.device-limit-form { grid-template-columns: minmax(180px, 260px) auto; margin-bottom: 12px; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: auto; min-height: auto; }
 .grant-table { margin: 8px 0 14px; }
@@ -1115,13 +1157,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .facts code { overflow-wrap: anywhere; }
 .status { color: var(--muted); }
 .status.active, .status.trialing { color: var(--accent); }
-.status.revoked, .status.device_blocked { color: var(--danger); }
+.status.revoked, .status.device_blocked, .status.device_limit_exceeded { color: var(--danger); }
 .status.expired, .status.suspended, .status.unlicensed { color: var(--warn); }
 @media (max-width: 760px) {
   nav { padding: 0 12px; gap: 10px; overflow-x: auto; }
   main { width: calc(100vw - 18px); margin-top: 12px; }
   .title-row, .search { display: grid; }
-  .grid-form, .package-form, .release-form, .release-artifact-form, .facts { grid-template-columns: 1fr; }
+  .grid-form, .package-form, .release-form, .release-artifact-form, .device-limit-form, .facts { grid-template-columns: 1fr; }
   table { display: block; overflow-x: auto; }
 }
 """

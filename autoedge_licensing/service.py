@@ -790,11 +790,13 @@ class LicensingService:
                 ).fetchall()
         return [dict(row) for row in rows]
 
-    def customer_detail(self, customer_id: str) -> dict[str, Any] | None:
+    def customer_detail(self, customer_id: str, default_max_devices: int = 1) -> dict[str, Any] | None:
         with self.database.session() as connection:
             customer = connection.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
             if customer is None:
                 return None
+            active_device_count = self._active_device_count(connection, customer_id)
+            effective_max_devices = self._effective_max_devices(customer, default_max_devices)
             entitlements = connection.execute(
                 """
                 SELECT entitlements.*, products.slug, products.name AS product_name, products.feature_id
@@ -833,6 +835,12 @@ class LicensingService:
             "devices": [dict(row) for row in devices],
             "checks": [dict(row) for row in checks],
             "audit": [dict(row) for row in audit],
+            "device_limit": {
+                "active_devices": active_device_count,
+                "max_devices": effective_max_devices,
+                "customer_max_devices": dict(customer).get("max_devices"),
+                "default_max_devices": max(1, int(default_max_devices)),
+            },
         }
 
     def manual_set_entitlement(
@@ -918,6 +926,68 @@ class LicensingService:
                 {"note": note},
                 ip_address,
             )
+
+    def set_customer_max_devices(
+        self,
+        *,
+        customer_id: str,
+        max_devices: int | None,
+        actor_id: str,
+        ip_address: str | None,
+    ) -> None:
+        if max_devices is not None and max_devices < 1:
+            raise ValueError("Max devices must be empty or at least 1.")
+        with self.database.session() as connection:
+            existing = connection.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+            if existing is None:
+                raise ValueError("Customer not found.")
+            connection.execute(
+                "UPDATE customers SET max_devices = ?, updated_at = ? WHERE id = ?",
+                (max_devices, iso(), customer_id),
+            )
+            self.audit(
+                connection,
+                "admin",
+                actor_id,
+                "customer.max_devices_updated",
+                "customer",
+                customer_id,
+                {"max_devices": max_devices},
+                ip_address,
+            )
+
+    def block_all_customer_devices(
+        self,
+        *,
+        customer_id: str,
+        note: str | None,
+        actor_id: str,
+        ip_address: str | None,
+    ) -> int:
+        with self.database.session() as connection:
+            existing = connection.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+            if existing is None:
+                raise ValueError("Customer not found.")
+            cursor = connection.execute(
+                """
+                UPDATE devices
+                SET is_blocked = 1, note = COALESCE(?, note)
+                WHERE customer_id = ? AND is_blocked = 0
+                """,
+                (note, customer_id),
+            )
+            blocked_count = cursor.rowcount if cursor.rowcount is not None else 0
+            self.audit(
+                connection,
+                "admin",
+                actor_id,
+                "customer.devices_blocked",
+                "customer",
+                customer_id,
+                {"blocked_count": blocked_count, "note": note},
+                ip_address,
+            )
+            return blocked_count
 
     def process_whop_event(self, payload: dict[str, Any], webhook_id: str, *, signature_valid: bool, ip_address: str | None) -> dict[str, Any]:
         event_type = str(payload.get("action") or payload.get("type") or payload.get("event") or payload.get("event_type") or "unknown")
@@ -1559,6 +1629,7 @@ class LicensingService:
         user_agent: str | None,
         check_interval_seconds: int,
         grace_period_seconds: int,
+        max_devices: int = 1,
     ) -> dict[str, Any]:
         license_response = self.check_license(
             license_key=license_key,
@@ -1571,6 +1642,7 @@ class LicensingService:
             user_agent=user_agent,
             check_interval_seconds=check_interval_seconds,
             grace_period_seconds=grace_period_seconds,
+            max_devices=max_devices,
         )
         if license_response["status"] != "active":
             return {
@@ -1641,6 +1713,7 @@ class LicensingService:
         check_interval_seconds: int,
         grace_period_seconds: int,
         token_seconds: int,
+        max_devices: int = 1,
     ) -> dict[str, Any]:
         license_response = self.check_license(
             license_key=license_key,
@@ -1653,6 +1726,7 @@ class LicensingService:
             user_agent=user_agent,
             check_interval_seconds=check_interval_seconds,
             grace_period_seconds=grace_period_seconds,
+            max_devices=max_devices,
         )
         if license_response["status"] != "active":
             return {
@@ -1825,6 +1899,7 @@ class LicensingService:
         user_agent: str | None,
         check_interval_seconds: int,
         grace_period_seconds: int,
+        max_devices: int = 1,
     ) -> dict[str, Any]:
         if not machine_fingerprint or not machine_fingerprint.strip():
             return self._license_response("invalid_request", "machine_fingerprint is required", [], check_interval_seconds, grace_period_seconds)
@@ -1837,19 +1912,50 @@ class LicensingService:
                 return response
 
             device = self._upsert_device(connection, customer["id"], machine_fingerprint, app_version, ip_address, user_agent)
+            device_limit = self._device_limit_snapshot(connection, customer, device, max_devices)
             if device["is_blocked"]:
-                response = self._license_response("device_blocked", "This machine is blocked for the license.", [], check_interval_seconds, grace_period_seconds, customer, device)
+                response = self._license_response("device_blocked", "This machine is blocked for the license.", [], check_interval_seconds, grace_period_seconds, customer, device, device_limit)
                 self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, ip_address, user_agent, response)
                 return response
 
             grants = self._current_grants(connection, customer["id"])
             licensed = [grant for grant in grants if grant["is_licensed"]]
             if licensed:
+                if not device_limit["device_is_counted"] and device_limit["active_devices"] >= device_limit["max_devices"]:
+                    response = self._license_response(
+                        "device_limit_exceeded",
+                        "This license is already active on the maximum number of machines.",
+                        [],
+                        check_interval_seconds,
+                        grace_period_seconds,
+                        customer,
+                        device,
+                        device_limit,
+                    )
+                    self.audit(
+                        connection,
+                        "client",
+                        customer["id"],
+                        "device.limit_exceeded",
+                        "device",
+                        device["id"],
+                        {
+                            "customer_id": customer["id"],
+                            "fingerprint_last8": device["fingerprint_last8"],
+                            "active_devices": device_limit["active_devices"],
+                            "max_devices": device_limit["max_devices"],
+                        },
+                        ip_address,
+                    )
+                    self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, ip_address, user_agent, response)
+                    return response
+                device = self._mark_device_licensed(connection, device["id"])
+                device_limit = self._device_limit_snapshot(connection, customer, device, max_devices)
                 status = "active"
                 message = "License active."
             else:
                 status, message = self._blocking_status(grants)
-            response = self._license_response(status, message, licensed, check_interval_seconds, grace_period_seconds, customer, device)
+            response = self._license_response(status, message, licensed, check_interval_seconds, grace_period_seconds, customer, device, device_limit)
             self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, ip_address, user_agent, response)
             return response
 
@@ -1862,6 +1968,7 @@ class LicensingService:
         grace_period_seconds: int,
         customer: sqlite3.Row | dict[str, Any] | None = None,
         device: sqlite3.Row | dict[str, Any] | None = None,
+        device_limit: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
         expiry_values = [parse_time(grant.get("expires_at")) for grant in grants if grant.get("expires_at")]
@@ -1903,6 +2010,7 @@ class LicensingService:
             "next_check_at": iso(now + timedelta(seconds=check_interval_seconds)),
             "next_check_seconds": check_interval_seconds,
             "grace_period_seconds": grace_period_seconds,
+            "device_limit": device_limit,
         }
 
     def _record_check(
@@ -2003,6 +2111,56 @@ class LicensingService:
                 """,
                 (now, app_version, ip_address, user_agent, device_id),
             )
+        return connection.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
+
+    def _effective_max_devices(self, customer: sqlite3.Row | dict[str, Any], default_max_devices: int) -> int:
+        customer_dict = dict(customer)
+        override = customer_dict.get("max_devices")
+        if override is not None:
+            return max(1, int(override))
+        return max(1, int(default_max_devices))
+
+    def _active_device_count(self, connection: sqlite3.Connection, customer_id: str) -> int:
+        return int(
+            connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM devices
+                WHERE customer_id = ?
+                  AND is_blocked = 0
+                  AND first_licensed_at IS NOT NULL
+                """,
+                (customer_id,),
+            ).fetchone()[0]
+        )
+
+    def _device_limit_snapshot(
+        self,
+        connection: sqlite3.Connection,
+        customer: sqlite3.Row | dict[str, Any],
+        device: sqlite3.Row | dict[str, Any],
+        default_max_devices: int,
+    ) -> dict[str, Any]:
+        customer_dict = dict(customer)
+        device_dict = dict(device)
+        active_devices = self._active_device_count(connection, customer_dict["id"])
+        return {
+            "active_devices": active_devices,
+            "max_devices": self._effective_max_devices(customer, default_max_devices),
+            "device_is_counted": bool(device_dict.get("first_licensed_at")) and not bool(device_dict.get("is_blocked")),
+        }
+
+    def _mark_device_licensed(self, connection: sqlite3.Connection, device_id: str) -> sqlite3.Row:
+        now = iso()
+        connection.execute(
+            """
+            UPDATE devices
+            SET first_licensed_at = COALESCE(first_licensed_at, ?),
+                last_licensed_at = ?
+            WHERE id = ?
+            """,
+            (now, now, device_id),
+        )
         return connection.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
 
     def _current_grants(self, connection: sqlite3.Connection, customer_id: str) -> list[dict[str, Any]]:

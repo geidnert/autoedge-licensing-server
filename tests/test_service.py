@@ -25,6 +25,19 @@ class LicensingServiceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def active_customer(self, email: str = "active@example.com"):
+        created = self.service.create_or_update_customer(email=email)
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="test grant",
+            actor_id="admin",
+            ip_address=None,
+        )
+        return created
+
     def test_manual_active_grant_returns_licensed_strategy(self) -> None:
         created = self.service.create_or_update_customer(email="alice@example.com", name="Alice")
         self.service.manual_set_entitlement(
@@ -110,6 +123,310 @@ class LicensingServiceTests(unittest.TestCase):
 
         self.assertEqual("revoked", response["status"])
         self.assertEqual([], response["licensed_strategies"])
+
+    def test_device_limit_allows_first_device_and_same_device(self) -> None:
+        created = self.active_customer("one-device@example.com")
+
+        first = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-one",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        repeated = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-one",
+            app_version="1.0.1",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+
+        self.assertEqual("active", first["status"])
+        self.assertEqual("active", repeated["status"])
+        self.assertEqual(1, repeated["device_limit"]["active_devices"])
+        self.assertTrue(repeated["device_limit"]["device_is_counted"])
+
+    def test_device_limit_blocks_second_new_device(self) -> None:
+        created = self.active_customer("second-device@example.com")
+        self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-first",
+            app_version="1.0.0",
+            ip_address="127.0.0.1",
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+
+        second = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-second",
+            app_version="1.0.0",
+            ip_address="127.0.0.2",
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        detail = self.service.customer_detail(created.customer["id"], default_max_devices=1)
+
+        self.assertEqual("device_limit_exceeded", second["status"])
+        self.assertEqual([], second["licensed_strategies"])
+        self.assertEqual(1, second["device_limit"]["active_devices"])
+        self.assertEqual(1, second["device_limit"]["max_devices"])
+        self.assertIn("device.limit_exceeded", [audit["action"] for audit in detail["audit"]])
+
+    def test_customer_max_devices_override_allows_second_device(self) -> None:
+        created = self.active_customer("override-devices@example.com")
+        self.service.set_customer_max_devices(
+            customer_id=created.customer["id"],
+            max_devices=2,
+            actor_id="admin",
+            ip_address=None,
+        )
+        first = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="override-first",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        second = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="override-second",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        detail = self.service.customer_detail(created.customer["id"], default_max_devices=1)
+
+        self.assertEqual("active", first["status"])
+        self.assertEqual("active", second["status"])
+        self.assertEqual(2, second["device_limit"]["max_devices"])
+        self.assertEqual(2, detail["device_limit"]["active_devices"])
+        self.assertIn("customer.max_devices_updated", [audit["action"] for audit in detail["audit"]])
+
+    def test_blocked_device_returns_device_blocked_before_limit(self) -> None:
+        created = self.active_customer("blocked-device@example.com")
+        first = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-blocked",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        self.service.set_device_blocked(
+            device_id=first["device"]["id"],
+            is_blocked=True,
+            note="support test",
+            actor_id="admin",
+            ip_address=None,
+        )
+
+        blocked = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-blocked",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+
+        self.assertEqual("device_blocked", blocked["status"])
+
+    def test_device_limit_blocks_release_manifest(self) -> None:
+        created = self.active_customer("manifest-limit@example.com")
+        self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="manifest-first",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        artifact_dir = Path(self.tmp.name) / "manifest-limit-artifacts"
+        artifact_dir.mkdir()
+        self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=self.product["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="1.1.0",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path="duo.zip",
+            artifact_filename=None,
+            size_bytes=10,
+            sha256_value="abc",
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="manifest-second",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+
+        self.assertEqual("device_limit_exceeded", manifest["status"])
+        self.assertEqual([], manifest["releases"])
+
+    def test_device_limit_blocks_download_token(self) -> None:
+        created = self.active_customer("download-limit@example.com")
+        self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="download-first",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        artifact_dir = Path(self.tmp.name) / "download-limit-artifacts"
+        artifact_dir.mkdir()
+        release = self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=self.product["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="1.1.0",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path="duo.zip",
+            artifact_filename=None,
+            size_bytes=10,
+            sha256_value="abc",
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="download-second",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+            max_devices=1,
+        )
+
+        self.assertEqual("device_limit_exceeded", token["status"])
+        self.assertIsNone(token["token"])
+
+    def test_block_all_customer_devices_allows_next_device(self) -> None:
+        created = self.active_customer("reset-devices@example.com")
+        first = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="reset-first",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+
+        blocked_count = self.service.block_all_customer_devices(
+            customer_id=created.customer["id"],
+            note="support reset",
+            actor_id="admin",
+            ip_address=None,
+        )
+        next_device = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="reset-second",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+
+        detail = self.service.customer_detail(created.customer["id"], default_max_devices=1)
+        self.assertEqual(1, blocked_count)
+        self.assertEqual("active", next_device["status"])
+        self.assertEqual(1, detail["device_limit"]["active_devices"])
 
     def test_whop_upsert_is_idempotent_and_activates_customer(self) -> None:
         self.service.upsert_whop_package(

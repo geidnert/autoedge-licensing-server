@@ -27,6 +27,7 @@ class AppEndpointTests(unittest.TestCase):
             session_hours=12,
             license_check_interval_seconds=3600,
             grace_period_seconds=86400,
+            trader_max_devices=1,
             rate_limit_per_minute=60,
             release_artifact_dir=f"{self.tmp.name}/artifacts",
             release_download_token_seconds=600,
@@ -155,8 +156,9 @@ class AppEndpointTests(unittest.TestCase):
                     "name": "Customer",
                     "whop_user_id": "user-001",
                     "whop_member_id": "member-001",
-                    "license_key_last4": "ABCD",
-                },
+                "license_key_last4": "ABCD",
+                "max_devices": None,
+            },
                 "entitlements": [
                     {
                         "product_name": "DUO Runtime",
@@ -172,6 +174,12 @@ class AppEndpointTests(unittest.TestCase):
                 "devices": [],
                 "checks": [],
                 "audit": [],
+                "device_limit": {
+                    "active_devices": 0,
+                    "max_devices": 1,
+                    "customer_max_devices": None,
+                    "default_max_devices": 1,
+                },
             },
             [
                 {

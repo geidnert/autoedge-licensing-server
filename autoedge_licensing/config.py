@@ -31,6 +31,7 @@ class Settings:
     session_hours: int
     license_check_interval_seconds: int
     grace_period_seconds: int
+    trader_max_devices: int
     rate_limit_per_minute: int
     release_artifact_dir: str
     release_download_token_seconds: int
@@ -49,6 +50,7 @@ class Settings:
             session_hours=_int_env("AUTOEDGE_ADMIN_SESSION_HOURS", 12),
             license_check_interval_seconds=_int_env("AUTOEDGE_LICENSE_CHECK_INTERVAL_SECONDS", 21600),
             grace_period_seconds=_int_env("AUTOEDGE_GRACE_PERIOD_SECONDS", 259200),
+            trader_max_devices=max(1, _int_env("AUTOEDGE_TRADER_MAX_DEVICES", 1)),
             rate_limit_per_minute=_int_env("AUTOEDGE_RATE_LIMIT_PER_MINUTE", 60),
             release_artifact_dir=os.environ.get("AUTOEDGE_RELEASE_ARTIFACT_DIR", "data/artifacts"),
             release_download_token_seconds=_int_env("AUTOEDGE_RELEASE_DOWNLOAD_TOKEN_SECONDS", 600),

@@ -15,6 +15,7 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
   - manually grant, revoke, suspend, or expire strategy access
   - set expiry dates
   - block or unblock devices
+  - enforce and override per-customer device limits
   - manage Trader strategy products
   - map Whop plans/products to one or more strategies with day grants
 - Trader client endpoint:
@@ -118,13 +119,20 @@ Response:
   "expires_at": "2026-07-03T20:00:00Z",
   "next_check_at": "2026-06-04T02:00:00Z",
   "next_check_seconds": 21600,
-  "grace_period_seconds": 259200
+  "grace_period_seconds": 259200,
+  "device_limit": {
+    "active_devices": 1,
+    "max_devices": 1,
+    "device_is_counted": true
+  }
 }
 ```
 
-Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `expired`, `revoked`, `suspended`, `device_blocked`, `invalid_request`, and `rate_limited`.
+Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `expired`, `revoked`, `suspended`, `device_blocked`, `device_limit_exceeded`, `invalid_request`, and `rate_limited`.
 
 Trader should allow strategy access only when `status == "active"` and the required `feature_id` is present in `licensed_strategies`.
+
+`device_limit_exceeded` means the customer already has the maximum number of active licensed, non-blocked machines. Trader must block strategy access and must not offer package downloads for that machine. Admins can deauthorize a device, reset all devices for a customer, or set a customer-specific max device override in the customer detail page.
 
 ### Trader Release Manifest
 
@@ -287,6 +295,7 @@ AUTOEDGE_COOKIE_SECURE=true
 WHOP_WEBHOOK_SECRET=replace-with-whop-webhook-secret
 AUTOEDGE_LICENSE_CHECK_INTERVAL_SECONDS=21600
 AUTOEDGE_GRACE_PERIOD_SECONDS=259200
+AUTOEDGE_TRADER_MAX_DEVICES=1
 AUTOEDGE_RATE_LIMIT_PER_MINUTE=60
 AUTOEDGE_RELEASE_ARTIFACT_DIR=/var/lib/autoedge-licensing/artifacts
 AUTOEDGE_RELEASE_DOWNLOAD_TOKEN_SECONDS=600
@@ -387,3 +396,4 @@ sudo systemctl start autoedge-licensing
 - SQLite is appropriate for this initial licensing control plane. If license checks become high volume, the service layer is isolated enough to migrate to PostgreSQL.
 - The admin UI intentionally stores only license key hashes and the last four characters of generated keys.
 - Machine fingerprints are stored as SHA-256 hashes plus the last eight hash characters for support lookup.
+- `AUTOEDGE_TRADER_MAX_DEVICES` defaults to `1`. Blocked devices do not count. Devices are counted only after a successful active license check.
