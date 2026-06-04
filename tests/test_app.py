@@ -72,7 +72,7 @@ class AppEndpointTests(unittest.TestCase):
             [
                 {
                     "id": "product-001",
-                    "name": "Duo Runtime",
+                    "name": "DUO Runtime",
                     "slug": "duo-runtime",
                     "feature_id": "strategy.duo.runtime",
                     "whop_product_id": "",
@@ -83,9 +83,9 @@ class AppEndpointTests(unittest.TestCase):
             "csrf-token",
         )
 
-        self.assertIn("Duo", html)
+        self.assertIn("DUO", html)
         self.assertIn("Add Whop ID", html)
-        self.assertNotIn("Duo Runtime", html)
+        self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("duo-runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
 
@@ -102,7 +102,7 @@ class AppEndpointTests(unittest.TestCase):
                 },
                 "entitlements": [
                     {
-                        "product_name": "Duo Runtime",
+                        "product_name": "DUO Runtime",
                         "feature_id": "strategy.duo.runtime",
                         "status": "active",
                         "source": "manual",
@@ -119,7 +119,7 @@ class AppEndpointTests(unittest.TestCase):
             [
                 {
                     "id": "product-001",
-                    "name": "Duo Runtime",
+                    "name": "DUO Runtime",
                     "feature_id": "strategy.duo.runtime",
                 }
             ],
@@ -127,8 +127,8 @@ class AppEndpointTests(unittest.TestCase):
             "",
         )
 
-        self.assertIn("Duo", html)
-        self.assertNotIn("Duo Runtime", html)
+        self.assertIn("DUO", html)
+        self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
 
     def call(self, method: str, path: str, payload: dict, headers: dict[str, str]) -> tuple[str, list[tuple[str, str]], str]:

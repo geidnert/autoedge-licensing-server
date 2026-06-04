@@ -16,7 +16,7 @@ class LicensingServiceTests(unittest.TestCase):
         self.service = LicensingService(self.database)
         self.product = self.service.upsert_product(
             slug="duo-runtime",
-            name="Duo Runtime",
+            name="DUO Runtime",
             feature_id="strategy.duo.runtime",
             whop_product_id="prod_duo",
         )
@@ -120,7 +120,7 @@ class LicensingServiceTests(unittest.TestCase):
                 "email": "whop@example.com",
                 "user_id": "user_001",
                 "product_id": "prod_duo",
-                "product_name": "Duo Runtime",
+                "product_name": "DUO Runtime",
                 "product_slug": "duo-runtime",
                 "feature_id": "strategy.duo.runtime",
                 "current_period_end": iso(utc_now() + timedelta(days=10)),

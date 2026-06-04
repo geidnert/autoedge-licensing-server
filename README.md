@@ -79,7 +79,7 @@ Response:
     {
       "product_id": "product-id",
       "slug": "duo-runtime",
-      "name": "Duo Runtime",
+      "name": "DUO Runtime",
       "feature_id": "strategy.duo.runtime",
       "status": "active",
       "source": "whop",

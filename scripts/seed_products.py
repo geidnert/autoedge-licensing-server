@@ -14,7 +14,7 @@ from autoedge_licensing.service import LicensingService
 
 
 DEFAULT_PRODUCTS = [
-    ("duo-runtime", "Duo Runtime", "strategy.duo.runtime"),
+    ("duo-runtime", "DUO Runtime", "strategy.duo.runtime"),
     ("duorc-runtime", "DUOrc Runtime", "strategy.duorc.runtime"),
 ]
 

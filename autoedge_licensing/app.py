@@ -545,7 +545,7 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
         <input type="hidden" name="product_id" value="{e(selected.get('id'))}">
         <input type="hidden" name="slug" value="{e(selected.get('slug'))}">
         <input type="hidden" name="feature_id" value="{e(selected.get('feature_id'))}">
-        <label>Strategy <input name="name" required placeholder="Duo" value="{e(selected_name)}"></label>
+        <label>Strategy <input name="name" required placeholder="DUO" value="{e(selected_name)}"></label>
         <label>Whop product id <input name="whop_product_id" value="{e(selected.get('whop_product_id'))}"></label>
         <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
         <button type="submit">{button_text}</button>
