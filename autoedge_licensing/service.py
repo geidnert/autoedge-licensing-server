@@ -961,7 +961,7 @@ class LicensingService:
     def _upsert_whop_entitlement(self, data: dict[str, Any], event_type: str, webhook_id: str, ip_address: str | None) -> dict[str, Any]:
         customer_info = self._extract_customer_info(data)
         whop_ids = self._extract_whop_ids(data)
-        subscription_info = self._extract_subscription_info(data)
+        subscription_info = self._extract_subscription_info(data, event_type)
         customer_result = self.create_or_update_customer(
             email=customer_info["email"],
             name=customer_info["name"],
@@ -2062,7 +2062,8 @@ class LicensingService:
         }
 
     def _extract_product_info(self, data: dict[str, Any]) -> dict[str, str | None]:
-        product = nested_dict(data, "product") or nested_dict(data, "access_pass") or {}
+        subscription = nested_dict(data, "subscription") or nested_dict(data, "membership") or {}
+        product = nested_dict(data, "product") or nested_dict(data, "access_pass") or nested_dict(subscription, "product") or {}
         whop_product_id = first_text(data, "whop_product_id", "product_id", "access_pass_id") or first_text(product, "id", "product_id")
         product_name = first_text(data, "product_name") or first_text(product, "name", "title") or whop_product_id or "AutoEdge Strategy"
         slug = first_text(data, "product_slug", "strategy_slug") or slugify(product_name)
@@ -2076,8 +2077,13 @@ class LicensingService:
 
     def _extract_whop_ids(self, data: dict[str, Any]) -> dict[str, str | None]:
         subscription = nested_dict(data, "subscription") or nested_dict(data, "membership") or {}
-        product = nested_dict(data, "product") or nested_dict(data, "access_pass") or {}
-        plan_id = first_text(data, "plan_id") or first_text(subscription, "plan_id", "price_id")
+        plan = nested_dict(data, "plan") or nested_dict(subscription, "plan") or {}
+        product = nested_dict(data, "product") or nested_dict(data, "access_pass") or nested_dict(subscription, "product") or {}
+        plan_id = (
+            first_text(data, "plan_id")
+            or first_text(subscription, "plan_id", "price_id")
+            or first_text(plan, "id", "plan_id", "price_id")
+        )
         product_id = (
             first_text(data, "whop_product_id", "product_id", "access_pass_id")
             or first_text(product, "id", "product_id", "access_pass_id")
@@ -2089,31 +2095,50 @@ class LicensingService:
             "selected_type": "plan" if plan_id else ("product" if product_id else None),
         }
 
-    def _extract_subscription_info(self, data: dict[str, Any]) -> dict[str, Any]:
+    def _extract_subscription_info(self, data: dict[str, Any], event_type: str) -> dict[str, Any]:
         subscription = nested_dict(data, "subscription") or nested_dict(data, "membership") or {}
         payment = nested_dict(data, "payment") or nested_dict(data, "invoice") or {}
+        plan = nested_dict(data, "plan") or nested_dict(subscription, "plan") or nested_dict(payment, "plan") or {}
         event_is_membership = any(
             key in data
             for key in ("plan_id", "product_id", "trial_ends_at", "renewal_period_end", "valid_until")
         )
+        payment_like_event = event_type.lower().startswith(("payment.", "invoice.", "charge."))
         membership_id = (
             first_text(data, "membership_id", "subscription_id")
             or first_text(subscription, "id", "membership_id")
             or (first_text(data, "id") if event_is_membership else None)
         )
+        raw_status = (
+            first_text(subscription, "status")
+            or first_text(data, "status")
+            or first_text(payment, "status")
+            or "unknown"
+        )
+        substatus = first_text(data, "substatus") or first_text(payment, "substatus")
+        if substatus and substatus.lower() not in raw_status.lower():
+            raw_status = f"{raw_status} {substatus}"
+        payment_id = (
+            first_text(data, "payment_id", "invoice_id", "charge_id")
+            or first_text(payment, "id", "payment_id", "invoice_id", "charge_id")
+            or (first_text(data, "id") if payment_like_event else None)
+        )
         return {
             "membership_id": membership_id,
             "entitlement_id": first_text(data, "entitlement_id", "id"),
-            "plan_id": first_text(data, "plan_id") or first_text(subscription, "plan_id", "price_id"),
-            "status": first_text(data, "status") or first_text(subscription, "status") or "unknown",
-            "period_start": first_time(data, "current_period_start", "starts_at", "created_at")
+            "plan_id": (
+                first_text(data, "plan_id")
+                or first_text(subscription, "plan_id", "price_id")
+                or first_text(plan, "id", "plan_id", "price_id")
+            ),
+            "status": raw_status,
+            "period_start": first_time(data, "current_period_start", "renewal_period_start", "starts_at", "created_at")
             or first_time(subscription, "current_period_start", "starts_at", "created_at"),
             "expires_at": first_time(data, "current_period_end", "expires_at", "expiration_date", "valid_until", "renewal_period_end")
             or first_time(subscription, "current_period_end", "expires_at", "expiration_date", "valid_until"),
             "trial_ends_at": first_time(data, "trial_ends_at")
             or first_time(subscription, "trial_ends_at"),
-            "payment_id": first_text(data, "payment_id", "invoice_id", "charge_id")
-            or first_text(payment, "id", "payment_id", "invoice_id", "charge_id"),
+            "payment_id": payment_id,
             "cancel_at_period_end": bool(data.get("cancel_at_period_end") or subscription.get("cancel_at_period_end") or False),
         }
 
@@ -2186,16 +2211,24 @@ def ceil_days(delta: timedelta) -> int:
 
 def normalize_entitlement_status(raw_status: str | None, event_type: str) -> str:
     combined = f"{raw_status or ''} {event_type}".lower()
+    event = event_type.lower().replace("_", ".")
     if any(word in combined for word in ("refund", "chargeback", "dispute", "revoke", "ban", "terminate", "went_invalid")):
         return "revoked"
-    if any(word in combined for word in ("suspend", "pause", "past_due", "payment_failed")):
+    if (
+        any(word in combined for word in ("suspend", "pause", "past_due", "payment_failed", "payment failed", "failed_payment", "failed payment"))
+        or event in {"payment.failed", "invoice.payment.failed", "charge.failed"}
+    ):
         return "suspended"
     if any(word in combined for word in ("expire", "cancel", "inactive", "invalid")):
         return "expired"
+    if (
+        any(word in combined for word in ("active", "valid", "renew", "paid", "succeeded", "completed"))
+        or event in {"payment.succeeded", "invoice.payment.succeeded", "charge.succeeded"}
+        or "went_valid" in event
+    ):
+        return "active"
     if "trial" in combined:
         return "trialing"
-    if any(word in combined for word in ("active", "valid", "renew", "payment.succeeded", "paid", "succeeded")):
-        return "active"
     return "pending"
 
 

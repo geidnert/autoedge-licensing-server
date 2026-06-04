@@ -431,6 +431,111 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("plan_precedence", result["whop_id"])
         self.assertEqual([self.product["id"]], [entitlement["product_id"] for entitlement in detail["entitlements"]])
 
+    def test_nested_whop_payment_failed_uses_plan_object_and_suspends(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_bundle_nested",
+            whop_id_type="plan",
+            name="Bundle 30 days",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30}],
+        )
+
+        result = self.service.process_whop_event(
+            {
+                "type": "payment.failed",
+                "data": {
+                    "id": "pay_nested_failed",
+                    "status": "open",
+                    "substatus": "failed",
+                    "created_at": iso(utc_now()),
+                    "membership": {"id": "mem_nested_failed", "status": "trialing"},
+                    "plan": {"id": "plan_bundle_nested"},
+                    "product": {"id": "prod_bundle_nested", "title": "8 Bot Bundle"},
+                    "user": {
+                        "email": "nested-failed@example.com",
+                        "id": "user_nested_failed",
+                        "name": "Nested Failed",
+                    },
+                },
+            },
+            "evt_nested_failed",
+            signature_valid=True,
+            ip_address=None,
+        )
+
+        detail = self.service.customer_detail(result["customer_id"])
+        with self.database.session() as connection:
+            subscription = connection.execute(
+                "SELECT * FROM subscriptions WHERE whop_membership_id = ?",
+                ("mem_nested_failed",),
+            ).fetchone()
+
+        self.assertEqual("processed", result["status"])
+        self.assertEqual("whop_package", result["mapping_mode"])
+        self.assertEqual("plan_bundle_nested", result["whop_id"])
+        self.assertEqual("suspended", result["entitlement_status"])
+        self.assertEqual("suspend", result["applied_grants"][0]["grant_kind"])
+        self.assertEqual("suspended", detail["entitlements"][0]["status"])
+        self.assertEqual("plan_bundle_nested", subscription["whop_plan_id"])
+
+    def test_payment_succeeded_over_trial_status_adds_paid_days(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_payment_success",
+            whop_id_type="plan",
+            name="DUO 30 days",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30}],
+        )
+        trial_end = utc_now() + timedelta(days=7)
+        self.service.process_whop_event(
+            {
+                "action": "membership.activated",
+                "data": {
+                    "id": "mem_payment_success",
+                    "status": "trialing",
+                    "email": "payment-success@example.com",
+                    "user_id": "user_payment_success",
+                    "plan_id": "plan_payment_success",
+                    "trial_ends_at": iso(trial_end),
+                },
+            },
+            "evt_payment_success_trial",
+            signature_valid=True,
+            ip_address=None,
+        )
+
+        paid = self.service.process_whop_event(
+            {
+                "type": "payment.succeeded",
+                "data": {
+                    "id": "pay_payment_success",
+                    "status": "paid",
+                    "membership": {"id": "mem_payment_success", "status": "trialing"},
+                    "plan": {"id": "plan_payment_success"},
+                    "product": {"id": "prod_payment_success"},
+                    "user": {
+                        "email": "payment-success@example.com",
+                        "id": "user_payment_success",
+                    },
+                },
+            },
+            "evt_payment_success_paid",
+            signature_valid=True,
+            ip_address=None,
+        )
+
+        detail = self.service.customer_detail(paid["customer_id"])
+        expires_at = parse_time(detail["entitlements"][0]["expires_at"])
+        self.assertEqual("active", paid["entitlement_status"])
+        self.assertEqual("paid", paid["applied_grants"][0]["grant_kind"])
+        self.assertGreaterEqual(expires_at, trial_end + timedelta(days=29))
+
     def test_update_product_adds_whop_product_id_to_existing_product(self) -> None:
         product = self.service.upsert_product(
             slug="duorc-runtime",
