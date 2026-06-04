@@ -952,6 +952,120 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertTrue(manifest["releases"][0]["update_available"])
         self.assertEqual(len(b"duo package"), manifest["releases"][0]["artifact"]["size_bytes"])
 
+    def test_release_manifest_returns_trader_desktop_app_update(self) -> None:
+        created = self.active_customer("app-update@example.com")
+        artifact_dir = Path(self.tmp.name) / "app-update-artifacts"
+        artifact_dir.mkdir()
+        artifact = artifact_dir / "Trader-Setup-0.1.1-windows-x64.zip"
+        artifact.write_bytes(b"desktop app update")
+        release = self.service.upsert_release(
+            release_id=None,
+            scope="app",
+            release_type="trader_desktop",
+            product_key="trader-desktop",
+            product_id=None,
+            channel="stable",
+            platform="windows-x64",
+            version="0.1.1",
+            min_supported_version="0.1.0",
+            is_required=False,
+            is_active=True,
+            artifact_path=artifact.name,
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature="sig",
+            signature_key_id="key-1",
+            release_notes="Desktop update",
+            artifact_dir=str(artifact_dir),
+        )
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="app-update-machine",
+            app_version="0.1.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package", "trader_desktop"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual([], manifest["releases"])
+        self.assertIsNotNone(manifest["app_update"])
+        self.assertEqual("trader-desktop", manifest["app_update"]["product_id"])
+        self.assertEqual("0.1.0", manifest["app_update"]["current_version"])
+        self.assertEqual("0.1.1", manifest["app_update"]["available_version"])
+        self.assertEqual(release["id"], manifest["app_update"]["release_id"])
+        self.assertEqual(len(b"desktop app update"), manifest["app_update"]["artifact"]["size_bytes"])
+        self.assertIsNotNone(manifest["app_update"]["artifact"]["sha256"])
+        self.assertEqual("key-1", manifest["app_update"]["artifact"]["signature_key_id"])
+
+    def test_release_manifest_returns_no_app_update_when_current_is_same_or_newer(self) -> None:
+        created = self.active_customer("no-app-update@example.com")
+        artifact_dir = Path(self.tmp.name) / "no-app-update-artifacts"
+        artifact_dir.mkdir()
+        self.service.upsert_release(
+            release_id=None,
+            scope="app",
+            release_type="trader_desktop",
+            product_key="trader-desktop",
+            product_id=None,
+            channel="stable",
+            platform="windows-x64",
+            version="0.1.1",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path="Trader-Setup-0.1.1-windows-x64.zip",
+            artifact_filename=None,
+            size_bytes=100,
+            sha256_value="abc",
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        same = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="no-app-update-machine",
+            app_version="0.1.1",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["trader_desktop"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        newer = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="no-app-update-machine",
+            app_version="0.1.2",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["trader_desktop"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertIsNone(same["app_update"])
+        self.assertIsNone(newer["app_update"])
+
     def test_release_download_token_and_resolution_are_license_gated(self) -> None:
         created = self.service.create_or_update_customer(email="download@example.com")
         self.service.manual_set_entitlement(
@@ -1065,6 +1179,133 @@ class LicensingServiceTests(unittest.TestCase):
         )
 
         self.assertEqual("not_licensed", result["status"])
+
+    def test_blocked_license_cannot_receive_trader_desktop_download_token(self) -> None:
+        created = self.service.create_or_update_customer(email="desktop-blocked@example.com")
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="suspended",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="payment failed",
+            actor_id="admin",
+            ip_address=None,
+        )
+        artifact_dir = Path(self.tmp.name) / "desktop-blocked-artifacts"
+        artifact_dir.mkdir()
+        release = self.service.upsert_release(
+            release_id=None,
+            scope="app",
+            release_type="trader_desktop",
+            product_key="trader-desktop",
+            product_id=None,
+            channel="stable",
+            platform="windows-x64",
+            version="0.1.1",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path="Trader-Setup-0.1.1-windows-x64.zip",
+            artifact_filename=None,
+            size_bytes=10,
+            sha256_value="abc",
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="desktop-blocked-machine",
+            app_version="0.1.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
+
+        self.assertEqual("suspended", token["status"])
+        self.assertIsNone(token["token"])
+
+    def test_device_limit_blocks_trader_desktop_manifest_and_download_token(self) -> None:
+        created = self.active_customer("desktop-device-limit@example.com")
+        self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="desktop-limit-first",
+            app_version="0.1.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        artifact_dir = Path(self.tmp.name) / "desktop-limit-artifacts"
+        artifact_dir.mkdir()
+        release = self.service.upsert_release(
+            release_id=None,
+            scope="app",
+            release_type="trader_desktop",
+            product_key="trader-desktop",
+            product_id=None,
+            channel="stable",
+            platform="windows-x64",
+            version="0.1.1",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path="Trader-Setup-0.1.1-windows-x64.zip",
+            artifact_filename=None,
+            size_bytes=10,
+            sha256_value="abc",
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="desktop-limit-second",
+            app_version="0.1.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["trader_desktop"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="desktop-limit-third",
+            app_version="0.1.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+            max_devices=1,
+        )
+
+        self.assertEqual("device_limit_exceeded", manifest["status"])
+        self.assertIsNone(manifest["app_update"])
+        self.assertEqual("device_limit_exceeded", token["status"])
+        self.assertIsNone(token["token"])
 
     def test_change_admin_password_revokes_sessions_and_accepts_new_password(self) -> None:
         admin_id = self.service.create_admin_user("admin", "old-password-123")

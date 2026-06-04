@@ -147,11 +147,17 @@ Request:
   "machine_fingerprint": "stable-client-machine-fingerprint",
   "app_version": "0.5.0",
   "channel": "stable",
-  "platform": "windows-x64"
+  "platform": "windows-x64",
+  "include_types": ["strategy_package", "trader_desktop"]
 }
 ```
 
-The same license identifiers as `/api/trader/license/check` are accepted. The response includes the normal license decision plus release metadata for active Trader app releases and active strategy releases only for strategies the customer is licensed to use.
+The same license identifiers as `/api/trader/license/check` are accepted. The response includes the normal license decision plus:
+
+- `releases`: strategy package releases only for strategies the customer is licensed to use.
+- `app_update`: the latest Trader Desktop update for the requested platform/channel when it is newer than `app_version`.
+
+If `include_types` is omitted, both `strategy_package` and `trader_desktop` are included. Use `["strategy_package"]` or `["trader_desktop"]` to request one side only.
 
 Response:
 
@@ -165,6 +171,7 @@ Response:
     {
       "id": "release-id",
       "scope": "strategy",
+      "release_type": "strategy_package",
       "strategy": "DUO",
       "feature_id": "strategy.duo.runtime",
       "version": "1.2.0",
@@ -174,18 +181,39 @@ Response:
         "filename": "duo-1.2.0.zip",
         "size_bytes": 123456,
         "sha256": "hex-sha256",
-        "signature": "optional-signature"
+        "signature": "optional-signature",
+        "signature_key_id": "optional-key-id"
       },
       "release_notes": "Optional notes"
     }
   ],
+  "app_update": {
+    "product_id": "trader-desktop",
+    "release_type": "trader_desktop",
+    "current_version": "0.1.0",
+    "available_version": "0.1.1",
+    "update_available": true,
+    "release_id": "release-id",
+    "channel": "stable",
+    "platform": "windows-x64",
+    "min_supported_version": "0.1.0",
+    "required": false,
+    "artifact": {
+      "filename": "Trader-Setup-0.1.1-windows-x64.zip",
+      "size_bytes": 123456,
+      "sha256": "hex-sha256",
+      "signature": "optional-signature",
+      "signature_key_id": "optional-key-id"
+    },
+    "release_notes": "Optional notes"
+  },
   "license": {
     "status": "active"
   }
 }
 ```
 
-Trader should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, or unknown customers receive an empty release list and the same blocking license status.
+Trader should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, device-limit-exceeded, or unknown customers receive an empty release list, `app_update: null`, and the same blocking license status.
 
 ### Trader Release Download
 
@@ -202,7 +230,7 @@ Request:
 }
 ```
 
-The server checks the license again before issuing a short-lived download token. Strategy package downloads are allowed only when the license includes that strategy. Trader app downloads are allowed for any active license.
+The server checks the license and device limit again before issuing a short-lived download token. Strategy package downloads are allowed only when the license includes that strategy. Trader Desktop downloads are allowed for any active license.
 
 Response:
 
@@ -217,6 +245,20 @@ Response:
 `GET /api/trader/releases/download/{token}` streams the artifact. Tokens are stored as hashes, expire quickly, and each download attempt is recorded in `release_downloads`.
 
 Configure releases in `/admin/releases`. Artifact uploads are not handled by the web UI yet; copy package files under `AUTOEDGE_RELEASE_ARTIFACT_DIR` first, then register their relative path in the release form. If the file exists, the server calculates size and SHA-256 automatically.
+
+Trader Desktop release fields:
+
+- Release type: `Trader Desktop`
+- Product id: `trader-desktop`
+- Channel: `stable`
+- Platform: `windows-x64`
+- Version and optional minimum supported version
+- Published checkbox
+- Artifact path, optional download filename, optional size/SHA-256 override
+- Optional signature and signature key id
+- Release notes
+
+Strategy package releases use release type `Strategy package`, choose the strategy in the Strategy field, and keep using feature ids such as `strategy.duo.runtime`.
 
 ## Local Development
 

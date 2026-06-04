@@ -74,6 +74,12 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+STRATEGY_RELEASE_TYPE = "strategy_package"
+TRADER_DESKTOP_RELEASE_TYPE = "trader_desktop"
+TRADER_DESKTOP_PRODUCT_ID = "trader-desktop"
+RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
+
+
 def display_strategy_name(value: str | None) -> str:
     if not value:
         return ""
@@ -88,6 +94,47 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def release_type_from_scope(scope: str | None) -> str:
+    return TRADER_DESKTOP_RELEASE_TYPE if scope == "app" else STRATEGY_RELEASE_TYPE
+
+
+def scope_from_release_type(release_type: str) -> str:
+    return "app" if release_type == TRADER_DESKTOP_RELEASE_TYPE else "strategy"
+
+
+def parse_version_parts(value: str | None) -> list[int]:
+    if not value:
+        return []
+    parts: list[int] = []
+    for token in value.strip().replace("-", ".").split("."):
+        digits = "".join(char for char in token if char.isdigit())
+        if digits == "":
+            parts.append(0)
+        else:
+            parts.append(int(digits))
+    return parts
+
+
+def version_is_newer(available: str | None, current: str | None) -> bool:
+    if not available:
+        return False
+    if not current or not current.strip():
+        return True
+    left = parse_version_parts(available)
+    right = parse_version_parts(current)
+    length = max(len(left), len(right))
+    left.extend([0] * (length - len(left)))
+    right.extend([0] * (length - len(right)))
+    return left > right
+
+
+def normalize_release_types(values: list[str] | None) -> set[str]:
+    if not values:
+        return {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
+    normalized = {str(value).strip() for value in values if str(value).strip() in RELEASE_TYPES}
+    return normalized or {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
 
 
 @dataclass(frozen=True)
@@ -494,7 +541,8 @@ class LicensingService:
         with self.database.session() as connection:
             rows = connection.execute(
                 f"""
-                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug
+                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
+                       products.feature_id AS feature_id
                 FROM trader_releases
                 LEFT JOIN products ON products.id = trader_releases.product_id
                 {where}
@@ -508,7 +556,8 @@ class LicensingService:
         with self.database.session() as connection:
             row = connection.execute(
                 """
-                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug
+                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
+                       products.feature_id AS feature_id
                 FROM trader_releases
                 LEFT JOIN products ON products.id = trader_releases.product_id
                 WHERE trader_releases.id = ?
@@ -522,6 +571,8 @@ class LicensingService:
         *,
         release_id: str | None,
         scope: str,
+        release_type: str | None = None,
+        product_key: str | None = None,
         product_id: str | None,
         channel: str,
         platform: str,
@@ -534,12 +585,16 @@ class LicensingService:
         size_bytes: int | None,
         sha256_value: str | None,
         signature: str | None,
+        signature_key_id: str | None = None,
         release_notes: str | None,
         artifact_dir: str,
         actor_id: str | None = None,
         ip_address: str | None = None,
     ) -> dict[str, Any]:
         normalized_scope = scope if scope in {"app", "strategy"} else "strategy"
+        normalized_release_type = release_type if release_type in RELEASE_TYPES else release_type_from_scope(normalized_scope)
+        normalized_scope = scope_from_release_type(normalized_release_type)
+        normalized_product_key = product_key.strip() if product_key and product_key.strip() else None
         normalized_channel = channel.strip().lower() or "stable"
         normalized_platform = platform.strip().lower() or "windows-x64"
         normalized_version = version.strip()
@@ -552,6 +607,7 @@ class LicensingService:
             raise ValueError("Strategy release requires a product.")
         if normalized_scope == "app":
             product_id = None
+            normalized_product_key = normalized_product_key or TRADER_DESKTOP_PRODUCT_ID
 
         artifact_file = self._artifact_path(normalized_path, artifact_dir)
         if not artifact_filename:
@@ -570,6 +626,7 @@ class LicensingService:
                 product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
                 if product is None:
                     raise ValueError("Strategy product not found.")
+                normalized_product_key = normalized_product_key or product["slug"]
             existing = None
             if release_id:
                 existing = connection.execute("SELECT * FROM trader_releases WHERE id = ?", (release_id,)).fetchone()
@@ -580,16 +637,19 @@ class LicensingService:
                 connection.execute(
                     """
                     INSERT INTO trader_releases(
-                        id, product_id, scope, channel, platform, version, min_supported_version,
+                        id, product_id, scope, release_type, product_key, channel, platform, version, min_supported_version,
                         is_required, is_active, artifact_path, artifact_filename, size_bytes,
-                        sha256, signature, release_notes, created_by_admin_id, created_at, updated_at
+                        sha256, signature, signature_key_id, release_notes, is_published, published_at,
+                        created_by_admin_id, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         saved_release_id,
                         product_id,
                         normalized_scope,
+                        normalized_release_type,
+                        normalized_product_key,
                         normalized_channel,
                         normalized_platform,
                         normalized_version,
@@ -601,7 +661,10 @@ class LicensingService:
                         calculated_size,
                         calculated_sha,
                         signature.strip() if signature else None,
+                        signature_key_id.strip() if signature_key_id else None,
                         release_notes.strip() if release_notes else None,
+                        int(is_active),
+                        now if is_active else None,
                         actor_id,
                         now,
                         now,
@@ -612,15 +675,18 @@ class LicensingService:
                 connection.execute(
                     """
                     UPDATE trader_releases
-                    SET product_id = ?, scope = ?, channel = ?, platform = ?, version = ?,
+                    SET product_id = ?, scope = ?, release_type = ?, product_key = ?, channel = ?, platform = ?, version = ?,
                         min_supported_version = ?, is_required = ?, is_active = ?,
                         artifact_path = ?, artifact_filename = ?, size_bytes = ?, sha256 = ?,
-                        signature = ?, release_notes = ?, updated_at = ?
+                        signature = ?, signature_key_id = ?, release_notes = ?, is_published = ?,
+                        published_at = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
                         product_id,
                         normalized_scope,
+                        normalized_release_type,
+                        normalized_product_key,
                         normalized_channel,
                         normalized_platform,
                         normalized_version,
@@ -632,7 +698,10 @@ class LicensingService:
                         calculated_size,
                         calculated_sha,
                         signature.strip() if signature else None,
+                        signature_key_id.strip() if signature_key_id else None,
                         release_notes.strip() if release_notes else None,
+                        int(is_active),
+                        now if is_active else None,
                         now,
                         saved_release_id,
                     ),
@@ -645,12 +714,22 @@ class LicensingService:
                 action,
                 "release",
                 saved_release_id,
-                {"scope": normalized_scope, "product_id": product_id, "channel": normalized_channel, "platform": normalized_platform, "version": normalized_version},
+                {
+                    "scope": normalized_scope,
+                    "release_type": normalized_release_type,
+                    "product_id": product_id,
+                    "product_key": normalized_product_key,
+                    "channel": normalized_channel,
+                    "platform": normalized_platform,
+                    "version": normalized_version,
+                    "published": is_active,
+                },
                 ip_address,
             )
             release = connection.execute(
                 """
-                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug
+                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
+                       products.feature_id AS feature_id
                 FROM trader_releases
                 LEFT JOIN products ON products.id = trader_releases.product_id
                 WHERE trader_releases.id = ?
@@ -1625,6 +1704,7 @@ class LicensingService:
         app_version: str | None,
         channel: str,
         platform: str,
+        include_types: list[str] | None = None,
         ip_address: str | None,
         user_agent: str | None,
         check_interval_seconds: int,
@@ -1652,33 +1732,60 @@ class LicensingService:
                 "channel": channel or "stable",
                 "platform": platform or "windows-x64",
                 "releases": [],
+                "app_update": None,
                 "license": license_response,
             }
 
         licensed_product_ids = {grant["product_id"] for grant in license_response["licensed_strategies"]}
         normalized_channel = (channel or "stable").strip().lower()
         normalized_platform = (platform or "windows-x64").strip().lower()
+        requested_types = normalize_release_types(include_types)
+        strategy_rows: list[sqlite3.Row] = []
+        app_release: dict[str, Any] | None = None
         with self.database.session() as connection:
-            rows = connection.execute(
-                """
-                SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
-                       products.feature_id AS feature_id
-                FROM trader_releases
-                LEFT JOIN products ON products.id = trader_releases.product_id
-                WHERE trader_releases.is_active = 1
-                  AND trader_releases.channel = ?
-                  AND trader_releases.platform = ?
-                  AND (
-                    trader_releases.scope = 'app'
-                    OR trader_releases.product_id IN ({placeholders})
-                  )
-                ORDER BY trader_releases.created_at DESC, trader_releases.updated_at DESC
-                """.format(placeholders=",".join("?" for _ in licensed_product_ids) or "NULL"),
-                (normalized_channel, normalized_platform, *licensed_product_ids),
-            ).fetchall()
+            if STRATEGY_RELEASE_TYPE in requested_types:
+                strategy_rows = connection.execute(
+                    """
+                    SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
+                           products.feature_id AS feature_id
+                    FROM trader_releases
+                    LEFT JOIN products ON products.id = trader_releases.product_id
+                    WHERE trader_releases.is_active = 1
+                      AND COALESCE(trader_releases.is_published, trader_releases.is_active) = 1
+                      AND trader_releases.channel = ?
+                      AND trader_releases.platform = ?
+                      AND COALESCE(trader_releases.release_type, 'strategy_package') = 'strategy_package'
+                      AND trader_releases.product_id IN ({placeholders})
+                    ORDER BY trader_releases.created_at DESC, trader_releases.updated_at DESC
+                    """.format(placeholders=",".join("?" for _ in licensed_product_ids) or "NULL"),
+                    (normalized_channel, normalized_platform, *licensed_product_ids),
+                ).fetchall()
+            if TRADER_DESKTOP_RELEASE_TYPE in requested_types:
+                app_row = connection.execute(
+                    """
+                    SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
+                           products.feature_id AS feature_id
+                    FROM trader_releases
+                    LEFT JOIN products ON products.id = trader_releases.product_id
+                    WHERE trader_releases.is_active = 1
+                      AND COALESCE(trader_releases.is_published, trader_releases.is_active) = 1
+                      AND trader_releases.channel = ?
+                      AND trader_releases.platform = ?
+                      AND (
+                        COALESCE(trader_releases.release_type, CASE WHEN trader_releases.scope = 'app' THEN 'trader_desktop' ELSE 'strategy_package' END) = 'trader_desktop'
+                        OR trader_releases.scope = 'app'
+                      )
+                      AND COALESCE(trader_releases.product_key, 'trader-desktop') = ?
+                    ORDER BY trader_releases.created_at DESC, trader_releases.updated_at DESC
+                    LIMIT 1
+                    """,
+                    (normalized_channel, normalized_platform, TRADER_DESKTOP_PRODUCT_ID),
+                ).fetchone()
+                if app_row is not None:
+                    app_release = dict(app_row)
 
         latest: dict[tuple[str, str | None], dict[str, Any]] = {}
-        for row in rows:
+        for row in strategy_rows:
             release = dict(row)
             key = (release["scope"], release["product_id"])
             if key not in latest:
@@ -1695,6 +1802,7 @@ class LicensingService:
             "channel": normalized_channel,
             "platform": normalized_platform,
             "releases": releases,
+            "app_update": self._trader_desktop_update_item(app_release, app_version) if app_release and version_is_newer(app_release.get("version"), app_version) else None,
             "license": license_response,
         }
 
@@ -1756,7 +1864,8 @@ class LicensingService:
             ).fetchone()
             if release is None:
                 return {"status": "not_found", "message": "Release not found.", "release": None, "token": None, "expires_at": None}
-            if release["scope"] == "strategy" and release["product_id"] not in licensed_product_ids:
+            release_type = release["release_type"] or release_type_from_scope(release["scope"])
+            if release_type == STRATEGY_RELEASE_TYPE and release["product_id"] not in licensed_product_ids:
                 self._record_release_download(connection, dict(release), customer["id"], device["id"], None, "not_licensed", ip_address, user_agent)
                 return {"status": "not_licensed", "message": "The license does not allow this release.", "release": None, "token": None, "expires_at": None}
 
@@ -1837,9 +1946,11 @@ class LicensingService:
             }
 
     def _release_manifest_item(self, release: dict[str, Any], app_version: str | None) -> dict[str, Any]:
+        release_type = release.get("release_type") or release_type_from_scope(release.get("scope"))
         return {
             "id": release["id"],
             "scope": release["scope"],
+            "release_type": release_type,
             "strategy": display_strategy_name(release.get("product_name")) if release.get("product_name") else None,
             "product_id": release.get("product_id"),
             "feature_id": release.get("feature_id"),
@@ -1854,6 +1965,29 @@ class LicensingService:
                 "size_bytes": release.get("size_bytes"),
                 "sha256": release.get("sha256"),
                 "signature": release.get("signature"),
+                "signature_key_id": release.get("signature_key_id"),
+            },
+            "release_notes": release.get("release_notes"),
+        }
+
+    def _trader_desktop_update_item(self, release: dict[str, Any], app_version: str | None) -> dict[str, Any]:
+        return {
+            "product_id": release.get("product_key") or TRADER_DESKTOP_PRODUCT_ID,
+            "release_type": TRADER_DESKTOP_RELEASE_TYPE,
+            "current_version": app_version,
+            "available_version": release["version"],
+            "update_available": True,
+            "release_id": release["id"],
+            "channel": release["channel"],
+            "platform": release["platform"],
+            "min_supported_version": release.get("min_supported_version"),
+            "required": bool(release.get("is_required")),
+            "artifact": {
+                "filename": release["artifact_filename"],
+                "size_bytes": release.get("size_bytes"),
+                "sha256": release.get("sha256"),
+                "signature": release.get("signature"),
+                "signature_key_id": release.get("signature_key_id"),
             },
             "release_notes": release.get("release_notes"),
         }

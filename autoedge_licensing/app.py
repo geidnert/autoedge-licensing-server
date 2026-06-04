@@ -188,6 +188,7 @@ class AutoEdgeApp:
         if not self.rate_limiter.allow(f"release-manifest:{request.ip}"):
             return json_response({"status": "rate_limited", "message": "Too many release manifest requests."}, HTTPStatus.TOO_MANY_REQUESTS)
         payload = request.json()
+        include_types = payload.get("include_types") if isinstance(payload.get("include_types"), list) else None
         response = self.service.release_manifest(
             license_key=payload.get("license_key"),
             email=payload.get("email"),
@@ -197,6 +198,7 @@ class AutoEdgeApp:
             app_version=payload.get("app_version"),
             channel=payload.get("channel") or "stable",
             platform=payload.get("platform") or "windows-x64",
+            include_types=include_types,
             ip_address=request.ip,
             user_agent=request.user_agent,
             check_interval_seconds=self.settings.license_check_interval_seconds,
@@ -406,11 +408,14 @@ class AutoEdgeApp:
         products = self.service.list_products(include_inactive=False)
         if request.method == "POST":
             form = request.form()
-            scope = form.get("scope", "strategy")
+            release_type = form.get("release_type") or ("trader_desktop" if form.get("scope") == "app" else "strategy_package")
+            scope = "app" if release_type == "trader_desktop" else "strategy"
             product_id = form.get("product_id") or None
             self.service.upsert_release(
                 release_id=form.get("release_id") or None,
                 scope=scope,
+                release_type=release_type,
+                product_key=form.get("product_key") or None,
                 product_id=product_id if scope == "strategy" else None,
                 channel=form.get("channel", "stable"),
                 platform=form.get("platform", "windows-x64"),
@@ -423,6 +428,7 @@ class AutoEdgeApp:
                 size_bytes=parse_optional_int(form.get("size_bytes")),
                 sha256_value=form.get("sha256") or None,
                 signature=form.get("signature") or None,
+                signature_key_id=form.get("signature_key_id") or None,
                 release_notes=form.get("release_notes") or None,
                 artifact_dir=self.settings.release_artifact_dir,
                 actor_id=admin["id"],
@@ -886,28 +892,30 @@ def releases_page(
     form_title = "Edit release" if is_editing else "Add release"
     button_text = "Save changes" if is_editing else "Save release"
     cancel_link = '<a class="button secondary" href="/admin/releases">Cancel</a>' if is_editing else ""
-    scope = selected.get("scope", "strategy")
+    selected_release_type = selected.get("release_type") or ("trader_desktop" if selected.get("scope") == "app" else "strategy_package")
     required_checked = "checked" if selected.get("is_required", 0) else ""
     active_checked = "checked" if selected.get("is_active", 1) else ""
-    product_options = ['<option value="">Trader app</option>']
+    product_options = ['<option value="">None</option>']
     for product in products:
         selected_attr = "selected" if selected.get("product_id") == product["id"] else ""
         product_options.append(f'<option value="{e(product["id"])}" {selected_attr}>{e(display_product_name(product.get("name")))}</option>')
-    scope_options = "\n".join(
-        f'<option value="{value}" {"selected" if scope == value else ""}>{label}</option>'
-        for value, label in (("strategy", "Strategy"), ("app", "Trader app"))
+    release_type_options = "\n".join(
+        f'<option value="{value}" {"selected" if selected_release_type == value else ""}>{label}</option>'
+        for value, label in (("strategy_package", "Strategy package"), ("trader_desktop", "Trader Desktop"))
     )
 
     rows = "\n".join(
         f"""
         <tr>
           <td><strong>{e(release.get('version'))}</strong><small>{e(release.get('release_notes'))}</small></td>
-          <td>{e(release.get('scope'))}<small>{e(display_product_name(release.get('product_name')) if release.get('product_name') else 'Trader app')}</small></td>
+          <td>{e(release.get('release_type') or ('trader_desktop' if release.get('scope') == 'app' else 'strategy_package'))}<small>{e(display_product_name(release.get('product_name')) if release.get('product_name') else release.get('product_key') or 'trader-desktop')}</small></td>
           <td>{e(release.get('channel'))}<small>{e(release.get('platform'))}</small></td>
           <td>{format_bool(release.get('is_required'))}</td>
-          <td>{format_bool(release.get('is_active'))}</td>
+          <td>{format_bool(release.get('is_published') if release.get('is_published') is not None else release.get('is_active'))}</td>
           <td>{e(release.get('artifact_filename'))}<small>{e(release.get('size_bytes'))} bytes</small></td>
           <td><code>{e(short_hash(release.get('sha256')))}</code></td>
+          <td>{e(release.get('created_at'))}<small>{e(release.get('published_at'))}</small></td>
+          <td>{e(release.get('updated_at'))}</td>
           <td><a class="button small" href="/admin/releases?edit={e(release['id'])}">Edit</a></td>
         </tr>
         """
@@ -926,14 +934,15 @@ def releases_page(
         <input type="hidden" name="csrf" value="{e(csrf)}">
         <input type="hidden" name="release_id" value="{e(selected.get('id'))}">
         <div class="grid-form release-form">
-          <label>Scope <select name="scope">{scope_options}</select></label>
+          <label>Release type <select name="release_type">{release_type_options}</select></label>
           <label>Strategy <select name="product_id">{"".join(product_options)}</select></label>
+          <label>Product id <input name="product_key" placeholder="trader-desktop" value="{e(selected.get('product_key') or ('trader-desktop' if selected_release_type == 'trader_desktop' else ''))}"></label>
           <label>Channel <input name="channel" required value="{e(selected.get('channel', 'stable'))}"></label>
           <label>Platform <input name="platform" required value="{e(selected.get('platform', 'windows-x64'))}"></label>
           <label>Version <input name="version" required placeholder="1.0.0" value="{e(selected.get('version'))}"></label>
           <label>Minimum supported <input name="min_supported_version" placeholder="optional" value="{e(selected.get('min_supported_version'))}"></label>
           <label class="checkbox"><input name="is_required" type="checkbox" {required_checked}> Required</label>
-          <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
+          <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Published</label>
         </div>
         <div class="grid-form release-artifact-form">
           <label>Artifact path <input name="artifact_path" required placeholder="trader/AutoEdgeTrader-1.0.0.zip" value="{e(selected.get('artifact_path'))}"></label>
@@ -941,7 +950,10 @@ def releases_page(
           <label>Size bytes <input name="size_bytes" type="number" min="0" placeholder="auto if file exists" value="{e(selected.get('size_bytes'))}"></label>
           <label>SHA-256 <input name="sha256" placeholder="auto if file exists" value="{e(selected.get('sha256'))}"></label>
         </div>
-        <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
+        <div class="grid-form release-signature-form">
+          <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
+          <label>Signature key id <input name="signature_key_id" value="{e(selected.get('signature_key_id'))}"></label>
+        </div>
         <label>Release notes <input name="release_notes" value="{e(selected.get('release_notes'))}"></label>
         <div class="form-actions">
           <button type="submit">{button_text}</button>
@@ -951,8 +963,8 @@ def releases_page(
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Version</th><th>Scope</th><th>Channel</th><th>Required</th><th>Active</th><th>Artifact</th><th>SHA-256</th><th></th></tr></thead>
-        <tbody>{rows or '<tr><td colspan="8">No releases configured.</td></tr>'}</tbody>
+        <thead><tr><th>Version</th><th>Type</th><th>Channel</th><th>Required</th><th>Published</th><th>Artifact</th><th>SHA-256</th><th>Created</th><th>Updated</th><th></th></tr></thead>
+        <tbody>{rows or '<tr><td colspan="10">No releases configured.</td></tr>'}</tbody>
       </table>
     </section>
     """
@@ -1141,8 +1153,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .stack-form { display: grid; gap: 14px; }
 .grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 12px; align-items: end; }
 .package-form { grid-template-columns: repeat(4, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 14px; }
-.release-form { grid-template-columns: repeat(6, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
+.release-form { grid-template-columns: repeat(7, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
 .release-artifact-form { grid-template-columns: 2fr 1fr 1fr 2fr; margin-bottom: 12px; }
+.release-signature-form { grid-template-columns: 2fr 1fr; margin-bottom: 12px; }
 .device-limit-form { grid-template-columns: minmax(180px, 260px) auto; margin-bottom: 12px; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: auto; min-height: auto; }
@@ -1163,7 +1176,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   nav { padding: 0 12px; gap: 10px; overflow-x: auto; }
   main { width: calc(100vw - 18px); margin-top: 12px; }
   .title-row, .search { display: grid; }
-  .grid-form, .package-form, .release-form, .release-artifact-form, .device-limit-form, .facts { grid-template-columns: 1fr; }
+  .grid-form, .package-form, .release-form, .release-artifact-form, .release-signature-form, .device-limit-form, .facts { grid-template-columns: 1fr; }
   table { display: block; overflow-x: auto; }
 }
 """

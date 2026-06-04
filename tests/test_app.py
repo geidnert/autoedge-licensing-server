@@ -7,7 +7,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 
-from autoedge_licensing.app import create_app, customer_detail_page, packages_page, products_page
+from autoedge_licensing.app import create_app, customer_detail_page, packages_page, products_page, releases_page
 from autoedge_licensing.config import Settings
 from autoedge_licensing.service import iso, utc_now
 
@@ -195,6 +195,48 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("DUO", html)
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
+
+    def test_releases_page_can_list_trader_desktop_release(self) -> None:
+        html = releases_page(
+            [
+                {
+                    "id": "release-001",
+                    "scope": "app",
+                    "release_type": "trader_desktop",
+                    "product_id": None,
+                    "product_key": "trader-desktop",
+                    "product_name": None,
+                    "channel": "stable",
+                    "platform": "windows-x64",
+                    "version": "0.1.1",
+                    "min_supported_version": "0.1.0",
+                    "is_required": 0,
+                    "is_active": 1,
+                    "is_published": 1,
+                    "artifact_filename": "Trader-Setup-0.1.1-windows-x64.zip",
+                    "size_bytes": 123,
+                    "sha256": "abcdef123456",
+                    "signature": "sig",
+                    "signature_key_id": "key-1",
+                    "release_notes": "Desktop update",
+                    "published_at": "2026-06-04T13:00:00Z",
+                    "created_at": "2026-06-04T13:00:00Z",
+                    "updated_at": "2026-06-04T13:05:00Z",
+                }
+            ],
+            [],
+            "csrf-token",
+            None,
+            "/var/lib/autoedge-licensing/artifacts",
+        )
+
+        self.assertIn("Trader Desktop", html)
+        self.assertIn("trader_desktop", html)
+        self.assertIn("trader-desktop", html)
+        self.assertIn("Published", html)
+        self.assertIn("Signature key id", html)
+        self.assertIn("Created", html)
+        self.assertIn("2026-06-04T13:05:00Z", html)
 
     def test_release_manifest_and_download_endpoint(self) -> None:
         product = self.app.service.upsert_product(
