@@ -49,7 +49,7 @@ Configure packages in `/admin/packages`:
 - Type: `plan`, `product`, or `unknown`.
 - Default days: the days granted by the package.
 - Non-license: marks a known Whop access pass as intentionally ignored.
-- Grants: select one or more Trader strategies, with optional per-strategy days and optional legacy NinjaTrader product id.
+- Grants: select one or more Trader strategies, with optional per-strategy days.
 
 Old Vercel mappings like:
 
@@ -57,7 +57,7 @@ Old Vercel mappings like:
 plan_AsxYJxMdnQJqW=204,30:337,30:1175,30
 ```
 
-become one Whop Package for `plan_AsxYJxMdnQJqW` with separate grant rows. Each grant chooses a Trader strategy, stores the old NT id only for reference, and grants the configured days.
+become one Whop Package for `plan_AsxYJxMdnQJqW` with separate grant rows. Each grant chooses a Trader strategy and grants the configured days.
 
 Lifecycle handling:
 

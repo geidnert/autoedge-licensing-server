@@ -18,7 +18,6 @@ CREATE TABLE IF NOT EXISTS whop_package_grants (
     package_id TEXT NOT NULL REFERENCES whop_packages(id) ON DELETE CASCADE,
     product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     days INTEGER,
-    legacy_nt_product_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (package_id, product_id),

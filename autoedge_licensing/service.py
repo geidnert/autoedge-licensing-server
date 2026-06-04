@@ -436,16 +436,15 @@ class LicensingService:
                 connection.execute(
                     """
                     INSERT INTO whop_package_grants(
-                        id, package_id, product_id, days, legacy_nt_product_id, created_at, updated_at
+                        id, package_id, product_id, days, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         uuid.uuid4().hex,
                         saved_package_id,
                         product_id,
                         int(days) if days is not None else None,
-                        str(grant.get("legacy_nt_product_id") or "").strip() or None,
                         now,
                         now,
                     ),
@@ -1196,7 +1195,6 @@ class LicensingService:
                 "event_type": event_type,
                 "status": status,
                 "package_whop_id": package["whop_id"],
-                "legacy_nt_product_id": grant.get("legacy_nt_product_id"),
             },
         )
         self.audit(

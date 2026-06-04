@@ -56,7 +56,7 @@ class AppEndpointTests(unittest.TestCase):
             default_days=30,
             is_active=True,
             is_ignored=False,
-            grants=[{"product_id": product["id"], "days": 30, "legacy_nt_product_id": "999"}],
+            grants=[{"product_id": product["id"], "days": 30}],
         )
         status, _, body = self.call(
             "POST",
@@ -120,8 +120,7 @@ class AppEndpointTests(unittest.TestCase):
                             "product_id": "product-001",
                             "product_name": "DUO Runtime",
                             "days": 30,
-                            "legacy_nt_product_id": "204",
-                        }
+                            }
                     ],
                 }
             ],
@@ -139,7 +138,6 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("AutoEdge Bundle 30 days", html)
         self.assertIn("plan_bundle", html)
         self.assertIn("DUO 30d", html)
-        self.assertIn("NT 204", html)
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
 

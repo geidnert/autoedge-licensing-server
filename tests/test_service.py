@@ -119,7 +119,7 @@ class LicensingServiceTests(unittest.TestCase):
             default_days=30,
             is_active=True,
             is_ignored=False,
-            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+            grants=[{"product_id": self.product["id"], "days": 30}],
         )
         payload = {
             "type": "membership.created",
@@ -162,8 +162,8 @@ class LicensingServiceTests(unittest.TestCase):
             is_active=True,
             is_ignored=False,
             grants=[
-                {"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"},
-                {"product_id": duorc["id"], "days": 30, "legacy_nt_product_id": "337"},
+                {"product_id": self.product["id"], "days": 30},
+                {"product_id": duorc["id"], "days": 30},
             ],
         )
 
@@ -216,7 +216,7 @@ class LicensingServiceTests(unittest.TestCase):
             default_days=30,
             is_active=True,
             is_ignored=False,
-            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+            grants=[{"product_id": self.product["id"], "days": 30}],
         )
         trial_end = utc_now() + timedelta(days=7)
         trial = self.service.process_whop_event(
@@ -267,7 +267,7 @@ class LicensingServiceTests(unittest.TestCase):
             default_days=30,
             is_active=True,
             is_ignored=False,
-            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+            grants=[{"product_id": self.product["id"], "days": 30}],
         )
         payload = {
             "action": "membership.went_valid",
@@ -331,7 +331,7 @@ class LicensingServiceTests(unittest.TestCase):
             default_days=30,
             is_active=True,
             is_ignored=False,
-            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+            grants=[{"product_id": self.product["id"], "days": 30}],
         )
         active = self.service.process_whop_event(
             {
@@ -395,7 +395,7 @@ class LicensingServiceTests(unittest.TestCase):
             default_days=30,
             is_active=True,
             is_ignored=False,
-            grants=[{"product_id": self.product["id"], "days": 30, "legacy_nt_product_id": "204"}],
+            grants=[{"product_id": self.product["id"], "days": 30}],
         )
         self.service.upsert_whop_package(
             package_id=None,
@@ -405,7 +405,7 @@ class LicensingServiceTests(unittest.TestCase):
             default_days=30,
             is_active=True,
             is_ignored=False,
-            grants=[{"product_id": duorc["id"], "days": 30, "legacy_nt_product_id": "337"}],
+            grants=[{"product_id": duorc["id"], "days": 30}],
         )
 
         result = self.service.process_whop_event(

@@ -284,7 +284,6 @@ class AutoEdgeApp:
                     {
                         "product_id": product_id,
                         "days": parse_optional_int(form.get(f"days_{product_id}")),
-                        "legacy_nt_product_id": form.get(f"legacy_{product_id}") or None,
                     }
                 )
             self.service.upsert_whop_package(
@@ -634,7 +633,6 @@ def packages_page(
             </label>
           </td>
           <td><input name="days_{e(product['id'])}" type="number" min="0" placeholder="default" value="{e(selected_grants.get(product['id'], {}).get('days'))}"></td>
-          <td><input name="legacy_{e(product['id'])}" placeholder="204" value="{e(selected_grants.get(product['id'], {}).get('legacy_nt_product_id'))}"></td>
         </tr>
         """
         for product in products
@@ -648,8 +646,7 @@ def packages_page(
         for grant in grants:
             days = grant.get("days") if grant.get("days") is not None else package.get("default_days")
             label = f"{display_product_name(grant.get('product_name'))} {days}d" if days is not None else display_product_name(grant.get("product_name"))
-            legacy = f"<small>NT {e(grant.get('legacy_nt_product_id'))}</small>" if grant.get("legacy_nt_product_id") else ""
-            parts.append(f"<span>{e(label)}{legacy}</span>")
+            parts.append(f"<span>{e(label)}</span>")
         return '<div class="grant-list">' + "".join(parts) + "</div>"
 
     rows = "\n".join(
@@ -687,8 +684,8 @@ def packages_page(
           <label class="checkbox"><input name="is_ignored" type="checkbox" {ignored_checked}> Non-license</label>
         </div>
         <table class="grant-table">
-          <thead><tr><th>Strategy</th><th>Days</th><th>Legacy NT product id</th></tr></thead>
-          <tbody>{grant_rows or '<tr><td colspan="3">No strategies configured.</td></tr>'}</tbody>
+          <thead><tr><th>Strategy</th><th>Days</th></tr></thead>
+          <tbody>{grant_rows or '<tr><td colspan="2">No strategies configured.</td></tr>'}</tbody>
         </table>
         <div class="form-actions">
           <button type="submit">{button_text}</button>
@@ -872,7 +869,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: auto; min-height: auto; }
 .grant-table { margin: 8px 0 14px; }
-.grant-table td:nth-child(2), .grant-table td:nth-child(3) { width: 180px; }
+.grant-table td:nth-child(2) { width: 180px; }
 .grant-list { display: grid; gap: 6px; }
 .grant-list span { display: block; }
 .form-actions { display: flex; gap: 10px; align-items: center; }
