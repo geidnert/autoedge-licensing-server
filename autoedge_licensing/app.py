@@ -928,6 +928,7 @@ def releases_page(
     selected = selected_release or {}
     is_editing = selected_release is not None
     form_title = "Edit release" if is_editing else "Add release"
+    editor_open = "open" if is_editing else ""
     button_text = "Save changes" if is_editing else "Save release"
     cancel_link = '<a class="button secondary" href="/admin/releases">Cancel</a>' if is_editing else ""
     selected_release_type = selected.get("release_type") or ("trader_desktop" if selected.get("scope") == "app" else "strategy_package")
@@ -991,8 +992,9 @@ def releases_page(
         <p>Register Trader installers and strategy package artifacts. Files must live under <code>{e(artifact_dir)}</code>.</p>
       </div>
     </header>
-    <section class="panel">
-      <h2>{form_title}</h2>
+    <section class="panel release-editor-panel">
+      <details class="release-editor" {editor_open}>
+      <summary>{form_title}<small>Create or edit releases only when publishing a new artifact.</small></summary>
       <form method="post">
         <input type="hidden" name="csrf" value="{e(csrf)}">
         <input type="hidden" name="release_id" value="{e(selected.get('id'))}">
@@ -1035,6 +1037,7 @@ def releases_page(
           {cancel_link}
         </div>
       </form>
+      </details>
     </section>
     <section class="panel">
       <table>
@@ -1243,6 +1246,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .stack-form { display: grid; gap: 14px; }
 .grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 12px; align-items: end; }
 .package-form { grid-template-columns: repeat(4, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 14px; }
+.release-editor-panel { padding: 0; }
+.release-editor { padding: 16px; }
+.release-editor summary { cursor: pointer; color: #202428; font-size: 18px; font-weight: 700; }
+.release-editor summary small { display: inline; margin: 0 0 0 10px; color: var(--muted); font-size: 13px; font-weight: 400; }
+.release-editor form { margin-top: 16px; }
 .release-form { grid-template-columns: repeat(6, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
 .release-artifact-form { grid-template-columns: 2fr 1fr 1fr 2fr; margin-bottom: 12px; }
 .release-advanced-form { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 12px 0; }

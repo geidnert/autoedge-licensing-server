@@ -241,6 +241,32 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("Created", html)
         self.assertIn("2026-06-04T13:05:00Z", html)
 
+    def test_release_editor_is_collapsed_for_add_and_open_for_edit(self) -> None:
+        add_html = releases_page([], [], "csrf-token", None, "/var/lib/autoedge-licensing/artifacts")
+        edit_html = releases_page(
+            [],
+            [],
+            "csrf-token",
+            {
+                "id": "release-001",
+                "scope": "app",
+                "release_type": "trader_desktop",
+                "product_key": "trader-desktop",
+                "channel": "stable",
+                "platform": "windows-x64",
+                "version": "0.1.1",
+                "is_required": 0,
+                "is_active": 1,
+                "artifact_path": "trader.zip",
+                "artifact_filename": "trader.zip",
+            },
+            "/var/lib/autoedge-licensing/artifacts",
+        )
+
+        self.assertIn('<details class="release-editor" >', add_html)
+        self.assertNotIn('<details class="release-editor" open>', add_html)
+        self.assertIn('<details class="release-editor" open>', edit_html)
+
     def test_release_manifest_and_download_endpoint(self) -> None:
         product = self.app.service.upsert_product(
             slug="duo-runtime",
