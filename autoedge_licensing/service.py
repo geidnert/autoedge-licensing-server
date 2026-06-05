@@ -78,6 +78,8 @@ STRATEGY_RELEASE_TYPE = "strategy_package"
 TRADER_DESKTOP_RELEASE_TYPE = "trader_desktop"
 TRADER_DESKTOP_PRODUCT_ID = "trader-desktop"
 RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
+CHANNEL_PRIORITY = {"stable": 0, "beta": 1, "canary": 2, "internal": 3}
+AUDIENCE_MODES = {"all", "allowlist", "roles", "percent", "disabled"}
 
 
 def display_strategy_name(value: str | None) -> str:
@@ -130,11 +132,113 @@ def version_is_newer(available: str | None, current: str | None) -> bool:
     return left > right
 
 
+def compare_versions(left_value: str | None, right_value: str | None) -> int:
+    if not left_value and not right_value:
+        return 0
+    if left_value and not right_value:
+        return 1
+    if right_value and not left_value:
+        return -1
+    left = parse_version_parts(left_value)
+    right = parse_version_parts(right_value)
+    length = max(len(left), len(right))
+    left.extend([0] * (length - len(left)))
+    right.extend([0] * (length - len(right)))
+    if left == right:
+        return 0
+    return 1 if left > right else -1
+
+
+def release_action(target_version: str | None, current_version: str | None) -> str:
+    comparison = compare_versions(target_version, current_version)
+    if comparison > 0:
+        return "update"
+    if comparison < 0:
+        return "rollback"
+    return "current"
+
+
+def release_action_for_row(release: dict[str, Any], current_version: str | None) -> str:
+    action = release_action(release.get("version"), current_version)
+    if action == "rollback" and not release.get("rollback_reason") and not release.get("is_required"):
+        return "current"
+    return action
+
+
 def normalize_release_types(values: list[str] | None) -> set[str]:
     if not values:
         return {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
     normalized = {str(value).strip() for value in values if str(value).strip() in RELEASE_TYPES}
     return normalized or {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
+
+
+def normalize_tag(value: str | None) -> str:
+    if not value:
+        return ""
+    normalized = re.sub(r"[^a-z0-9_.:-]+", "_", value.strip().lower()).strip("_")
+    return normalized
+
+
+def normalize_tag_list(values: list[str] | str | None) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        raw_values = re.split(r"[\s,;]+", values)
+    else:
+        raw_values = [str(value) for value in values]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        tag = normalize_tag(raw)
+        if tag and tag not in seen:
+            normalized.append(tag)
+            seen.add(tag)
+    return normalized
+
+
+def normalize_identifier_list(values: list[str] | str | None, *, lower: bool = False) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        raw_values = re.split(r"[\s,;]+", values)
+    else:
+        raw_values = [str(value) for value in values]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        value = raw.strip()
+        if lower:
+            value = value.lower()
+        if value and value not in seen:
+            normalized.append(value)
+            seen.add(value)
+    return normalized
+
+
+def json_list(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if not isinstance(value, str):
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return normalize_identifier_list(value)
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if str(item).strip()]
+
+
+def json_list_text(values: list[str]) -> str:
+    return json.dumps(values, separators=(",", ":"))
+
+
+def clamp_rollout_percent(value: int | None) -> int:
+    if value is None:
+        return 100
+    return max(0, min(100, int(value)))
 
 
 @dataclass(frozen=True)
@@ -588,6 +692,13 @@ class LicensingService:
         signature_key_id: str | None = None,
         release_notes: str | None,
         artifact_dir: str,
+        audience_mode: str | None = None,
+        allowed_customer_ids: list[str] | str | None = None,
+        allowed_emails: list[str] | str | None = None,
+        allowed_license_keys: list[str] | str | None = None,
+        required_tags: list[str] | str | None = None,
+        rollout_percent: int | None = None,
+        rollback_reason: str | None = None,
         actor_id: str | None = None,
         ip_address: str | None = None,
     ) -> dict[str, Any]:
@@ -599,6 +710,18 @@ class LicensingService:
         normalized_platform = platform.strip().lower() or "windows-x64"
         normalized_version = version.strip()
         normalized_path = artifact_path.strip()
+        normalized_audience_mode = (audience_mode or "all").strip().lower()
+        if normalized_audience_mode not in AUDIENCE_MODES:
+            raise ValueError(f"Invalid audience mode: {audience_mode}")
+        normalized_allowed_customer_ids = normalize_identifier_list(allowed_customer_ids)
+        normalized_allowed_emails = normalize_identifier_list(allowed_emails, lower=True)
+        normalized_allowed_license_key_hashes = [
+            hash_license_key(value)
+            for value in normalize_identifier_list(allowed_license_keys)
+            if value.strip()
+        ]
+        normalized_required_tags = normalize_tag_list(required_tags)
+        normalized_rollout_percent = clamp_rollout_percent(rollout_percent)
         if not normalized_version:
             raise ValueError("Version is required.")
         if not normalized_path:
@@ -640,9 +763,11 @@ class LicensingService:
                         id, product_id, scope, release_type, product_key, channel, platform, version, min_supported_version,
                         is_required, is_active, artifact_path, artifact_filename, size_bytes,
                         sha256, signature, signature_key_id, release_notes, is_published, published_at,
+                        audience_mode, allowed_customer_ids_json, allowed_emails_json,
+                        allowed_license_key_hashes_json, required_tags_json, rollout_percent, rollback_reason,
                         created_by_admin_id, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         saved_release_id,
@@ -665,6 +790,13 @@ class LicensingService:
                         release_notes.strip() if release_notes else None,
                         int(is_active),
                         now if is_active else None,
+                        normalized_audience_mode,
+                        json_list_text(normalized_allowed_customer_ids),
+                        json_list_text(normalized_allowed_emails),
+                        json_list_text(normalized_allowed_license_key_hashes),
+                        json_list_text(normalized_required_tags),
+                        normalized_rollout_percent,
+                        rollback_reason.strip() if rollback_reason else None,
                         actor_id,
                         now,
                         now,
@@ -679,7 +811,9 @@ class LicensingService:
                         min_supported_version = ?, is_required = ?, is_active = ?,
                         artifact_path = ?, artifact_filename = ?, size_bytes = ?, sha256 = ?,
                         signature = ?, signature_key_id = ?, release_notes = ?, is_published = ?,
-                        published_at = ?, updated_at = ?
+                        published_at = ?, audience_mode = ?, allowed_customer_ids_json = ?,
+                        allowed_emails_json = ?, allowed_license_key_hashes_json = ?, required_tags_json = ?,
+                        rollout_percent = ?, rollback_reason = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -702,6 +836,13 @@ class LicensingService:
                         release_notes.strip() if release_notes else None,
                         int(is_active),
                         now if is_active else None,
+                        normalized_audience_mode,
+                        json_list_text(normalized_allowed_customer_ids),
+                        json_list_text(normalized_allowed_emails),
+                        json_list_text(normalized_allowed_license_key_hashes),
+                        json_list_text(normalized_required_tags),
+                        normalized_rollout_percent,
+                        rollback_reason.strip() if rollback_reason else None,
                         now,
                         saved_release_id,
                     ),
@@ -723,6 +864,9 @@ class LicensingService:
                     "platform": normalized_platform,
                     "version": normalized_version,
                     "published": is_active,
+                    "audience_mode": normalized_audience_mode,
+                    "rollout_percent": normalized_rollout_percent,
+                    "required_tags": normalized_required_tags,
                 },
                 ip_address,
             )
@@ -909,6 +1053,7 @@ class LicensingService:
             ).fetchall()
         return {
             "customer": dict(customer),
+            "tags": json_list(dict(customer).get("tags_json")),
             "entitlements": [dict(row) for row in entitlements],
             "subscriptions": [dict(row) for row in subscriptions],
             "devices": [dict(row) for row in devices],
@@ -1067,6 +1212,35 @@ class LicensingService:
                 ip_address,
             )
             return blocked_count
+
+    def set_customer_tags(
+        self,
+        *,
+        customer_id: str,
+        tags: list[str] | str | None,
+        actor_id: str,
+        ip_address: str | None,
+    ) -> list[str]:
+        normalized_tags = normalize_tag_list(tags)
+        with self.database.session() as connection:
+            existing = connection.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+            if existing is None:
+                raise ValueError("Customer not found.")
+            connection.execute(
+                "UPDATE customers SET tags_json = ?, updated_at = ? WHERE id = ?",
+                (json_list_text(normalized_tags), iso(), customer_id),
+            )
+            self.audit(
+                connection,
+                "admin",
+                actor_id,
+                "customer.tags_updated",
+                "customer",
+                customer_id,
+                {"tags": normalized_tags},
+                ip_address,
+            )
+        return normalized_tags
 
     def process_whop_event(self, payload: dict[str, Any], webhook_id: str, *, signature_valid: bool, ip_address: str | None) -> dict[str, Any]:
         event_type = str(payload.get("action") or payload.get("type") or payload.get("event") or payload.get("event_type") or "unknown")
@@ -1693,6 +1867,136 @@ class LicensingService:
             ),
         )
 
+    def _installed_package_versions(self, installed_packages: list[dict[str, Any]] | None) -> dict[str, str]:
+        versions: dict[str, str] = {}
+        if not isinstance(installed_packages, list):
+            return versions
+        for package in installed_packages:
+            if not isinstance(package, dict):
+                continue
+            version = str(package.get("version") or "").strip()
+            if not version:
+                continue
+            for key_name in ("package_id", "product_id", "feature_id", "slug"):
+                key = str(package.get(key_name) or "").strip().lower()
+                if key:
+                    versions[key] = version
+        return versions
+
+    def _current_version_for_release(
+        self,
+        release: dict[str, Any],
+        app_version: str | None,
+        installed_versions: dict[str, str],
+    ) -> str | None:
+        release_type = release.get("release_type") or release_type_from_scope(release.get("scope"))
+        if release_type == TRADER_DESKTOP_RELEASE_TYPE:
+            return app_version
+        for candidate in (release.get("product_key"), release.get("product_slug"), release.get("feature_id"), release.get("product_id")):
+            key = str(candidate or "").strip().lower()
+            if key and key in installed_versions:
+                return installed_versions[key]
+        return app_version
+
+    def _release_sort_key(self, release: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            CHANNEL_PRIORITY.get(str(release.get("channel") or "stable").lower(), 0),
+            int(release.get("is_required") or 0),
+            str(release.get("updated_at") or ""),
+            str(release.get("created_at") or ""),
+            parse_version_parts(str(release.get("version") or "")),
+        )
+
+    def _release_audience_match(self, release: dict[str, Any], customer: dict[str, Any]) -> tuple[bool, str]:
+        mode = str(release.get("audience_mode") or "all").strip().lower()
+        if mode not in AUDIENCE_MODES:
+            mode = "all"
+        if mode == "disabled":
+            return False, "audience_disabled"
+
+        customer_tags = set(json_list(customer.get("tags_json")))
+        required_tags = set(normalize_tag_list(json_list(release.get("required_tags_json"))))
+        tag_match = bool(required_tags & customer_tags) if required_tags else True
+        if mode == "all":
+            return (tag_match, "tag_required" if not tag_match else "allowed")
+
+        allowed_customer_ids = set(json_list(release.get("allowed_customer_ids_json")))
+        allowed_emails = set(normalize_identifier_list(json_list(release.get("allowed_emails_json")), lower=True))
+        allowed_license_hashes = set(json_list(release.get("allowed_license_key_hashes_json")))
+        customer_email = normalize_email(customer.get("email"))
+        license_hash = customer.get("license_key_hash")
+        allowlist_match = (
+            customer.get("id") in allowed_customer_ids
+            or (customer_email is not None and customer_email in allowed_emails)
+            or (license_hash is not None and license_hash in allowed_license_hashes)
+        )
+
+        if mode == "allowlist":
+            return (allowlist_match or bool(required_tags & customer_tags), "allowlist_miss")
+        if mode == "roles":
+            return (bool(required_tags & customer_tags), "role_miss")
+        if mode == "percent":
+            if required_tags and not tag_match:
+                return False, "tag_required"
+            percent = clamp_rollout_percent(release.get("rollout_percent"))
+            if percent <= 0:
+                return False, "rollout_miss"
+            if percent >= 100:
+                return True, "allowed"
+            identity = customer.get("id") or customer.get("license_key_hash") or customer.get("email_normalized") or ""
+            bucket = int(sha256_hex(f"{identity}:{release.get('id')}")[:8], 16) % 100
+            return (bucket < percent, "rollout_miss")
+
+        return False, "audience_denied"
+
+    def _release_visible_to_customer(
+        self,
+        release: dict[str, Any],
+        customer: dict[str, Any],
+        requested_channel: str,
+    ) -> tuple[bool, str]:
+        audience_allowed, reason = self._release_audience_match(release, customer)
+        if not audience_allowed:
+            return False, reason
+
+        release_channel = str(release.get("channel") or "stable").strip().lower()
+        requested = str(requested_channel or "stable").strip().lower()
+        release_priority = CHANNEL_PRIORITY.get(release_channel, 0)
+        requested_priority = CHANNEL_PRIORITY.get(requested, 0)
+        if release_priority <= requested_priority:
+            return True, "allowed"
+
+        customer_tags = set(json_list(customer.get("tags_json")))
+        mode = str(release.get("audience_mode") or "all").strip().lower()
+        if mode in {"allowlist", "roles"}:
+            return True, "allowed"
+        if "internal" in customer_tags and release_channel in {"beta", "canary", "internal"}:
+            return True, "allowed"
+        if customer_tags & {"tester", "desktop_beta", "duo_beta", "duorc_beta", "early_access"} and release_channel in {"beta", "canary"}:
+            return True, "allowed"
+        return False, "channel_denied"
+
+    def _select_visible_releases(
+        self,
+        releases: list[dict[str, Any]],
+        customer: dict[str, Any],
+        requested_channel: str,
+        *,
+        group_by: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        visible_by_group: dict[str, dict[str, Any]] = {}
+        denied: list[dict[str, Any]] = []
+        for release in releases:
+            allowed, reason = self._release_visible_to_customer(release, customer, requested_channel)
+            if not allowed:
+                denied.append({"release_id": release.get("id"), "reason": reason})
+                continue
+            group_value = str(release.get(group_by) or release.get("product_key") or release.get("product_id") or release.get("id"))
+            existing = visible_by_group.get(group_value)
+            if existing is None or self._release_sort_key(release) > self._release_sort_key(existing):
+                visible_by_group[group_value] = release
+        return list(visible_by_group.values()), denied
+
     def release_manifest(
         self,
         *,
@@ -1705,6 +2009,7 @@ class LicensingService:
         channel: str,
         platform: str,
         include_types: list[str] | None = None,
+        installed_packages: list[dict[str, Any]] | None = None,
         ip_address: str | None,
         user_agent: str | None,
         check_interval_seconds: int,
@@ -1740,28 +2045,51 @@ class LicensingService:
         normalized_channel = (channel or "stable").strip().lower()
         normalized_platform = (platform or "windows-x64").strip().lower()
         requested_types = normalize_release_types(include_types)
-        strategy_rows: list[sqlite3.Row] = []
+        installed_versions = self._installed_package_versions(installed_packages)
+        strategy_rows: list[dict[str, Any]] = []
         app_release: dict[str, Any] | None = None
+        denied_releases: list[dict[str, Any]] = []
         with self.database.session() as connection:
+            customer_row = connection.execute("SELECT * FROM customers WHERE id = ?", (license_response["customer"]["id"],)).fetchone()
+            if customer_row is None:
+                return {
+                    "status": "unknown_customer",
+                    "message": "No customer matched the supplied license identifier.",
+                    "server_time": iso(),
+                    "channel": normalized_channel,
+                    "platform": normalized_platform,
+                    "releases": [],
+                    "app_update": None,
+                    "license": license_response,
+                }
+            customer = dict(customer_row)
             if STRATEGY_RELEASE_TYPE in requested_types:
-                strategy_rows = connection.execute(
-                    """
-                    SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
-                           products.feature_id AS feature_id
-                    FROM trader_releases
-                    LEFT JOIN products ON products.id = trader_releases.product_id
-                    WHERE trader_releases.is_active = 1
-                      AND COALESCE(trader_releases.is_published, trader_releases.is_active) = 1
-                      AND trader_releases.channel = ?
-                      AND trader_releases.platform = ?
-                      AND COALESCE(trader_releases.release_type, 'strategy_package') = 'strategy_package'
-                      AND trader_releases.product_id IN ({placeholders})
-                    ORDER BY trader_releases.created_at DESC, trader_releases.updated_at DESC
-                    """.format(placeholders=",".join("?" for _ in licensed_product_ids) or "NULL"),
-                    (normalized_channel, normalized_platform, *licensed_product_ids),
-                ).fetchall()
+                if licensed_product_ids:
+                    rows = connection.execute(
+                        """
+                        SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
+                               products.feature_id AS feature_id
+                        FROM trader_releases
+                        LEFT JOIN products ON products.id = trader_releases.product_id
+                        WHERE trader_releases.is_active = 1
+                          AND COALESCE(trader_releases.is_published, trader_releases.is_active) = 1
+                          AND trader_releases.platform = ?
+                          AND COALESCE(trader_releases.release_type, 'strategy_package') = 'strategy_package'
+                          AND trader_releases.product_id IN ({placeholders})
+                        ORDER BY trader_releases.updated_at DESC, trader_releases.created_at DESC
+                        """.format(placeholders=",".join("?" for _ in licensed_product_ids)),
+                        (normalized_platform, *licensed_product_ids),
+                    ).fetchall()
+                    selected, denied = self._select_visible_releases(
+                        [dict(row) for row in rows],
+                        customer,
+                        normalized_channel,
+                        group_by="product_id",
+                    )
+                    strategy_rows = selected
+                    denied_releases.extend(denied)
             if TRADER_DESKTOP_RELEASE_TYPE in requested_types:
-                app_row = connection.execute(
+                app_rows = connection.execute(
                     """
                     SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
                            products.feature_id AS feature_id
@@ -1769,32 +2097,50 @@ class LicensingService:
                     LEFT JOIN products ON products.id = trader_releases.product_id
                     WHERE trader_releases.is_active = 1
                       AND COALESCE(trader_releases.is_published, trader_releases.is_active) = 1
-                      AND trader_releases.channel = ?
                       AND trader_releases.platform = ?
                       AND (
                         COALESCE(trader_releases.release_type, CASE WHEN trader_releases.scope = 'app' THEN 'trader_desktop' ELSE 'strategy_package' END) = 'trader_desktop'
                         OR trader_releases.scope = 'app'
                       )
                       AND COALESCE(trader_releases.product_key, 'trader-desktop') = ?
-                    ORDER BY trader_releases.created_at DESC, trader_releases.updated_at DESC
-                    LIMIT 1
+                    ORDER BY trader_releases.updated_at DESC, trader_releases.created_at DESC
                     """,
-                    (normalized_channel, normalized_platform, TRADER_DESKTOP_PRODUCT_ID),
-                ).fetchone()
-                if app_row is not None:
-                    app_release = dict(app_row)
+                    (normalized_platform, TRADER_DESKTOP_PRODUCT_ID),
+                ).fetchall()
+                selected, denied = self._select_visible_releases(
+                    [dict(row) for row in app_rows],
+                    customer,
+                    normalized_channel,
+                    group_by="product_key",
+                )
+                if selected:
+                    app_release = selected[0]
+                denied_releases.extend(denied)
+            if denied_releases:
+                self.audit(
+                    connection,
+                    "client",
+                    customer["id"],
+                    "release.manifest_audience_denied",
+                    "customer",
+                    customer["id"],
+                    {"denied": denied_releases[:25], "channel": normalized_channel, "platform": normalized_platform},
+                    ip_address,
+                )
 
-        latest: dict[tuple[str, str | None], dict[str, Any]] = {}
-        for row in strategy_rows:
-            release = dict(row)
-            key = (release["scope"], release["product_id"])
-            if key not in latest:
-                latest[key] = release
         releases = [
-            self._release_manifest_item(release, app_version)
-            for release in latest.values()
+            self._release_manifest_item(
+                release,
+                self._current_version_for_release(release, app_version, installed_versions),
+            )
+            for release in strategy_rows
         ]
         releases.sort(key=lambda item: (item["scope"], item.get("strategy") or "", item["version"]))
+        app_update = None
+        if app_release:
+            app_current_version = self._current_version_for_release(app_release, app_version, installed_versions)
+            if release_action_for_row(app_release, app_current_version) != "current":
+                app_update = self._trader_desktop_update_item(app_release, app_current_version)
         return {
             "status": "active",
             "message": "Release manifest available.",
@@ -1802,7 +2148,7 @@ class LicensingService:
             "channel": normalized_channel,
             "platform": normalized_platform,
             "releases": releases,
-            "app_update": self._trader_desktop_update_item(app_release, app_version) if app_release and version_is_newer(app_release.get("version"), app_version) else None,
+            "app_update": app_update,
             "license": license_response,
         }
 
@@ -1816,6 +2162,9 @@ class LicensingService:
         whop_user_id: str | None,
         machine_fingerprint: str,
         app_version: str | None,
+        channel: str = "stable",
+        platform: str = "windows-x64",
+        installed_packages: list[dict[str, Any]] | None = None,
         ip_address: str | None,
         user_agent: str | None,
         check_interval_seconds: int,
@@ -1851,6 +2200,9 @@ class LicensingService:
         if not customer or not device:
             return {"status": "invalid_request", "message": "Customer or device was not resolved.", "release": None, "token": None, "expires_at": None}
 
+        normalized_channel = (channel or "stable").strip().lower()
+        normalized_platform = (platform or "windows-x64").strip().lower()
+        installed_versions = self._installed_package_versions(installed_packages)
         with self.database.session() as connection:
             release = connection.execute(
                 """
@@ -1858,9 +2210,12 @@ class LicensingService:
                        products.feature_id AS feature_id
                 FROM trader_releases
                 LEFT JOIN products ON products.id = trader_releases.product_id
-                WHERE trader_releases.id = ? AND trader_releases.is_active = 1
+                WHERE trader_releases.id = ?
+                  AND trader_releases.is_active = 1
+                  AND COALESCE(trader_releases.is_published, trader_releases.is_active) = 1
+                  AND trader_releases.platform = ?
                 """,
-                (release_id,),
+                (release_id, normalized_platform),
             ).fetchone()
             if release is None:
                 return {"status": "not_found", "message": "Release not found.", "release": None, "token": None, "expires_at": None}
@@ -1868,6 +2223,24 @@ class LicensingService:
             if release_type == STRATEGY_RELEASE_TYPE and release["product_id"] not in licensed_product_ids:
                 self._record_release_download(connection, dict(release), customer["id"], device["id"], None, "not_licensed", ip_address, user_agent)
                 return {"status": "not_licensed", "message": "The license does not allow this release.", "release": None, "token": None, "expires_at": None}
+            full_customer = connection.execute("SELECT * FROM customers WHERE id = ?", (customer["id"],)).fetchone()
+            if full_customer is None:
+                return {"status": "unknown_customer", "message": "Customer was not found.", "release": None, "token": None, "expires_at": None}
+            release_dict = dict(release)
+            allowed, reason = self._release_visible_to_customer(release_dict, dict(full_customer), normalized_channel)
+            if not allowed:
+                self._record_release_download(connection, release_dict, customer["id"], device["id"], None, "audience_denied", ip_address, user_agent)
+                self.audit(
+                    connection,
+                    "client",
+                    customer["id"],
+                    "release.download_token_audience_denied",
+                    "release",
+                    release["id"],
+                    {"device_id": device["id"], "reason": reason, "channel": normalized_channel, "platform": normalized_platform},
+                    ip_address,
+                )
+                return {"status": "audience_denied", "message": "This license is not allowed to download this release.", "release": None, "token": None, "expires_at": None}
 
             token = random_token()
             token_hash = sha256_hex(token)
@@ -1892,7 +2265,10 @@ class LicensingService:
             return {
                 "status": "ok",
                 "message": "Download token created.",
-                "release": self._release_manifest_item(dict(release), app_version),
+                "release": self._release_manifest_item(
+                    release_dict,
+                    self._current_version_for_release(release_dict, app_version, installed_versions),
+                ),
                 "token": token,
                 "expires_at": iso(expires),
             }
@@ -1945,8 +2321,9 @@ class LicensingService:
                 "size_bytes": artifact_file.stat().st_size,
             }
 
-    def _release_manifest_item(self, release: dict[str, Any], app_version: str | None) -> dict[str, Any]:
+    def _release_manifest_item(self, release: dict[str, Any], current_version: str | None) -> dict[str, Any]:
         release_type = release.get("release_type") or release_type_from_scope(release.get("scope"))
+        action = release_action_for_row(release, current_version)
         return {
             "id": release["id"],
             "scope": release["scope"],
@@ -1959,7 +2336,10 @@ class LicensingService:
             "version": release["version"],
             "min_supported_version": release.get("min_supported_version"),
             "required": bool(release["is_required"]),
-            "update_available": bool(app_version and app_version.strip() != release["version"]),
+            "current_version": current_version,
+            "target_version": release["version"],
+            "action": action,
+            "update_available": action != "current",
             "artifact": {
                 "filename": release["artifact_filename"],
                 "size_bytes": release.get("size_bytes"),
@@ -1968,15 +2348,19 @@ class LicensingService:
                 "signature_key_id": release.get("signature_key_id"),
             },
             "release_notes": release.get("release_notes"),
+            "rollback_reason": release.get("rollback_reason"),
         }
 
-    def _trader_desktop_update_item(self, release: dict[str, Any], app_version: str | None) -> dict[str, Any]:
+    def _trader_desktop_update_item(self, release: dict[str, Any], current_version: str | None) -> dict[str, Any]:
+        action = release_action_for_row(release, current_version)
         return {
             "product_id": release.get("product_key") or TRADER_DESKTOP_PRODUCT_ID,
             "release_type": TRADER_DESKTOP_RELEASE_TYPE,
-            "current_version": app_version,
+            "current_version": current_version,
             "available_version": release["version"],
-            "update_available": True,
+            "target_version": release["version"],
+            "update_available": action != "current",
+            "action": action,
             "release_id": release["id"],
             "channel": release["channel"],
             "platform": release["platform"],
@@ -1990,6 +2374,7 @@ class LicensingService:
                 "signature_key_id": release.get("signature_key_id"),
             },
             "release_notes": release.get("release_notes"),
+            "rollback_reason": release.get("rollback_reason"),
         }
 
     def _record_release_download(
@@ -2118,6 +2503,7 @@ class LicensingService:
                 "email": customer_dict["email"],
                 "whop_user_id": customer_dict["whop_user_id"],
                 "license_key_last4": customer_dict["license_key_last4"],
+                "tags": json_list(customer_dict.get("tags_json")),
             }
             if customer_dict
             else None,

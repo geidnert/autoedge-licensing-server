@@ -189,6 +189,7 @@ class AutoEdgeApp:
             return json_response({"status": "rate_limited", "message": "Too many release manifest requests."}, HTTPStatus.TOO_MANY_REQUESTS)
         payload = request.json()
         include_types = payload.get("include_types") if isinstance(payload.get("include_types"), list) else None
+        installed_packages = payload.get("installed_packages") if isinstance(payload.get("installed_packages"), list) else None
         response = self.service.release_manifest(
             license_key=payload.get("license_key"),
             email=payload.get("email"),
@@ -199,6 +200,7 @@ class AutoEdgeApp:
             channel=payload.get("channel") or "stable",
             platform=payload.get("platform") or "windows-x64",
             include_types=include_types,
+            installed_packages=installed_packages,
             ip_address=request.ip,
             user_agent=request.user_agent,
             check_interval_seconds=self.settings.license_check_interval_seconds,
@@ -211,6 +213,7 @@ class AutoEdgeApp:
         if not self.rate_limiter.allow(f"release-token:{request.ip}"):
             return json_response({"status": "rate_limited", "message": "Too many download token requests."}, HTTPStatus.TOO_MANY_REQUESTS)
         payload = request.json()
+        installed_packages = payload.get("installed_packages") if isinstance(payload.get("installed_packages"), list) else None
         result = self.service.create_release_download_token(
             release_id=payload.get("release_id") or "",
             license_key=payload.get("license_key"),
@@ -219,6 +222,9 @@ class AutoEdgeApp:
             whop_user_id=payload.get("whop_user_id"),
             machine_fingerprint=payload.get("machine_fingerprint") or "",
             app_version=payload.get("app_version"),
+            channel=payload.get("channel") or "stable",
+            platform=payload.get("platform") or "windows-x64",
+            installed_packages=installed_packages,
             ip_address=request.ip,
             user_agent=request.user_agent,
             check_interval_seconds=self.settings.license_check_interval_seconds,
@@ -431,6 +437,13 @@ class AutoEdgeApp:
                 signature_key_id=form.get("signature_key_id") or None,
                 release_notes=form.get("release_notes") or None,
                 artifact_dir=self.settings.release_artifact_dir,
+                audience_mode=form.get("audience_mode") or "all",
+                allowed_customer_ids=form.get("allowed_customer_ids") or None,
+                allowed_emails=form.get("allowed_emails") or None,
+                allowed_license_keys=form.get("allowed_license_keys") or None,
+                required_tags=form.get("required_tags") or None,
+                rollout_percent=parse_optional_int(form.get("rollout_percent")),
+                rollback_reason=form.get("rollback_reason") or None,
                 actor_id=admin["id"],
                 ip_address=request.ip,
             )
@@ -476,6 +489,15 @@ class AutoEdgeApp:
                 status=form.get("status", ""),
                 expires_at=form.get("expires_at") or None,
                 reason=form.get("reason") or None,
+                actor_id=admin["id"],
+                ip_address=request.ip,
+            )
+            return redirect(f"/admin/customers/{customer_id}")
+        if len(parts) == 4 and parts[3] == "tags" and request.method == "POST":
+            form = request.form()
+            self.service.set_customer_tags(
+                customer_id=customer_id,
+                tags=form.get("tags") or "",
                 actor_id=admin["id"],
                 ip_address=request.ip,
             )
@@ -603,6 +625,18 @@ def format_json(value: str | None) -> str:
         return json.dumps(json.loads(value), indent=2, sort_keys=True)
     except json.JSONDecodeError:
         return value
+
+
+def format_list_field(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    if not isinstance(parsed, list):
+        return value
+    return "\n".join(str(item) for item in parsed)
 
 
 def short_hash(value: str | None) -> str:
@@ -895,6 +929,9 @@ def releases_page(
     selected_release_type = selected.get("release_type") or ("trader_desktop" if selected.get("scope") == "app" else "strategy_package")
     required_checked = "checked" if selected.get("is_required", 0) else ""
     active_checked = "checked" if selected.get("is_active", 1) else ""
+    selected_audience_mode = selected.get("audience_mode") or "all"
+    selected_rollout_percent = selected.get("rollout_percent")
+    rollout_value = "100" if selected_rollout_percent is None else str(selected_rollout_percent)
     product_options = ['<option value="">None</option>']
     for product in products:
         selected_attr = "selected" if selected.get("product_id") == product["id"] else ""
@@ -903,6 +940,14 @@ def releases_page(
         f'<option value="{value}" {"selected" if selected_release_type == value else ""}>{label}</option>'
         for value, label in (("strategy_package", "Strategy package"), ("trader_desktop", "Trader Desktop"))
     )
+    channel_options = "\n".join(
+        f'<option value="{value}" {"selected" if selected.get("channel", "stable") == value else ""}>{label}</option>'
+        for value, label in (("stable", "Stable"), ("beta", "Beta"), ("canary", "Canary"), ("internal", "Internal"))
+    )
+    audience_mode_options = "\n".join(
+        f'<option value="{value}" {"selected" if selected_audience_mode == value else ""}>{label}</option>'
+        for value, label in (("all", "All"), ("allowlist", "Allowlist"), ("roles", "Roles/tags"), ("percent", "Percent rollout"), ("disabled", "Disabled"))
+    )
 
     rows = "\n".join(
         f"""
@@ -910,6 +955,7 @@ def releases_page(
           <td><strong>{e(release.get('version'))}</strong><small>{e(release.get('release_notes'))}</small></td>
           <td>{e(release.get('release_type') or ('trader_desktop' if release.get('scope') == 'app' else 'strategy_package'))}<small>{e(display_product_name(release.get('product_name')) if release.get('product_name') else release.get('product_key') or 'trader-desktop')}</small></td>
           <td>{e(release.get('channel'))}<small>{e(release.get('platform'))}</small></td>
+          <td>{e(release.get('audience_mode') or 'all')}<small>{e(release.get('rollout_percent') if release.get('rollout_percent') is not None else 100)}%</small></td>
           <td>{format_bool(release.get('is_required'))}</td>
           <td>{format_bool(release.get('is_published') if release.get('is_published') is not None else release.get('is_active'))}</td>
           <td>{e(release.get('artifact_filename'))}<small>{e(release.get('size_bytes'))} bytes</small></td>
@@ -937,7 +983,7 @@ def releases_page(
           <label>Release type <select name="release_type">{release_type_options}</select></label>
           <label>Strategy <select name="product_id">{"".join(product_options)}</select></label>
           <label>Product id <input name="product_key" placeholder="trader-desktop" value="{e(selected.get('product_key') or ('trader-desktop' if selected_release_type == 'trader_desktop' else ''))}"></label>
-          <label>Channel <input name="channel" required value="{e(selected.get('channel', 'stable'))}"></label>
+          <label>Channel <select name="channel">{channel_options}</select></label>
           <label>Platform <input name="platform" required value="{e(selected.get('platform', 'windows-x64'))}"></label>
           <label>Version <input name="version" required placeholder="1.0.0" value="{e(selected.get('version'))}"></label>
           <label>Minimum supported <input name="min_supported_version" placeholder="optional" value="{e(selected.get('min_supported_version'))}"></label>
@@ -954,6 +1000,15 @@ def releases_page(
           <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
           <label>Signature key id <input name="signature_key_id" value="{e(selected.get('signature_key_id'))}"></label>
         </div>
+        <div class="grid-form release-targeting-form">
+          <label>Audience <select name="audience_mode">{audience_mode_options}</select></label>
+          <label>Rollout percent <input name="rollout_percent" type="number" min="0" max="100" value="{e(rollout_value)}"></label>
+          <label>Required tags <textarea name="required_tags" rows="3" placeholder="tester&#10;desktop_beta">{e(format_list_field(selected.get('required_tags_json')))}</textarea></label>
+          <label>Allowed customers <textarea name="allowed_customer_ids" rows="3" placeholder="customer ids">{e(format_list_field(selected.get('allowed_customer_ids_json')))}</textarea></label>
+          <label>Allowed emails <textarea name="allowed_emails" rows="3" placeholder="email@example.com">{e(format_list_field(selected.get('allowed_emails_json')))}</textarea></label>
+          <label>Allowed license keys <textarea name="allowed_license_keys" rows="3" placeholder="paste full keys when needed"></textarea></label>
+        </div>
+        <label>Rollback reason <input name="rollback_reason" value="{e(selected.get('rollback_reason'))}"></label>
         <label>Release notes <input name="release_notes" value="{e(selected.get('release_notes'))}"></label>
         <div class="form-actions">
           <button type="submit">{button_text}</button>
@@ -963,8 +1018,8 @@ def releases_page(
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Version</th><th>Type</th><th>Channel</th><th>Required</th><th>Published</th><th>Artifact</th><th>SHA-256</th><th>Created</th><th>Updated</th><th></th></tr></thead>
-        <tbody>{rows or '<tr><td colspan="10">No releases configured.</td></tr>'}</tbody>
+        <thead><tr><th>Version</th><th>Type</th><th>Channel</th><th>Audience</th><th>Required</th><th>Published</th><th>Artifact</th><th>SHA-256</th><th>Created</th><th>Updated</th><th></th></tr></thead>
+        <tbody>{rows or '<tr><td colspan="11">No releases configured.</td></tr>'}</tbody>
       </table>
     </section>
     """
@@ -972,8 +1027,10 @@ def releases_page(
 
 def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]], csrf: str, created_key: str) -> str:
     customer = detail["customer"]
+    tags = detail.get("tags") or []
     device_limit = detail.get("device_limit") or {}
     max_devices_value = "" if device_limit.get("customer_max_devices") is None else str(device_limit.get("customer_max_devices"))
+    tags_value = "\n".join(str(tag) for tag in tags)
     product_options = "\n".join(f'<option value="{e(product["id"])}">{e(display_product_name(product.get("name")))}</option>' for product in products)
     key_notice = f'<p class="notice">New license key: <code>{e(created_key)}</code>. Store it now; only the last four characters are retained.</p>' if created_key else ""
     entitlements = "\n".join(
@@ -1057,7 +1114,16 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
       <div><span>Whop user</span><code>{e(customer.get('whop_user_id'))}</code></div>
       <div><span>Whop member</span><code>{e(customer.get('whop_member_id'))}</code></div>
       <div><span>License key</span><code>•••• {e(customer.get('license_key_last4'))}</code></div>
+      <div><span>Tags</span><code>{e(', '.join(tags) or 'none')}</code></div>
       <div><span>Devices</span><code>{e(device_limit.get('active_devices', 0))} / {e(device_limit.get('max_devices', 1))}</code></div>
+    </section>
+    <section class="panel">
+      <h2>Release targeting tags</h2>
+      <form class="grid-form customer-tags-form" method="post" action="/admin/customers/{e(customer['id'])}/tags">
+        <input type="hidden" name="csrf" value="{e(csrf)}">
+        <label>Tags <textarea name="tags" rows="3" placeholder="internal&#10;desktop_beta">{e(tags_value)}</textarea></label>
+        <button type="submit">Save tags</button>
+      </form>
     </section>
     <section class="panel">
       <h2>Device limit</h2>
@@ -1132,7 +1198,8 @@ button:hover, .button:hover { background: #0f5d53; }
 .button.secondary { background: #fff; color: #0f5d53; }
 .button.secondary:hover { background: #eef9f6; }
 .button.small { min-height: 30px; padding: 0 10px; font-size: 13px; }
-input, select { min-height: 36px; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); }
+input, select, textarea { min-height: 36px; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); }
+textarea { resize: vertical; font: inherit; }
 label { display: grid; gap: 6px; color: #34404c; font-weight: 600; }
 small { display: block; margin-top: 3px; color: var(--muted); font-weight: 400; }
 .muted { color: var(--muted); }
@@ -1156,7 +1223,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .release-form { grid-template-columns: repeat(7, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
 .release-artifact-form { grid-template-columns: 2fr 1fr 1fr 2fr; margin-bottom: 12px; }
 .release-signature-form { grid-template-columns: 2fr 1fr; margin-bottom: 12px; }
+.release-targeting-form { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 12px; }
 .device-limit-form { grid-template-columns: minmax(180px, 260px) auto; margin-bottom: 12px; }
+.customer-tags-form { grid-template-columns: minmax(260px, 420px) auto; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: auto; min-height: auto; }
 .grant-table { margin: 8px 0 14px; }
@@ -1176,7 +1245,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   nav { padding: 0 12px; gap: 10px; overflow-x: auto; }
   main { width: calc(100vw - 18px); margin-top: 12px; }
   .title-row, .search { display: grid; }
-  .grid-form, .package-form, .release-form, .release-artifact-form, .release-signature-form, .device-limit-form, .facts { grid-template-columns: 1fr; }
+  .grid-form, .package-form, .release-form, .release-artifact-form, .release-signature-form, .release-targeting-form, .device-limit-form, .customer-tags-form, .facts { grid-template-columns: 1fr; }
   table { display: block; overflow-x: auto; }
 }
 """

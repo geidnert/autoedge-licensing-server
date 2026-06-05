@@ -148,16 +148,24 @@ Request:
   "app_version": "0.5.0",
   "channel": "stable",
   "platform": "windows-x64",
-  "include_types": ["strategy_package", "trader_desktop"]
+  "include_types": ["strategy_package", "trader_desktop"],
+  "installed_packages": [
+    { "package_id": "duo-runtime", "version": "1.1.0" },
+    { "package_id": "duorc-runtime", "version": "1.0.0" }
+  ]
 }
 ```
 
 The same license identifiers as `/api/trader/license/check` are accepted. The response includes the normal license decision plus:
 
-- `releases`: strategy package releases only for strategies the customer is licensed to use.
-- `app_update`: the latest Trader Desktop update for the requested platform/channel when it is newer than `app_version`.
+- `releases`: strategy package releases only for strategies the customer is licensed and targeted to use.
+- `app_update`: the Trader Desktop target release for the customer when it differs from `app_version`.
 
 If `include_types` is omitted, both `strategy_package` and `trader_desktop` are included. Use `["strategy_package"]` or `["trader_desktop"]` to request one side only.
+
+`installed_packages` is optional and lets the server compare each strategy package against the version installed locally. If omitted, older clients still receive the same compatible release rows.
+
+Release targeting is fully server-side. The client only sees releases it is allowed to see. Admins can target releases by channel, customer id, email, full license key, customer tags/roles, deterministic rollout percent, or disable the release audience entirely.
 
 Response:
 
@@ -176,6 +184,9 @@ Response:
       "feature_id": "strategy.duo.runtime",
       "version": "1.2.0",
       "required": false,
+      "current_version": "1.1.0",
+      "target_version": "1.2.0",
+      "action": "update",
       "update_available": true,
       "artifact": {
         "filename": "duo-1.2.0.zip",
@@ -184,7 +195,8 @@ Response:
         "signature": "optional-signature",
         "signature_key_id": "optional-key-id"
       },
-      "release_notes": "Optional notes"
+      "release_notes": "Optional notes",
+      "rollback_reason": null
     }
   ],
   "app_update": {
@@ -192,6 +204,8 @@ Response:
     "release_type": "trader_desktop",
     "current_version": "0.1.0",
     "available_version": "0.1.1",
+    "target_version": "0.1.1",
+    "action": "update",
     "update_available": true,
     "release_id": "release-id",
     "channel": "stable",
@@ -205,7 +219,8 @@ Response:
       "signature": "optional-signature",
       "signature_key_id": "optional-key-id"
     },
-    "release_notes": "Optional notes"
+    "release_notes": "Optional notes",
+    "rollback_reason": null
   },
   "license": {
     "status": "active"
@@ -214,6 +229,14 @@ Response:
 ```
 
 Trader should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, device-limit-exceeded, or unknown customers receive an empty release list, `app_update: null`, and the same blocking license status.
+
+`action` is one of:
+
+- `update`: target version is newer than the installed/current version.
+- `rollback`: target version is lower and the server has explicitly directed rollback by marking the release required or setting a rollback reason.
+- `current`: target version equals the installed/current version.
+
+Rollback is server-directed. Trader Desktop and strategies must not infer that a newer local version is valid if the server returns a lower `target_version` with `action: "rollback"`.
 
 ### Trader Release Download
 
@@ -226,11 +249,16 @@ Request:
   "release_id": "release-id-from-manifest",
   "license_key": "AE-XXXX-XXXX-XXXX-XXXX-XXXX",
   "machine_fingerprint": "stable-client-machine-fingerprint",
-  "app_version": "0.5.0"
+  "app_version": "0.5.0",
+  "channel": "stable",
+  "platform": "windows-x64",
+  "installed_packages": [
+    { "package_id": "duo-runtime", "version": "1.1.0" }
+  ]
 }
 ```
 
-The server checks the license and device limit again before issuing a short-lived download token. Strategy package downloads are allowed only when the license includes that strategy. Trader Desktop downloads are allowed for any active license.
+The server checks the license, device limit, platform, and release targeting again before issuing a short-lived download token. Strategy package downloads are allowed only when the license includes that strategy. Trader Desktop downloads are allowed for active licenses only when the customer is targeted for that app release. A customer cannot download a release merely by knowing its `release_id`.
 
 Response:
 
@@ -250,15 +278,22 @@ Trader Desktop release fields:
 
 - Release type: `Trader Desktop`
 - Product id: `trader-desktop`
-- Channel: `stable`
+- Channel: `stable`, `beta`, `canary`, or `internal`
 - Platform: `windows-x64`
 - Version and optional minimum supported version
 - Published checkbox
+- Audience mode: `all`, `allowlist`, `roles`, `percent`, or `disabled`
+- Allowed customer ids, emails, or full license keys for allowlisted releases
+- Required tags/roles such as `internal`, `tester`, `desktop_beta`, `duo_beta`, `duorc_beta`, or `early_access`
+- Rollout percent from `0` to `100`, deterministic per customer/license and release
+- Optional rollback reason
 - Artifact path, optional download filename, optional size/SHA-256 override
 - Optional signature and signature key id
 - Release notes
 
 Strategy package releases use release type `Strategy package`, choose the strategy in the Strategy field, and keep using feature ids such as `strategy.duo.runtime`.
+
+Customer tags are edited from the customer detail page under `Release targeting tags`. Tags are normalized to lowercase values and are included in license responses for diagnostic visibility.
 
 ## Local Development
 

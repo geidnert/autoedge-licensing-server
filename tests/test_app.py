@@ -235,6 +235,9 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("trader-desktop", html)
         self.assertIn("Published", html)
         self.assertIn("Signature key id", html)
+        self.assertIn("Audience", html)
+        self.assertIn("Allowed emails", html)
+        self.assertIn("Rollback reason", html)
         self.assertIn("Created", html)
         self.assertIn("2026-06-04T13:05:00Z", html)
 

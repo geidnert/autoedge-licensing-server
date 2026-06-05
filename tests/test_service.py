@@ -38,6 +38,92 @@ class LicensingServiceTests(unittest.TestCase):
         )
         return created
 
+    def strategy_release(
+        self,
+        *,
+        version: str,
+        channel: str = "stable",
+        product_id: str | None = None,
+        audience_mode: str = "all",
+        allowed_customer_ids: str | None = None,
+        allowed_emails: str | None = None,
+        required_tags: str | None = None,
+        rollout_percent: int | None = None,
+        is_active: bool = True,
+        rollback_reason: str | None = None,
+    ):
+        artifact_dir = Path(self.tmp.name) / "release-test-artifacts"
+        artifact_dir.mkdir(exist_ok=True)
+        path = f"strategy-{version}-{channel}.zip"
+        (artifact_dir / path).write_bytes(f"strategy {version}".encode())
+        return self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=product_id or self.product["id"],
+            channel=channel,
+            platform="windows-x64",
+            version=version,
+            min_supported_version=None,
+            is_required=False,
+            is_active=is_active,
+            artifact_path=path,
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+            audience_mode=audience_mode,
+            allowed_customer_ids=allowed_customer_ids,
+            allowed_emails=allowed_emails,
+            required_tags=required_tags,
+            rollout_percent=rollout_percent,
+            rollback_reason=rollback_reason,
+        )
+
+    def desktop_release(
+        self,
+        *,
+        version: str,
+        channel: str = "stable",
+        audience_mode: str = "all",
+        allowed_customer_ids: str | None = None,
+        allowed_emails: str | None = None,
+        required_tags: str | None = None,
+        rollout_percent: int | None = None,
+        rollback_reason: str | None = None,
+    ):
+        artifact_dir = Path(self.tmp.name) / "desktop-test-artifacts"
+        artifact_dir.mkdir(exist_ok=True)
+        path = f"Trader-Setup-{version}-windows-x64.zip"
+        (artifact_dir / path).write_bytes(f"desktop {version}".encode())
+        return self.service.upsert_release(
+            release_id=None,
+            scope="app",
+            release_type="trader_desktop",
+            product_key="trader-desktop",
+            product_id=None,
+            channel=channel,
+            platform="windows-x64",
+            version=version,
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path=path,
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+            audience_mode=audience_mode,
+            allowed_customer_ids=allowed_customer_ids,
+            allowed_emails=allowed_emails,
+            required_tags=required_tags,
+            rollout_percent=rollout_percent,
+            rollback_reason=rollback_reason,
+        )
+
     def test_manual_active_grant_returns_licensed_strategy(self) -> None:
         created = self.service.create_or_update_customer(email="alice@example.com", name="Alice")
         self.service.manual_set_entitlement(
@@ -1065,6 +1151,283 @@ class LicensingServiceTests(unittest.TestCase):
 
         self.assertIsNone(same["app_update"])
         self.assertIsNone(newer["app_update"])
+
+    def test_stable_customer_only_sees_stable_release(self) -> None:
+        created = self.active_customer("stable-only@example.com")
+        self.strategy_release(version="1.0.0", channel="stable")
+        self.strategy_release(version="1.1.0", channel="beta")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="stable-only-machine",
+            app_version="0.9.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual(["1.0.0"], [release["version"] for release in manifest["releases"]])
+
+    def test_tester_role_sees_beta_targeted_release(self) -> None:
+        created = self.active_customer("desktop-beta@example.com")
+        self.service.set_customer_tags(
+            customer_id=created.customer["id"],
+            tags="desktop_beta",
+            actor_id="admin",
+            ip_address=None,
+        )
+        release = self.desktop_release(
+            version="0.2.0",
+            channel="beta",
+            audience_mode="roles",
+            required_tags="desktop_beta",
+        )
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="desktop-beta-machine",
+            app_version="0.1.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["trader_desktop"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual(release["id"], manifest["app_update"]["release_id"])
+        self.assertEqual("update", manifest["app_update"]["action"])
+
+    def test_internal_role_sees_internal_release(self) -> None:
+        created = self.active_customer("internal-release@example.com")
+        self.service.set_customer_tags(
+            customer_id=created.customer["id"],
+            tags="internal",
+            actor_id="admin",
+            ip_address=None,
+        )
+        self.strategy_release(version="1.0.0", channel="stable")
+        self.strategy_release(version="1.2.0", channel="internal", audience_mode="roles", required_tags="internal")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="internal-release-machine",
+            app_version="0.9.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual(["1.2.0"], [release["version"] for release in manifest["releases"]])
+
+    def test_allowlisted_email_sees_targeted_release(self) -> None:
+        created = self.active_customer("allowlisted@example.com")
+        self.strategy_release(
+            version="1.3.0",
+            channel="beta",
+            audience_mode="allowlist",
+            allowed_emails="allowlisted@example.com",
+        )
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="allowlisted-machine",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual(["1.3.0"], [release["version"] for release in manifest["releases"]])
+
+    def test_non_allowlisted_customer_does_not_see_targeted_release(self) -> None:
+        created = self.active_customer("not-allowlisted@example.com")
+        self.strategy_release(
+            version="1.3.0",
+            channel="stable",
+            audience_mode="allowlist",
+            allowed_emails="someone-else@example.com",
+        )
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="not-allowlisted-machine",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual([], manifest["releases"])
+
+    def test_percent_rollout_is_deterministic(self) -> None:
+        created = self.active_customer("percent@example.com")
+        self.strategy_release(version="1.4.0", channel="stable", audience_mode="percent", rollout_percent=50)
+
+        first = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="percent-machine",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        second = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="percent-machine",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual(first["releases"], second["releases"])
+
+    def test_manifest_can_return_trader_desktop_rollback(self) -> None:
+        created = self.active_customer("desktop-rollback@example.com")
+        self.desktop_release(version="0.1.0", rollback_reason="Rollback bad installer")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="desktop-rollback-machine",
+            app_version="0.1.1",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["trader_desktop"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("rollback", manifest["app_update"]["action"])
+        self.assertEqual("0.1.0", manifest["app_update"]["target_version"])
+        self.assertEqual("Rollback bad installer", manifest["app_update"]["rollback_reason"])
+
+    def test_strategy_package_rollback_uses_installed_packages(self) -> None:
+        created = self.active_customer("strategy-rollback@example.com")
+        self.strategy_release(version="0.1.0", rollback_reason="Rollback strategy package")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="strategy-rollback-machine",
+            app_version="9.9.9",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            installed_packages=[{"package_id": "duo-runtime", "version": "0.1.1"}],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("rollback", manifest["releases"][0]["action"])
+        self.assertEqual("0.1.0", manifest["releases"][0]["target_version"])
+        self.assertEqual("0.1.1", manifest["releases"][0]["current_version"])
+
+    def test_download_token_denied_when_audience_denies_release(self) -> None:
+        created = self.active_customer("token-audience@example.com")
+        release = self.strategy_release(
+            version="1.5.0",
+            channel="stable",
+            audience_mode="allowlist",
+            allowed_emails="someone-else@example.com",
+        )
+
+        token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="token-audience-machine",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
+
+        self.assertEqual("audience_denied", token["status"])
+        self.assertIsNone(token["token"])
+
+    def test_disabled_release_is_never_returned(self) -> None:
+        created = self.active_customer("disabled-release@example.com")
+        self.strategy_release(version="1.6.0", channel="stable", audience_mode="disabled")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="disabled-release-machine",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual([], manifest["releases"])
 
     def test_release_download_token_and_resolution_are_license_gated(self) -> None:
         created = self.service.create_or_update_customer(email="download@example.com")
