@@ -614,17 +614,6 @@ def display_product_name(value: str | None) -> str:
     return value
 
 
-def display_platform(value: str | None) -> str:
-    labels = {
-        "windows-x64": "Windows x64",
-        "windows-arm64": "Windows arm64",
-        "macos-x64": "macOS x64",
-        "macos-arm64": "macOS arm64",
-    }
-    normalized = (value or "").strip().lower()
-    return labels.get(normalized, value or "")
-
-
 def format_bool(value: Any) -> str:
     return "yes" if value else "no"
 
@@ -948,11 +937,13 @@ def releases_page(
     selected_audience_mode = selected.get("audience_mode") or "all"
     selected_rollout_percent = selected.get("rollout_percent")
     rollout_value = "100" if selected_rollout_percent is None else str(selected_rollout_percent)
+    selected_platform = selected.get("platform", "windows-x64")
     advanced_open = "open" if any(
         [
             selected.get("min_supported_version"),
             selected.get("signature"),
             selected.get("signature_key_id"),
+            selected_platform != "windows-x64",
             selected_audience_mode != "all",
             rollout_value != "100",
             format_list_field(selected.get("required_tags_json")),
@@ -973,12 +964,11 @@ def releases_page(
         f'<option value="{value}" {"selected" if selected.get("channel", "stable") == value else ""}>{label}</option>'
         for value, label in (("stable", "Stable"), ("beta", "Beta"), ("canary", "Canary"), ("internal", "Internal"))
     )
-    selected_platform = selected.get("platform", "windows-x64")
-    platform_values = ["windows-x64"]
+    platform_values = ["windows-x64", "macos-arm64", "macos-x64"]
     if selected_platform and selected_platform not in platform_values:
         platform_values.append(selected_platform)
     platform_options = "\n".join(
-        f'<option value="{e(value)}" {"selected" if selected_platform == value else ""}>{e(display_platform(value))}</option>'
+        f'<option value="{e(value)}" {"selected" if selected_platform == value else ""}>{e(value)}</option>'
         for value in platform_values
     )
     audience_mode_options = "\n".join(
@@ -991,7 +981,7 @@ def releases_page(
         <tr>
           <td><strong>{e(release.get('version'))}</strong><small>{e(release.get('release_notes'))}</small></td>
           <td>{e(release.get('release_type') or ('trader_desktop' if release.get('scope') == 'app' else 'strategy_package'))}<small>{e(display_product_name(release.get('product_name')) if release.get('product_name') else release.get('product_key') or 'trader-desktop')}</small></td>
-          <td>{e(release.get('channel'))}<small>Target {e(display_platform(release.get('platform')))}</small></td>
+          <td>{e(release.get('channel'))}</td>
           <td>{e(release.get('audience_mode') or 'all')}<small>{e(release.get('rollout_percent') if release.get('rollout_percent') is not None else 100)}%</small></td>
           <td>{format_bool(release.get('is_required'))}</td>
           <td>{format_bool(release.get('is_published') if release.get('is_published') is not None else release.get('is_active'))}</td>
@@ -1022,7 +1012,6 @@ def releases_page(
           <label>Strategy <select name="product_id">{"".join(product_options)}</select></label>
           <label>Product id <input name="product_key" placeholder="trader-desktop" value="{e(selected.get('product_key') or ('trader-desktop' if selected_release_type == 'trader_desktop' else ''))}"></label>
           <label>Channel <select name="channel">{channel_options}</select></label>
-          <label><span class="label-row">Target platform {info_tip('This is the target OS and architecture for the artifact. Use Windows x64 for Trader Windows builds, even when the build is produced on macOS.')}</span><select name="platform">{platform_options}</select></label>
           <label>Version <input name="version" required placeholder="1.0.0" value="{e(selected.get('version'))}"></label>
           <label class="checkbox"><input name="is_required" type="checkbox" {required_checked}> Required</label>
           <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Published</label>
@@ -1036,6 +1025,7 @@ def releases_page(
         <details class="advanced-release" {advanced_open}>
           <summary>Advanced options <small>Targeting, rollback, signatures, and compatibility gates.</small></summary>
           <div class="grid-form release-advanced-form">
+            <label><span class="label-row">Platform {info_tip('Internal manifest selector. Leave unchanged unless the Trader client is also sending this platform value.')}</span><select name="platform">{platform_options}</select></label>
             <label>Minimum supported <input name="min_supported_version" placeholder="optional" value="{e(selected.get('min_supported_version'))}"></label>
             <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
             <label>Signature key id <input name="signature_key_id" value="{e(selected.get('signature_key_id'))}"></label>
@@ -1060,7 +1050,7 @@ def releases_page(
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Version</th><th>Type</th><th>Channel / Target</th><th>Audience</th><th>Required</th><th>Published</th><th>Artifact</th><th>SHA-256</th><th>Created</th><th>Updated</th><th></th></tr></thead>
+        <thead><tr><th>Version</th><th>Type</th><th>Channel</th><th>Audience</th><th>Required</th><th>Published</th><th>Artifact</th><th>SHA-256</th><th>Created</th><th>Updated</th><th></th></tr></thead>
         <tbody>{rows or '<tr><td colspan="11">No releases configured.</td></tr>'}</tbody>
       </table>
     </section>
@@ -1270,9 +1260,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .release-editor summary { cursor: pointer; color: #202428; font-size: 18px; font-weight: 700; }
 .release-editor summary small { display: inline; margin: 0 0 0 10px; color: var(--muted); font-size: 13px; font-weight: 400; }
 .release-editor form { margin-top: 16px; }
-.release-form { grid-template-columns: repeat(6, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
+.release-form { grid-template-columns: repeat(5, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
 .release-artifact-form { grid-template-columns: 2fr 1fr 1fr 2fr; margin-bottom: 12px; }
-.release-advanced-form { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 12px 0; }
+.release-advanced-form { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 12px 0; }
 .release-targeting-form { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 12px; }
 .advanced-release { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; margin-bottom: 12px; background: #fbfcfd; }
 .advanced-release summary { cursor: pointer; color: #34404c; font-weight: 700; }
