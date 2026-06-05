@@ -257,7 +257,7 @@ class AppEndpointTests(unittest.TestCase):
                 "release_type": "trader_desktop",
                 "product_key": "trader-desktop",
                 "channel": "stable",
-                "platform": "windows-x64",
+                "platform": "custom-os",
                 "version": "0.1.1",
                 "is_required": 0,
                 "is_active": 1,
@@ -269,7 +269,10 @@ class AppEndpointTests(unittest.TestCase):
 
         self.assertIn('<details class="release-editor" >', add_html)
         self.assertNotIn('<details class="release-editor" open>', add_html)
+        self.assertIn('<option value="macos-arm64" selected>macos-arm64</option>', add_html)
+        self.assertIn('<option value="windows-x64" >windows-x64</option>', add_html)
         self.assertIn('<details class="release-editor" open>', edit_html)
+        self.assertIn('<option value="custom-os" selected>custom-os</option>', edit_html)
 
     def test_release_manifest_and_download_endpoint(self) -> None:
         product = self.app.service.upsert_product(
@@ -329,6 +332,7 @@ class AppEndpointTests(unittest.TestCase):
                 "license_key": created.license_key,
                 "machine_fingerprint": "http-release-machine",
                 "app_version": "1.0.0",
+                "platform": "windows-x64",
                 "release_id": release["id"],
             },
             {},

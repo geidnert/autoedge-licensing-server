@@ -49,19 +49,20 @@ class LicensingServiceTests(unittest.TestCase):
         allowed_emails: str | None = None,
         required_tags: str | None = None,
         rollout_percent: int | None = None,
+        platform: str = "windows-x64",
         is_active: bool = True,
         rollback_reason: str | None = None,
     ):
         artifact_dir = Path(self.tmp.name) / "release-test-artifacts"
         artifact_dir.mkdir(exist_ok=True)
-        path = f"strategy-{version}-{channel}.zip"
+        path = f"strategy-{version}-{channel}-{platform}.zip"
         (artifact_dir / path).write_bytes(f"strategy {version}".encode())
         return self.service.upsert_release(
             release_id=None,
             scope="strategy",
             product_id=product_id or self.product["id"],
             channel=channel,
-            platform="windows-x64",
+            platform=platform,
             version=version,
             min_supported_version=None,
             is_required=False,
@@ -91,11 +92,12 @@ class LicensingServiceTests(unittest.TestCase):
         allowed_emails: str | None = None,
         required_tags: str | None = None,
         rollout_percent: int | None = None,
+        platform: str = "windows-x64",
         rollback_reason: str | None = None,
     ):
         artifact_dir = Path(self.tmp.name) / "desktop-test-artifacts"
         artifact_dir.mkdir(exist_ok=True)
-        path = f"Trader-Setup-{version}-windows-x64.zip"
+        path = f"Trader-Setup-{version}-{platform}.zip"
         (artifact_dir / path).write_bytes(f"desktop {version}".encode())
         return self.service.upsert_release(
             release_id=None,
@@ -104,7 +106,7 @@ class LicensingServiceTests(unittest.TestCase):
             product_key="trader-desktop",
             product_id=None,
             channel=channel,
-            platform="windows-x64",
+            platform=platform,
             version=version,
             min_supported_version=None,
             is_required=False,
@@ -1152,6 +1154,88 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertIsNone(same["app_update"])
         self.assertIsNone(newer["app_update"])
 
+    def test_release_manifest_supports_macos_arm64_desktop_and_strategy_releases(self) -> None:
+        created = self.active_customer("macos-release@example.com")
+        self.strategy_release(version="2.0.0", platform="macos-arm64")
+        desktop = self.desktop_release(version="0.2.0", platform="macos-arm64")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="macos-release-machine",
+            app_version="0.1.0",
+            channel="stable",
+            platform="macos-arm64",
+            include_types=["strategy_package", "trader_desktop"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual("macos-arm64", manifest["platform"])
+        self.assertEqual(["2.0.0"], [release["version"] for release in manifest["releases"]])
+        self.assertEqual("macos-arm64", manifest["releases"][0]["platform"])
+        self.assertEqual(desktop["id"], manifest["app_update"]["release_id"])
+        self.assertEqual("macos-arm64", manifest["app_update"]["platform"])
+
+    def test_release_manifest_still_supports_windows_x64_releases(self) -> None:
+        created = self.active_customer("windows-release@example.com")
+        self.strategy_release(version="2.0.0", platform="windows-x64")
+        desktop = self.desktop_release(version="0.2.0", platform="windows-x64")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="windows-release-machine",
+            app_version="0.1.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package", "trader_desktop"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual("windows-x64", manifest["platform"])
+        self.assertEqual(["2.0.0"], [release["version"] for release in manifest["releases"]])
+        self.assertEqual("windows-x64", manifest["releases"][0]["platform"])
+        self.assertEqual(desktop["id"], manifest["app_update"]["release_id"])
+        self.assertEqual("windows-x64", manifest["app_update"]["platform"])
+
+    def test_release_manifest_platform_mismatch_returns_no_releases_or_update(self) -> None:
+        created = self.active_customer("platform-mismatch@example.com")
+        self.strategy_release(version="2.0.0", platform="macos-arm64")
+        self.desktop_release(version="0.2.0", platform="macos-arm64")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="platform-mismatch-machine",
+            app_version="0.1.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package", "trader_desktop"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual("windows-x64", manifest["platform"])
+        self.assertEqual([], manifest["releases"])
+        self.assertIsNone(manifest["app_update"])
+
     def test_stable_customer_only_sees_stable_release(self) -> None:
         created = self.active_customer("stable-only@example.com")
         self.strategy_release(version="1.0.0", channel="stable")
@@ -1471,6 +1555,7 @@ class LicensingServiceTests(unittest.TestCase):
             whop_user_id=None,
             machine_fingerprint="download-machine",
             app_version="1.2.0",
+            platform="windows-x64",
             ip_address=None,
             user_agent=None,
             check_interval_seconds=3600,
@@ -1534,6 +1619,7 @@ class LicensingServiceTests(unittest.TestCase):
             whop_user_id=None,
             machine_fingerprint="download-machine-2",
             app_version=None,
+            platform="windows-x64",
             ip_address=None,
             user_agent=None,
             check_interval_seconds=3600,

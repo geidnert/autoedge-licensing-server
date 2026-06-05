@@ -78,6 +78,8 @@ STRATEGY_RELEASE_TYPE = "strategy_package"
 TRADER_DESKTOP_RELEASE_TYPE = "trader_desktop"
 TRADER_DESKTOP_PRODUCT_ID = "trader-desktop"
 RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
+DEFAULT_RELEASE_PLATFORM = "macos-arm64"
+SUPPORTED_RELEASE_PLATFORMS = ("macos-arm64", "windows-x64")
 CHANNEL_PRIORITY = {"stable": 0, "beta": 1, "canary": 2, "internal": 3}
 AUDIENCE_MODES = {"all", "allowlist", "roles", "percent", "disabled"}
 
@@ -707,7 +709,7 @@ class LicensingService:
         normalized_scope = scope_from_release_type(normalized_release_type)
         normalized_product_key = product_key.strip() if product_key and product_key.strip() else None
         normalized_channel = channel.strip().lower() or "stable"
-        normalized_platform = platform.strip().lower() or "windows-x64"
+        normalized_platform = platform.strip().lower() or DEFAULT_RELEASE_PLATFORM
         normalized_version = version.strip()
         normalized_path = artifact_path.strip()
         normalized_audience_mode = (audience_mode or "all").strip().lower()
@@ -2035,7 +2037,7 @@ class LicensingService:
                 "message": license_response["message"],
                 "server_time": iso(),
                 "channel": channel or "stable",
-                "platform": platform or "windows-x64",
+                "platform": platform or DEFAULT_RELEASE_PLATFORM,
                 "releases": [],
                 "app_update": None,
                 "license": license_response,
@@ -2043,7 +2045,7 @@ class LicensingService:
 
         licensed_product_ids = {grant["product_id"] for grant in license_response["licensed_strategies"]}
         normalized_channel = (channel or "stable").strip().lower()
-        normalized_platform = (platform or "windows-x64").strip().lower()
+        normalized_platform = (platform or DEFAULT_RELEASE_PLATFORM).strip().lower()
         requested_types = normalize_release_types(include_types)
         installed_versions = self._installed_package_versions(installed_packages)
         strategy_rows: list[dict[str, Any]] = []
@@ -2163,7 +2165,7 @@ class LicensingService:
         machine_fingerprint: str,
         app_version: str | None,
         channel: str = "stable",
-        platform: str = "windows-x64",
+        platform: str = DEFAULT_RELEASE_PLATFORM,
         installed_packages: list[dict[str, Any]] | None = None,
         ip_address: str | None,
         user_agent: str | None,
@@ -2201,7 +2203,7 @@ class LicensingService:
             return {"status": "invalid_request", "message": "Customer or device was not resolved.", "release": None, "token": None, "expires_at": None}
 
         normalized_channel = (channel or "stable").strip().lower()
-        normalized_platform = (platform or "windows-x64").strip().lower()
+        normalized_platform = (platform or DEFAULT_RELEASE_PLATFORM).strip().lower()
         installed_versions = self._installed_package_versions(installed_packages)
         with self.database.session() as connection:
             release = connection.execute(

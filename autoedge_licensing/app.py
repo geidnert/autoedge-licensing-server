@@ -21,7 +21,7 @@ from .security import (
     verify_bearer,
     verify_standard_webhook,
 )
-from .service import LicensingService, slugify
+from .service import DEFAULT_RELEASE_PLATFORM, SUPPORTED_RELEASE_PLATFORMS, LicensingService, slugify
 
 
 HeaderList = list[tuple[str, str]]
@@ -198,7 +198,7 @@ class AutoEdgeApp:
             machine_fingerprint=payload.get("machine_fingerprint") or "",
             app_version=payload.get("app_version"),
             channel=payload.get("channel") or "stable",
-            platform=payload.get("platform") or "windows-x64",
+            platform=payload.get("platform") or DEFAULT_RELEASE_PLATFORM,
             include_types=include_types,
             installed_packages=installed_packages,
             ip_address=request.ip,
@@ -223,7 +223,7 @@ class AutoEdgeApp:
             machine_fingerprint=payload.get("machine_fingerprint") or "",
             app_version=payload.get("app_version"),
             channel=payload.get("channel") or "stable",
-            platform=payload.get("platform") or "windows-x64",
+            platform=payload.get("platform") or DEFAULT_RELEASE_PLATFORM,
             installed_packages=installed_packages,
             ip_address=request.ip,
             user_agent=request.user_agent,
@@ -424,7 +424,7 @@ class AutoEdgeApp:
                 product_key=form.get("product_key") or None,
                 product_id=product_id if scope == "strategy" else None,
                 channel=form.get("channel", "stable"),
-                platform=form.get("platform", "windows-x64"),
+                platform=form.get("platform", DEFAULT_RELEASE_PLATFORM),
                 version=form.get("version", ""),
                 min_supported_version=form.get("min_supported_version") or None,
                 is_required=form.get("is_required") == "on",
@@ -937,13 +937,13 @@ def releases_page(
     selected_audience_mode = selected.get("audience_mode") or "all"
     selected_rollout_percent = selected.get("rollout_percent")
     rollout_value = "100" if selected_rollout_percent is None else str(selected_rollout_percent)
-    selected_platform = selected.get("platform", "windows-x64")
+    selected_platform = selected.get("platform", DEFAULT_RELEASE_PLATFORM)
     advanced_open = "open" if any(
         [
             selected.get("min_supported_version"),
             selected.get("signature"),
             selected.get("signature_key_id"),
-            selected_platform != "windows-x64",
+            selected_platform != DEFAULT_RELEASE_PLATFORM,
             selected_audience_mode != "all",
             rollout_value != "100",
             format_list_field(selected.get("required_tags_json")),
@@ -964,7 +964,7 @@ def releases_page(
         f'<option value="{value}" {"selected" if selected.get("channel", "stable") == value else ""}>{label}</option>'
         for value, label in (("stable", "Stable"), ("beta", "Beta"), ("canary", "Canary"), ("internal", "Internal"))
     )
-    platform_values = ["windows-x64", "macos-arm64", "macos-x64"]
+    platform_values = list(SUPPORTED_RELEASE_PLATFORMS)
     if selected_platform and selected_platform not in platform_values:
         platform_values.append(selected_platform)
     platform_options = "\n".join(
@@ -1025,7 +1025,7 @@ def releases_page(
         <details class="advanced-release" {advanced_open}>
           <summary>Advanced options <small>Targeting, rollback, signatures, and compatibility gates.</small></summary>
           <div class="grid-form release-advanced-form">
-            <label><span class="label-row">Platform {info_tip('Internal manifest selector. Leave unchanged unless the Trader client is also sending this platform value.')}</span><select name="platform">{platform_options}</select></label>
+            <label><span class="label-row">Platform {info_tip('Internal manifest selector. Current macOS Apple Silicon Trader builds use macos-arm64. Future Windows builds should use windows-x64.')}</span><select name="platform">{platform_options}</select></label>
             <label>Minimum supported <input name="min_supported_version" placeholder="optional" value="{e(selected.get('min_supported_version'))}"></label>
             <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
             <label>Signature key id <input name="signature_key_id" value="{e(selected.get('signature_key_id'))}"></label>

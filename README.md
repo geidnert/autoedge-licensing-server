@@ -147,7 +147,7 @@ Request:
   "machine_fingerprint": "stable-client-machine-fingerprint",
   "app_version": "0.5.0",
   "channel": "stable",
-  "platform": "windows-x64",
+  "platform": "macos-arm64",
   "include_types": ["strategy_package", "trader_desktop"],
   "installed_packages": [
     { "package_id": "duo-runtime", "version": "1.1.0" },
@@ -174,7 +174,7 @@ Response:
   "status": "active",
   "message": "Release manifest available.",
   "channel": "stable",
-  "platform": "windows-x64",
+  "platform": "macos-arm64",
   "releases": [
     {
       "id": "release-id",
@@ -209,11 +209,11 @@ Response:
     "update_available": true,
     "release_id": "release-id",
     "channel": "stable",
-    "platform": "windows-x64",
+    "platform": "macos-arm64",
     "min_supported_version": "0.1.0",
     "required": false,
     "artifact": {
-      "filename": "Trader-Setup-0.1.1-windows-x64.zip",
+      "filename": "Trader-Setup-0.1.1-macos-arm64.zip",
       "size_bytes": 123456,
       "sha256": "hex-sha256",
       "signature": "optional-signature",
@@ -251,7 +251,7 @@ Request:
   "machine_fingerprint": "stable-client-machine-fingerprint",
   "app_version": "0.5.0",
   "channel": "stable",
-  "platform": "windows-x64",
+  "platform": "macos-arm64",
   "installed_packages": [
     { "package_id": "duo-runtime", "version": "1.1.0" }
   ]
@@ -279,7 +279,7 @@ Trader Desktop release fields:
 - Release type: `Trader Desktop`
 - Product id: `trader-desktop`
 - Channel: `stable`, `beta`, `canary`, or `internal`
-- Platform: `windows-x64`
+- Platform: `macos-arm64` for current Apple Silicon macOS Trader builds; `windows-x64` remains supported for future Windows builds.
 - Version and optional minimum supported version
 - Published checkbox
 - Audience mode: `all`, `allowlist`, `roles`, `percent`, or `disabled`
