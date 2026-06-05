@@ -936,6 +936,19 @@ def releases_page(
     selected_audience_mode = selected.get("audience_mode") or "all"
     selected_rollout_percent = selected.get("rollout_percent")
     rollout_value = "100" if selected_rollout_percent is None else str(selected_rollout_percent)
+    advanced_open = "open" if any(
+        [
+            selected.get("min_supported_version"),
+            selected.get("signature"),
+            selected.get("signature_key_id"),
+            selected_audience_mode != "all",
+            rollout_value != "100",
+            format_list_field(selected.get("required_tags_json")),
+            format_list_field(selected.get("allowed_customer_ids_json")),
+            format_list_field(selected.get("allowed_emails_json")),
+            selected.get("rollback_reason"),
+        ]
+    ) else ""
     product_options = ['<option value="">None</option>']
     for product in products:
         selected_attr = "selected" if selected.get("product_id") == product["id"] else ""
@@ -990,7 +1003,6 @@ def releases_page(
           <label>Channel <select name="channel">{channel_options}</select></label>
           <label>Platform <input name="platform" required value="{e(selected.get('platform', 'windows-x64'))}"></label>
           <label>Version <input name="version" required placeholder="1.0.0" value="{e(selected.get('version'))}"></label>
-          <label>Minimum supported <input name="min_supported_version" placeholder="optional" value="{e(selected.get('min_supported_version'))}"></label>
           <label class="checkbox"><input name="is_required" type="checkbox" {required_checked}> Required</label>
           <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Published</label>
         </div>
@@ -1000,19 +1012,23 @@ def releases_page(
           <label>Size bytes <input name="size_bytes" type="number" min="0" placeholder="auto if file exists" value="{e(selected.get('size_bytes'))}"></label>
           <label>SHA-256 <input name="sha256" placeholder="auto if file exists" value="{e(selected.get('sha256'))}"></label>
         </div>
-        <div class="grid-form release-signature-form">
-          <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
-          <label>Signature key id <input name="signature_key_id" value="{e(selected.get('signature_key_id'))}"></label>
-        </div>
-        <div class="grid-form release-targeting-form">
-          <label><span class="label-row">Audience {info_tip('all publishes to eligible stable customers; allowlist uses customer/email/license lists; roles uses tags; percent rolls out deterministically; disabled hides the release.')}</span><select name="audience_mode">{audience_mode_options}</select></label>
-          <label><span class="label-row">Rollout percent {info_tip('0 blocks everyone, 100 allows everyone in the selected audience. Percent rollout is deterministic per customer and release.')}</span><input name="rollout_percent" type="number" min="0" max="100" value="{e(rollout_value)}"></label>
-          <label><span class="label-row">Required tags {info_tip('One tag per line or comma-separated. Common values: internal, tester, desktop_beta, duo_beta, duorc_beta, early_access.')}</span><textarea name="required_tags" rows="3">{e(format_list_field(selected.get('required_tags_json')))}</textarea></label>
-          <label><span class="label-row">Allowed customers {info_tip('Customer ids that may receive this release when audience is allowlist.')}</span><textarea name="allowed_customer_ids" rows="3">{e(format_list_field(selected.get('allowed_customer_ids_json')))}</textarea></label>
-          <label><span class="label-row">Allowed emails {info_tip('Email addresses that may receive this release when audience is allowlist. One per line or comma-separated.')}</span><textarea name="allowed_emails" rows="3">{e(format_list_field(selected.get('allowed_emails_json')))}</textarea></label>
-          <label><span class="label-row">Allowed license keys {info_tip('Paste full license keys only when needed. The server stores hashes, so existing keys cannot be shown again here.')}</span><textarea name="allowed_license_keys" rows="3"></textarea></label>
-        </div>
-        <label><span class="label-row">Rollback reason {info_tip('Set this when the target version is lower than the installed version and Trader should roll back.')}</span><input name="rollback_reason" value="{e(selected.get('rollback_reason'))}"></label>
+        <details class="advanced-release" {advanced_open}>
+          <summary>Advanced options <small>Targeting, rollback, signatures, and compatibility gates.</small></summary>
+          <div class="grid-form release-advanced-form">
+            <label>Minimum supported <input name="min_supported_version" placeholder="optional" value="{e(selected.get('min_supported_version'))}"></label>
+            <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
+            <label>Signature key id <input name="signature_key_id" value="{e(selected.get('signature_key_id'))}"></label>
+          </div>
+          <div class="grid-form release-targeting-form">
+            <label><span class="label-row">Audience {info_tip('all publishes to eligible stable customers; allowlist uses customer/email/license lists; roles uses tags; percent rolls out deterministically; disabled hides the release.')}</span><select name="audience_mode">{audience_mode_options}</select></label>
+            <label><span class="label-row">Rollout percent {info_tip('0 blocks everyone, 100 allows everyone in the selected audience. Percent rollout is deterministic per customer and release.')}</span><input name="rollout_percent" type="number" min="0" max="100" value="{e(rollout_value)}"></label>
+            <label><span class="label-row">Required tags {info_tip('One tag per line or comma-separated. Common values: internal, tester, desktop_beta, duo_beta, duorc_beta, early_access.')}</span><textarea name="required_tags" rows="3">{e(format_list_field(selected.get('required_tags_json')))}</textarea></label>
+            <label><span class="label-row">Allowed customers {info_tip('Customer ids that may receive this release when audience is allowlist.')}</span><textarea name="allowed_customer_ids" rows="3">{e(format_list_field(selected.get('allowed_customer_ids_json')))}</textarea></label>
+            <label><span class="label-row">Allowed emails {info_tip('Email addresses that may receive this release when audience is allowlist. One per line or comma-separated.')}</span><textarea name="allowed_emails" rows="3">{e(format_list_field(selected.get('allowed_emails_json')))}</textarea></label>
+            <label><span class="label-row">Allowed license keys {info_tip('Paste full license keys only when needed. The server stores hashes, so existing keys cannot be shown again here.')}</span><textarea name="allowed_license_keys" rows="3"></textarea></label>
+          </div>
+          <label><span class="label-row">Rollback reason {info_tip('Set this when the target version is lower than the installed version and Trader should roll back.')}</span><input name="rollback_reason" value="{e(selected.get('rollback_reason'))}"></label>
+        </details>
         <label>Release notes <input name="release_notes" value="{e(selected.get('release_notes'))}"></label>
         <div class="form-actions">
           <button type="submit">{button_text}</button>
@@ -1227,10 +1243,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .stack-form { display: grid; gap: 14px; }
 .grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 12px; align-items: end; }
 .package-form { grid-template-columns: repeat(4, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 14px; }
-.release-form { grid-template-columns: repeat(7, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
+.release-form { grid-template-columns: repeat(6, minmax(0, 1fr)) repeat(2, auto); margin-bottom: 12px; }
 .release-artifact-form { grid-template-columns: 2fr 1fr 1fr 2fr; margin-bottom: 12px; }
-.release-signature-form { grid-template-columns: 2fr 1fr; margin-bottom: 12px; }
+.release-advanced-form { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 12px 0; }
 .release-targeting-form { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 12px; }
+.advanced-release { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; margin-bottom: 12px; background: #fbfcfd; }
+.advanced-release summary { cursor: pointer; color: #34404c; font-weight: 700; }
+.advanced-release summary small { display: inline; margin: 0 0 0 8px; font-weight: 400; }
 .device-limit-form { grid-template-columns: minmax(180px, 260px) auto; margin-bottom: 12px; }
 .customer-tags-form { grid-template-columns: minmax(260px, 420px) auto; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }
@@ -1252,7 +1271,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   nav { padding: 0 12px; gap: 10px; overflow-x: auto; }
   main { width: calc(100vw - 18px); margin-top: 12px; }
   .title-row, .search { display: grid; }
-  .grid-form, .package-form, .release-form, .release-artifact-form, .release-signature-form, .release-targeting-form, .device-limit-form, .customer-tags-form, .facts { grid-template-columns: 1fr; }
+  .grid-form, .package-form, .release-form, .release-artifact-form, .release-advanced-form, .release-targeting-form, .device-limit-form, .customer-tags-form, .facts { grid-template-columns: 1fr; }
   table { display: block; overflow-x: auto; }
 }
 """
