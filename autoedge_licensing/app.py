@@ -614,6 +614,17 @@ def display_product_name(value: str | None) -> str:
     return value
 
 
+def display_platform(value: str | None) -> str:
+    labels = {
+        "windows-x64": "Windows x64",
+        "windows-arm64": "Windows arm64",
+        "macos-x64": "macOS x64",
+        "macos-arm64": "macOS arm64",
+    }
+    normalized = (value or "").strip().lower()
+    return labels.get(normalized, value or "")
+
+
 def format_bool(value: Any) -> str:
     return "yes" if value else "no"
 
@@ -962,6 +973,14 @@ def releases_page(
         f'<option value="{value}" {"selected" if selected.get("channel", "stable") == value else ""}>{label}</option>'
         for value, label in (("stable", "Stable"), ("beta", "Beta"), ("canary", "Canary"), ("internal", "Internal"))
     )
+    selected_platform = selected.get("platform", "windows-x64")
+    platform_values = ["windows-x64"]
+    if selected_platform and selected_platform not in platform_values:
+        platform_values.append(selected_platform)
+    platform_options = "\n".join(
+        f'<option value="{e(value)}" {"selected" if selected_platform == value else ""}>{e(display_platform(value))}</option>'
+        for value in platform_values
+    )
     audience_mode_options = "\n".join(
         f'<option value="{value}" {"selected" if selected_audience_mode == value else ""}>{label}</option>'
         for value, label in (("all", "All"), ("allowlist", "Allowlist"), ("roles", "Roles/tags"), ("percent", "Percent rollout"), ("disabled", "Disabled"))
@@ -972,7 +991,7 @@ def releases_page(
         <tr>
           <td><strong>{e(release.get('version'))}</strong><small>{e(release.get('release_notes'))}</small></td>
           <td>{e(release.get('release_type') or ('trader_desktop' if release.get('scope') == 'app' else 'strategy_package'))}<small>{e(display_product_name(release.get('product_name')) if release.get('product_name') else release.get('product_key') or 'trader-desktop')}</small></td>
-          <td>{e(release.get('channel'))}<small>{e(release.get('platform'))}</small></td>
+          <td>{e(release.get('channel'))}<small>Target {e(display_platform(release.get('platform')))}</small></td>
           <td>{e(release.get('audience_mode') or 'all')}<small>{e(release.get('rollout_percent') if release.get('rollout_percent') is not None else 100)}%</small></td>
           <td>{format_bool(release.get('is_required'))}</td>
           <td>{format_bool(release.get('is_published') if release.get('is_published') is not None else release.get('is_active'))}</td>
@@ -1003,7 +1022,7 @@ def releases_page(
           <label>Strategy <select name="product_id">{"".join(product_options)}</select></label>
           <label>Product id <input name="product_key" placeholder="trader-desktop" value="{e(selected.get('product_key') or ('trader-desktop' if selected_release_type == 'trader_desktop' else ''))}"></label>
           <label>Channel <select name="channel">{channel_options}</select></label>
-          <label>Platform <input name="platform" required value="{e(selected.get('platform', 'windows-x64'))}"></label>
+          <label><span class="label-row">Target platform {info_tip('This is the target OS and architecture for the artifact. Use Windows x64 for Trader Windows builds, even when the build is produced on macOS.')}</span><select name="platform">{platform_options}</select></label>
           <label>Version <input name="version" required placeholder="1.0.0" value="{e(selected.get('version'))}"></label>
           <label class="checkbox"><input name="is_required" type="checkbox" {required_checked}> Required</label>
           <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Published</label>
@@ -1041,7 +1060,7 @@ def releases_page(
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Version</th><th>Type</th><th>Channel</th><th>Audience</th><th>Required</th><th>Published</th><th>Artifact</th><th>SHA-256</th><th>Created</th><th>Updated</th><th></th></tr></thead>
+        <thead><tr><th>Version</th><th>Type</th><th>Channel / Target</th><th>Audience</th><th>Required</th><th>Published</th><th>Artifact</th><th>SHA-256</th><th>Created</th><th>Updated</th><th></th></tr></thead>
         <tbody>{rows or '<tr><td colspan="11">No releases configured.</td></tr>'}</tbody>
       </table>
     </section>
