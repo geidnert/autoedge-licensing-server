@@ -639,6 +639,10 @@ def format_list_field(value: str | None) -> str:
     return "\n".join(str(item) for item in parsed)
 
 
+def info_tip(text: str) -> str:
+    return f'<span class="info-tip" title="{e(text)}" aria-label="{e(text)}">i</span>'
+
+
 def short_hash(value: str | None) -> str:
     return value[:12] + "..." if value and len(value) > 15 else (value or "")
 
@@ -1001,14 +1005,14 @@ def releases_page(
           <label>Signature key id <input name="signature_key_id" value="{e(selected.get('signature_key_id'))}"></label>
         </div>
         <div class="grid-form release-targeting-form">
-          <label>Audience <select name="audience_mode">{audience_mode_options}</select></label>
-          <label>Rollout percent <input name="rollout_percent" type="number" min="0" max="100" value="{e(rollout_value)}"></label>
-          <label>Required tags <textarea name="required_tags" rows="3" placeholder="tester&#10;desktop_beta">{e(format_list_field(selected.get('required_tags_json')))}</textarea></label>
-          <label>Allowed customers <textarea name="allowed_customer_ids" rows="3" placeholder="customer ids">{e(format_list_field(selected.get('allowed_customer_ids_json')))}</textarea></label>
-          <label>Allowed emails <textarea name="allowed_emails" rows="3" placeholder="email@example.com">{e(format_list_field(selected.get('allowed_emails_json')))}</textarea></label>
-          <label>Allowed license keys <textarea name="allowed_license_keys" rows="3" placeholder="paste full keys when needed"></textarea></label>
+          <label><span class="label-row">Audience {info_tip('all publishes to eligible stable customers; allowlist uses customer/email/license lists; roles uses tags; percent rolls out deterministically; disabled hides the release.')}</span><select name="audience_mode">{audience_mode_options}</select></label>
+          <label><span class="label-row">Rollout percent {info_tip('0 blocks everyone, 100 allows everyone in the selected audience. Percent rollout is deterministic per customer and release.')}</span><input name="rollout_percent" type="number" min="0" max="100" value="{e(rollout_value)}"></label>
+          <label><span class="label-row">Required tags {info_tip('One tag per line or comma-separated. Common values: internal, tester, desktop_beta, duo_beta, duorc_beta, early_access.')}</span><textarea name="required_tags" rows="3">{e(format_list_field(selected.get('required_tags_json')))}</textarea></label>
+          <label><span class="label-row">Allowed customers {info_tip('Customer ids that may receive this release when audience is allowlist.')}</span><textarea name="allowed_customer_ids" rows="3">{e(format_list_field(selected.get('allowed_customer_ids_json')))}</textarea></label>
+          <label><span class="label-row">Allowed emails {info_tip('Email addresses that may receive this release when audience is allowlist. One per line or comma-separated.')}</span><textarea name="allowed_emails" rows="3">{e(format_list_field(selected.get('allowed_emails_json')))}</textarea></label>
+          <label><span class="label-row">Allowed license keys {info_tip('Paste full license keys only when needed. The server stores hashes, so existing keys cannot be shown again here.')}</span><textarea name="allowed_license_keys" rows="3"></textarea></label>
         </div>
-        <label>Rollback reason <input name="rollback_reason" value="{e(selected.get('rollback_reason'))}"></label>
+        <label><span class="label-row">Rollback reason {info_tip('Set this when the target version is lower than the installed version and Trader should roll back.')}</span><input name="rollback_reason" value="{e(selected.get('rollback_reason'))}"></label>
         <label>Release notes <input name="release_notes" value="{e(selected.get('release_notes'))}"></label>
         <div class="form-actions">
           <button type="submit">{button_text}</button>
@@ -1121,7 +1125,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
       <h2>Release targeting tags</h2>
       <form class="grid-form customer-tags-form" method="post" action="/admin/customers/{e(customer['id'])}/tags">
         <input type="hidden" name="csrf" value="{e(csrf)}">
-        <label>Tags <textarea name="tags" rows="3" placeholder="internal&#10;desktop_beta">{e(tags_value)}</textarea></label>
+        <label><span class="label-row">Tags {info_tip('One tag per line or comma-separated. Common values: internal, tester, desktop_beta, duo_beta, duorc_beta, early_access.')}</span><textarea name="tags" rows="3">{e(tags_value)}</textarea></label>
         <button type="submit">Save tags</button>
       </form>
     </section>
@@ -1200,7 +1204,10 @@ button:hover, .button:hover { background: #0f5d53; }
 .button.small { min-height: 30px; padding: 0 10px; font-size: 13px; }
 input, select, textarea { min-height: 36px; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); }
 textarea { resize: vertical; font: inherit; }
+input::placeholder, textarea::placeholder { color: #9aa6b2; font-weight: 400; font-style: italic; opacity: 1; }
 label { display: grid; gap: 6px; color: #34404c; font-weight: 600; }
+.label-row { display: inline-flex; align-items: center; gap: 6px; }
+.info-tip { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: 1px solid #9aa6b2; border-radius: 50%; color: #64707d; font-size: 11px; font-weight: 700; line-height: 1; cursor: help; }
 small { display: block; margin-top: 3px; color: var(--muted); font-weight: 400; }
 .muted { color: var(--muted); }
 table { width: 100%; border-collapse: collapse; }
