@@ -156,6 +156,34 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(3600, response["next_check_seconds"])
         self.assertEqual(86400, response["grace_period_seconds"])
 
+    def test_manual_grant_accepts_datetime_local_expiry(self) -> None:
+        created = self.service.create_or_update_customer(email="picker@example.com")
+        entitlement = self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at="2026-12-31T23:59",
+            reason="picker grant",
+            actor_id="admin",
+            ip_address=None,
+        )
+
+        self.assertEqual("2026-12-31T23:59:00Z", entitlement["expires_at"])
+
+    def test_manual_grant_rejects_invalid_expiry_text(self) -> None:
+        created = self.service.create_or_update_customer(email="bad-expiry@example.com")
+
+        with self.assertRaises(ValueError):
+            self.service.manual_set_entitlement(
+                customer_id=created.customer["id"],
+                product_id=self.product["id"],
+                status="active",
+                expires_at="not a date",
+                reason="bad grant",
+                actor_id="admin",
+                ip_address=None,
+            )
+
     def test_expired_grant_returns_expired_without_strategies(self) -> None:
         created = self.service.create_or_update_customer(email="expired@example.com")
         self.service.manual_set_entitlement(

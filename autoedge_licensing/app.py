@@ -1185,7 +1185,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
             <option value="suspended">suspended</option>
           </select>
         </label>
-        <label>Expiry UTC <input name="expires_at" placeholder="2026-12-31T23:59:59Z"></label>
+        <label><span class="label-row">Expiry UTC {info_tip('Select the expiry date and time in UTC. Leave empty for no expiry.')}</span><input name="expires_at" type="datetime-local" step="1"></label>
         <label>Reason <input name="reason"></label>
         <button type="submit">Apply</button>
       </form>

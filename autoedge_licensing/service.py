@@ -1083,6 +1083,9 @@ class LicensingService:
         if status not in {"active", "trialing", "expired", "revoked", "suspended", "pending"}:
             raise ValueError(f"Invalid entitlement status: {status}")
         parsed_expiry = parse_time(expires_at)
+        if expires_at and parsed_expiry is None:
+            raise ValueError("Invalid entitlement expiry date/time.")
+        saved_expiry = iso(parsed_expiry) if parsed_expiry else None
         now = iso()
         external_id = f"manual:{customer_id}:{product_id}"
         revoked_at = now if status == "revoked" else None
@@ -1101,7 +1104,7 @@ class LicensingService:
                     )
                     VALUES (?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (entitlement_id, customer_id, product_id, external_id, status, now, iso(parsed_expiry) if parsed_expiry else None, revoked_at, reason, now, now),
+                    (entitlement_id, customer_id, product_id, external_id, status, now, saved_expiry, revoked_at, reason, now, now),
                 )
                 action = "entitlement.manual_created"
             else:
@@ -1112,7 +1115,7 @@ class LicensingService:
                     SET status = ?, expires_at = ?, revoked_at = ?, manual_reason = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (status, iso(parsed_expiry) if parsed_expiry else None, revoked_at, reason, now, entitlement_id),
+                    (status, saved_expiry, revoked_at, reason, now, entitlement_id),
                 )
                 action = "entitlement.manual_updated"
             self.audit(
@@ -1122,7 +1125,7 @@ class LicensingService:
                 action,
                 "entitlement",
                 entitlement_id,
-                {"customer_id": customer_id, "product_id": product_id, "status": status, "expires_at": expires_at},
+                {"customer_id": customer_id, "product_id": product_id, "status": status, "expires_at": saved_expiry},
                 ip_address,
             )
             row = connection.execute("SELECT * FROM entitlements WHERE id = ?", (entitlement_id,)).fetchone()

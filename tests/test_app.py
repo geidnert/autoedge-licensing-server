@@ -195,6 +195,7 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("DUO", html)
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
+        self.assertIn('name="expires_at" type="datetime-local" step="1"', html)
 
     def test_releases_page_can_list_trader_desktop_release(self) -> None:
         html = releases_page(
