@@ -274,6 +274,8 @@ Response:
 
 Configure releases in `/admin/releases`. Artifact uploads are not handled by the web UI yet; copy package files under `AUTOEDGE_RELEASE_ARTIFACT_DIR` first, then register their relative path in the release form. If the file exists, the server calculates size and SHA-256 automatically.
 
+Admin pages display and accept manual expiry times in US Eastern trading time (`ET`, America/New_York). The database and Trader API responses continue to store and return UTC timestamps with a `Z` suffix.
+
 Trader Desktop release fields:
 
 - Release type: `Trader Desktop`

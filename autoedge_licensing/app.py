@@ -5,11 +5,13 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs
 from wsgiref.simple_server import make_server
+from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import Database, apply_migrations
@@ -21,11 +23,13 @@ from .security import (
     verify_bearer,
     verify_standard_webhook,
 )
-from .service import DEFAULT_RELEASE_PLATFORM, SUPPORTED_RELEASE_PLATFORMS, LicensingService, slugify
+from .service import DEFAULT_RELEASE_PLATFORM, SUPPORTED_RELEASE_PLATFORMS, LicensingService, parse_time, slugify
 
 
 HeaderList = list[tuple[str, str]]
 StartResponse = Callable[[str, HeaderList], None]
+ADMIN_TIME_ZONE = ZoneInfo("America/New_York")
+ADMIN_TIME_LABEL = "ET"
 
 
 class RateLimiter:
@@ -487,7 +491,7 @@ class AutoEdgeApp:
                 customer_id=customer_id,
                 product_id=form.get("product_id", ""),
                 status=form.get("status", ""),
-                expires_at=form.get("expires_at") or None,
+                expires_at=admin_time_input_to_utc(form.get("expires_at")),
                 reason=form.get("reason") or None,
                 actor_id=admin["id"],
                 ip_address=request.ip,
@@ -647,6 +651,29 @@ def short_hash(value: str | None) -> str:
     return value[:12] + "..." if value and len(value) > 15 else (value or "")
 
 
+def format_admin_time(value: Any) -> str:
+    parsed = parse_time(value)
+    if parsed is None:
+        return ""
+    local = parsed.astimezone(ADMIN_TIME_ZONE)
+    return f"{local:%Y-%m-%d %H:%M:%S} {ADMIN_TIME_LABEL}"
+
+
+def admin_time_input_to_utc(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise ValueError("Invalid expiry date/time.") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ADMIN_TIME_ZONE)
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def parse_optional_int(value: str | None) -> int | None:
     if value is None or not value.strip():
         return None
@@ -736,7 +763,7 @@ def customer_search_page(customers: list[dict[str, Any]], query: str, csrf: str)
           <td>{e(customer.get('license_key_last4'))}</td>
           <td>{e(customer.get('entitlement_count'))}</td>
           <td>{e(customer.get('device_count'))}</td>
-          <td>{e(customer.get('updated_at'))}</td>
+          <td>{e(format_admin_time(customer.get('updated_at')))}</td>
         </tr>
         """
         for customer in customers
@@ -765,7 +792,7 @@ def customer_search_page(customers: list[dict[str, Any]], query: str, csrf: str)
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Customer</th><th>Whop IDs</th><th>Key</th><th>Entitlements</th><th>Devices</th><th>Updated</th></tr></thead>
+        <thead><tr><th>Customer</th><th>Whop IDs</th><th>Key</th><th>Entitlements</th><th>Devices</th><th>Updated ET</th></tr></thead>
         <tbody>{rows or '<tr><td colspan="6">No customers found.</td></tr>'}</tbody>
       </table>
     </section>
@@ -785,7 +812,7 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
         <tr>
           <td>{e(display_product_name(product.get('name')))}</td>
           <td>{format_bool(product.get('is_active'))}</td>
-          <td>{e(product.get('updated_at'))}</td>
+          <td>{e(format_admin_time(product.get('updated_at')))}</td>
           <td><a class="button small" href="/admin/products?edit={e(product['id'])}">Edit</a></td>
         </tr>
         """
@@ -813,7 +840,7 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Strategy</th><th>Active</th><th>Updated</th><th></th></tr></thead>
+        <thead><tr><th>Strategy</th><th>Active</th><th>Updated ET</th><th></th></tr></thead>
         <tbody>{rows or '<tr><td colspan="4">No products configured.</td></tr>'}</tbody>
       </table>
     </section>
@@ -987,8 +1014,8 @@ def releases_page(
           <td>{format_bool(release.get('is_published') if release.get('is_published') is not None else release.get('is_active'))}</td>
           <td>{e(release.get('artifact_filename'))}<small>{e(release.get('size_bytes'))} bytes</small></td>
           <td><code>{e(short_hash(release.get('sha256')))}</code></td>
-          <td>{e(release.get('created_at'))}<small>{e(release.get('published_at'))}</small></td>
-          <td>{e(release.get('updated_at'))}</td>
+          <td>{e(format_admin_time(release.get('created_at')))}<small>{e(format_admin_time(release.get('published_at')))}</small></td>
+          <td>{e(format_admin_time(release.get('updated_at')))}</td>
           <td><a class="button small" href="/admin/releases?edit={e(release['id'])}">Edit</a></td>
         </tr>
         """
@@ -1050,7 +1077,7 @@ def releases_page(
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Version</th><th>Type</th><th>Channel</th><th>Audience</th><th>Required</th><th>Published</th><th>Artifact</th><th>SHA-256</th><th>Created</th><th>Updated</th><th></th></tr></thead>
+        <thead><tr><th>Version</th><th>Type</th><th>Channel</th><th>Audience</th><th>Required</th><th>Published</th><th>Artifact</th><th>SHA-256</th><th>Created ET</th><th>Updated ET</th><th></th></tr></thead>
         <tbody>{rows or '<tr><td colspan="11">No releases configured.</td></tr>'}</tbody>
       </table>
     </section>
@@ -1070,9 +1097,9 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
         <tr>
           <td>{e(display_product_name(entitlement.get('product_name')))}</td>
           <td><strong class="status {e(entitlement['status'])}">{e(entitlement['status'])}</strong><small>{e(entitlement['source'])}</small></td>
-          <td>{e(entitlement.get('expires_at'))}</td>
+          <td>{e(format_admin_time(entitlement.get('expires_at')))}</td>
           <td>{e(entitlement.get('manual_reason'))}</td>
-          <td>{e(entitlement.get('updated_at'))}</td>
+          <td>{e(format_admin_time(entitlement.get('updated_at')))}</td>
         </tr>
         """
         for entitlement in detail["entitlements"]
@@ -1082,8 +1109,8 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
         <tr>
           <td>{e(subscription.get('whop_membership_id'))}</td>
           <td>{e(subscription.get('status'))}<small>{e(subscription.get('raw_status'))}</small></td>
-          <td>{e(subscription.get('current_period_end'))}</td>
-          <td>{e(subscription.get('updated_at'))}</td>
+          <td>{e(format_admin_time(subscription.get('current_period_end')))}</td>
+          <td>{e(format_admin_time(subscription.get('updated_at')))}</td>
         </tr>
         """
         for subscription in detail["subscriptions"]
@@ -1094,9 +1121,9 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
           <td>{e(device.get('fingerprint_last8'))}<small>{e(device.get('id'))}</small></td>
           <td>{e(device.get('app_version'))}</td>
           <td>{e(device.get('ip_last'))}</td>
-          <td>{e(device.get('first_seen_at'))}</td>
-          <td>{e(device.get('last_seen_at'))}</td>
-          <td>{e(device.get('first_licensed_at'))}<small>{e(device.get('last_licensed_at'))}</small></td>
+          <td>{e(format_admin_time(device.get('first_seen_at')))}</td>
+          <td>{e(format_admin_time(device.get('last_seen_at')))}</td>
+          <td>{e(format_admin_time(device.get('first_licensed_at')))}<small>{e(format_admin_time(device.get('last_licensed_at')))}</small></td>
           <td>{format_bool(device.get('is_blocked'))}</td>
           <td>
             <form method="post" action="/admin/devices/{e(device['id'])}/{'unblock' if device.get('is_blocked') else 'block'}">
@@ -1112,7 +1139,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
     checks = "\n".join(
         f"""
         <tr>
-          <td>{e(check.get('created_at'))}</td>
+          <td>{e(format_admin_time(check.get('created_at')))}</td>
           <td><strong class="status {e(check.get('status'))}">{e(check.get('status'))}</strong></td>
           <td>{e(check.get('app_version'))}</td>
           <td>{e(check.get('ip_address'))}</td>
@@ -1124,7 +1151,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
     audit_rows = "\n".join(
         f"""
         <tr>
-          <td>{e(audit.get('created_at'))}</td>
+          <td>{e(format_admin_time(audit.get('created_at')))}</td>
           <td>{e(audit.get('actor_type'))}</td>
           <td>{e(audit.get('action'))}</td>
           <td><pre>{e(format_json(audit.get('details_json')))}</pre></td>
@@ -1185,30 +1212,30 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
             <option value="suspended">suspended</option>
           </select>
         </label>
-        <label><span class="label-row">Expiry UTC {info_tip('Select the expiry date and time in UTC. Leave empty for no expiry.')}</span><input name="expires_at" type="datetime-local" step="1"></label>
+        <label><span class="label-row">Expiry ET {info_tip('Select the expiry date and time in US Eastern trading time. Leave empty for no expiry.')}</span><input name="expires_at" type="datetime-local" step="1"></label>
         <label>Reason <input name="reason"></label>
         <button type="submit">Apply</button>
       </form>
     </section>
     <section class="panel">
       <h2>Entitlements</h2>
-      <table><thead><tr><th>Strategy</th><th>Status</th><th>Expiry</th><th>Reason</th><th>Updated</th></tr></thead><tbody>{entitlements or '<tr><td colspan="5">No entitlements.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Strategy</th><th>Status</th><th>Expiry ET</th><th>Reason</th><th>Updated ET</th></tr></thead><tbody>{entitlements or '<tr><td colspan="5">No entitlements.</td></tr>'}</tbody></table>
     </section>
     <section class="panel">
       <h2>Subscriptions</h2>
-      <table><thead><tr><th>Whop membership</th><th>Status</th><th>Period end</th><th>Updated</th></tr></thead><tbody>{subscriptions or '<tr><td colspan="4">No subscriptions.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Whop membership</th><th>Status</th><th>Period end ET</th><th>Updated ET</th></tr></thead><tbody>{subscriptions or '<tr><td colspan="4">No subscriptions.</td></tr>'}</tbody></table>
     </section>
     <section class="panel">
       <h2>Devices</h2>
-      <table><thead><tr><th>Fingerprint</th><th>App</th><th>IP</th><th>First seen</th><th>Last seen</th><th>Licensed</th><th>Blocked</th><th></th></tr></thead><tbody>{devices or '<tr><td colspan="8">No devices.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Fingerprint</th><th>App</th><th>IP</th><th>First seen ET</th><th>Last seen ET</th><th>Licensed ET</th><th>Blocked</th><th></th></tr></thead><tbody>{devices or '<tr><td colspan="8">No devices.</td></tr>'}</tbody></table>
     </section>
     <section class="panel">
       <h2>License check-ins</h2>
-      <table><thead><tr><th>Time</th><th>Status</th><th>App</th><th>IP</th><th>Response</th></tr></thead><tbody>{checks or '<tr><td colspan="5">No check-ins.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Time ET</th><th>Status</th><th>App</th><th>IP</th><th>Response</th></tr></thead><tbody>{checks or '<tr><td colspan="5">No check-ins.</td></tr>'}</tbody></table>
     </section>
     <section class="panel">
       <h2>Audit log</h2>
-      <table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead><tbody>{audit_rows or '<tr><td colspan="4">No audit events.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Time ET</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead><tbody>{audit_rows or '<tr><td colspan="4">No audit events.</td></tr>'}</tbody></table>
     </section>
     """
 

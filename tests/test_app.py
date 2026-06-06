@@ -7,7 +7,15 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 
-from autoedge_licensing.app import create_app, customer_detail_page, packages_page, products_page, releases_page
+from autoedge_licensing.app import (
+    admin_time_input_to_utc,
+    create_app,
+    customer_detail_page,
+    format_admin_time,
+    packages_page,
+    products_page,
+    releases_page,
+)
 from autoedge_licensing.config import Settings
 from autoedge_licensing.service import iso, utc_now
 
@@ -36,6 +44,10 @@ class AppEndpointTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def test_admin_times_render_and_parse_as_eastern_time(self) -> None:
+        self.assertEqual("2026-06-06 22:30:00 ET", format_admin_time("2026-06-07T02:30:00Z"))
+        self.assertEqual("2026-06-07T02:30:00Z", admin_time_input_to_utc("2026-06-06T22:30:00"))
 
     def test_whop_endpoint_rejects_missing_auth(self) -> None:
         status, _, body = self.call(
@@ -109,6 +121,7 @@ class AppEndpointTests(unittest.TestCase):
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("duo-runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
+        self.assertIn("2026-06-03 20:00:00 ET", html)
 
     def test_packages_page_shows_bundle_without_internal_feature_ids(self) -> None:
         html = packages_page(
@@ -196,6 +209,8 @@ class AppEndpointTests(unittest.TestCase):
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
         self.assertIn('name="expires_at" type="datetime-local" step="1"', html)
+        self.assertIn("Expiry ET", html)
+        self.assertIn("2026-06-03 20:00:00 ET", html)
 
     def test_releases_page_can_list_trader_desktop_release(self) -> None:
         html = releases_page(
@@ -243,8 +258,9 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("Audience", html)
         self.assertIn("Allowed emails", html)
         self.assertIn("Rollback reason", html)
-        self.assertIn("Created", html)
-        self.assertIn("2026-06-04T13:05:00Z", html)
+        self.assertIn("Created ET", html)
+        self.assertIn("Updated ET", html)
+        self.assertIn("2026-06-04 09:05:00 ET", html)
 
     def test_release_editor_is_collapsed_for_add_and_open_for_edit(self) -> None:
         add_html = releases_page([], [], "csrf-token", None, "/var/lib/autoedge-licensing/artifacts")
