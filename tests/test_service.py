@@ -553,6 +553,33 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(1, len(detail["entitlements"]))
         self.assertEqual("active", detail["entitlements"][0]["status"])
 
+    def test_unmapped_whop_event_does_not_create_blank_customer(self) -> None:
+        result = self.service.process_whop_event(
+            {
+                "type": "withdrawal.updated",
+                "data": {
+                    "id": "withdrawal_001",
+                    "status": "pending",
+                },
+            },
+            "evt_withdrawal_001",
+            signature_valid=True,
+            ip_address="127.0.0.1",
+        )
+
+        with self.database.session() as connection:
+            customer_count = connection.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
+            audit = connection.execute(
+                "SELECT * FROM audit_log WHERE action = 'whop_package.unmapped'"
+            ).fetchone()
+
+        self.assertEqual("unmapped_package", result["status"])
+        self.assertIsNone(result["customer_id"])
+        self.assertEqual(0, customer_count)
+        self.assertIsNotNone(audit)
+        self.assertEqual("webhook_event", audit["entity_type"])
+        self.assertEqual("evt_withdrawal_001", audit["entity_id"])
+
     def test_whop_package_bundle_grants_multiple_strategies(self) -> None:
         duorc = self.service.upsert_product(
             slug="duorc-runtime",

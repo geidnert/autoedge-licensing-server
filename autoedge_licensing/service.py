@@ -1287,6 +1287,33 @@ class LicensingService:
         customer_info = self._extract_customer_info(data)
         whop_ids = self._extract_whop_ids(data)
         subscription_info = self._extract_subscription_info(data, event_type)
+        with self.database.session() as connection:
+            package = self._find_whop_package(connection, whop_ids)
+            direct_product = None if package is not None else self._find_direct_whop_product(connection, whop_ids)
+            if package is None and direct_product is None:
+                self.audit(
+                    connection,
+                    "whop",
+                    None,
+                    "whop_package.unmapped",
+                    "webhook_event",
+                    webhook_id,
+                    {
+                        "event_type": event_type,
+                        "webhook_id": webhook_id,
+                        "plan_id": whop_ids["plan_id"],
+                        "product_id": whop_ids["product_id"],
+                        "email": customer_info["email"],
+                    },
+                    ip_address,
+                )
+                return {
+                    "status": "unmapped_package",
+                    "customer_id": None,
+                    "whop_id": whop_ids["selected_id"],
+                    "message": "No Whop package mapping matched this event.",
+                }
+
         customer_result = self.create_or_update_customer(
             email=customer_info["email"],
             name=customer_info["name"],
@@ -1304,31 +1331,7 @@ class LicensingService:
                 subscription_info,
                 sub_status,
             )
-            package = self._find_whop_package(connection, whop_ids)
             if package is None:
-                direct_product = self._find_direct_whop_product(connection, whop_ids)
-                if direct_product is None:
-                    self.audit(
-                        connection,
-                        "whop",
-                        None,
-                        "whop_package.unmapped",
-                        "customer",
-                        customer_result.customer["id"],
-                        {
-                            "event_type": event_type,
-                            "webhook_id": webhook_id,
-                            "plan_id": whop_ids["plan_id"],
-                            "product_id": whop_ids["product_id"],
-                        },
-                        ip_address,
-                    )
-                    return {
-                        "status": "unmapped_package",
-                        "customer_id": customer_result.customer["id"],
-                        "whop_id": whop_ids["selected_id"],
-                        "message": "No Whop package mapping matched this event.",
-                    }
                 entitlement = self._upsert_direct_whop_entitlement(
                     connection,
                     customer_id=customer_result.customer["id"],
