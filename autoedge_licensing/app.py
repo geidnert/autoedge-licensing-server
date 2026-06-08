@@ -535,6 +535,13 @@ class AutoEdgeApp:
                 ip_address=request.ip,
             )
             return redirect(f"/admin/customers/{customer_id}")
+        if len(parts) == 4 and parts[3] == "license-key" and request.method == "POST":
+            new_key = self.service.rotate_customer_license_key(
+                customer_id=customer_id,
+                actor_id=admin["id"],
+                ip_address=request.ip,
+            )
+            return redirect(f"/admin/customers/{customer_id}?created_key={new_key}")
         if len(parts) == 4 and parts[3] == "device-limit" and request.method == "POST":
             form = request.form()
             self.service.set_customer_max_devices(
@@ -1131,7 +1138,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
     max_devices_value = "" if device_limit.get("customer_max_devices") is None else str(device_limit.get("customer_max_devices"))
     tags_value = "\n".join(str(tag) for tag in tags)
     product_options = "\n".join(f'<option value="{e(product["id"])}">{e(display_product_name(product.get("name")))}</option>' for product in products)
-    key_notice = f'<p class="notice">New license key: <code>{e(created_key)}</code>. Store it now; only the last four characters are retained.</p>' if created_key else ""
+    key_notice = f'<p class="notice">New license key: <code>{e(created_key)}</code>. Store it now; only the last four characters are retained and the previous key no longer works.</p>' if created_key else ""
     entitlements = "\n".join(
         f"""
         <tr>
@@ -1214,7 +1221,15 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
       <div><span>Customer ID</span><code>{e(customer['id'])}</code></div>
       <div><span>Whop user</span><code>{e(customer.get('whop_user_id'))}</code></div>
       <div><span>Whop member</span><code>{e(customer.get('whop_member_id'))}</code></div>
-      <div><span>License key</span><code>•••• {e(customer.get('license_key_last4'))}</code></div>
+      <div class="license-key-fact">
+        <span>License key</span>
+        <code>•••• {e(customer.get('license_key_last4'))}</code>
+        <form method="post" action="/admin/customers/{e(customer['id'])}/license-key">
+          <input type="hidden" name="csrf" value="{e(csrf)}">
+          <button class="button secondary small" type="submit" onclick="return confirm('Reissue this license key? The previous key will stop working.')">Reissue key</button>
+        </form>
+        <small>Shows the new key once.</small>
+      </div>
       <div><span>Tags</span><code>{e(', '.join(tags) or 'none')}</code></div>
       <div><span>Devices</span><code>{e(device_limit.get('active_devices', 0))} / {e(device_limit.get('max_devices', 1))}</code></div>
     </section>
@@ -1351,6 +1366,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .facts div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
 .facts span { display: block; color: var(--muted); margin-bottom: 6px; }
 .facts code { overflow-wrap: anywhere; }
+.license-key-fact form { margin-top: 10px; }
 .status { color: var(--muted); }
 .status.active, .status.trialing { color: var(--accent); }
 .status.revoked, .status.device_blocked, .status.device_limit_exceeded { color: var(--danger); }

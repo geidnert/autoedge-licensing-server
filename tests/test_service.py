@@ -159,6 +159,46 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(3600, response["next_check_seconds"])
         self.assertEqual(86400, response["grace_period_seconds"])
 
+    def test_rotate_customer_license_key_replaces_old_key_and_audits(self) -> None:
+        created = self.active_customer("rotate@example.com")
+
+        new_key = self.service.rotate_customer_license_key(
+            customer_id=created.customer["id"],
+            actor_id="admin-001",
+            ip_address="127.0.0.1",
+        )
+        old_response = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="rotate-machine",
+            app_version="0.5.0",
+            ip_address="127.0.0.1",
+            user_agent="test",
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        new_response = self.service.check_license(
+            license_key=new_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="rotate-machine",
+            app_version="0.5.0",
+            ip_address="127.0.0.1",
+            user_agent="test",
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        detail = self.service.customer_detail(created.customer["id"], default_max_devices=1)
+
+        self.assertNotEqual(created.license_key, new_key)
+        self.assertEqual("unknown_customer", old_response["status"])
+        self.assertEqual("active", new_response["status"])
+        self.assertEqual(new_key[-4:], detail["customer"]["license_key_last4"])
+        self.assertTrue(any(audit["action"] == "customer.license_key_rotated" for audit in detail["audit"]))
+
     def test_nt8_active_grant_returns_strategy_key_and_signed_lease(self) -> None:
         created = self.active_customer("nt8-active@example.com")
         lease_secret = "lease-secret-" + ("x" * 40)

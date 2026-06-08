@@ -1058,6 +1058,42 @@ class LicensingService:
             customer = connection.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
             return CreatedCustomer(dict(customer), generated_key)
 
+    def rotate_customer_license_key(
+        self,
+        *,
+        customer_id: str,
+        actor_id: str | None,
+        ip_address: str | None,
+    ) -> str:
+        new_key = generate_license_key()
+        now = iso()
+        with self.database.session() as connection:
+            customer = connection.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+            if customer is None:
+                raise ValueError("Customer not found.")
+            connection.execute(
+                """
+                UPDATE customers
+                SET license_key_hash = ?, license_key_last4 = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (hash_license_key(new_key), new_key[-4:], now, customer_id),
+            )
+            self.audit(
+                connection,
+                "admin",
+                actor_id,
+                "customer.license_key_rotated",
+                "customer",
+                customer_id,
+                {
+                    "previous_last4": customer["license_key_last4"],
+                    "new_last4": new_key[-4:],
+                },
+                ip_address,
+            )
+        return new_key
+
     def search_customers(self, query: str = "", limit: int = 50) -> list[dict[str, Any]]:
         pattern = f"%{query.strip().lower()}%"
         with self.database.session() as connection:

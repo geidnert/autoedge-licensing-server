@@ -262,6 +262,9 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn('name="expires_at" type="datetime-local" step="1"', html)
         self.assertIn("Expiry ET", html)
         self.assertIn("2026-06-03 20:00:00 ET", html)
+        self.assertIn("/admin/customers/customer-001/license-key", html)
+        self.assertIn("Reissue key", html)
+        self.assertIn("Shows the new key once.", html)
 
     def test_releases_page_can_list_trader_desktop_release(self) -> None:
         html = releases_page(
