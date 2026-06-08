@@ -134,6 +134,78 @@ Trader should allow strategy access only when `status == "active"` and the requi
 
 `device_limit_exceeded` means the customer already has the maximum number of active licensed, non-blocked machines. Trader must block strategy access and must not offer package downloads for that machine. Admins can deauthorize a device, reset all devices for a customer, or set a customer-specific max device override in the customer detail page.
 
+### NinjaTrader 8 License Check
+
+`POST /api/nt8/license/check`
+
+NT8 uses the same customers, Whop packages, manual grants, expiry dates, devices, device limits, and audit log as Trader Desktop. Products include explicit NT8 fields in the admin UI:
+
+- `NT8 key`: the strategy key returned to NT8, for example `DUO` or `DUOrc`
+- `Trader`: whether Trader Desktop should receive this product in license responses
+- `NT8`: whether NinjaTrader 8 should receive this product in license responses
+
+Request:
+
+```json
+{
+  "license_key": "AE-XXXX-XXXX-XXXX-XXXX-XXXX",
+  "email": "customer@example.com",
+  "customer_id": "optional-internal-customer-id",
+  "whop_user_id": "optional-whop-user-id",
+  "machine_fingerprint": "stable-nt8-machine-fingerprint",
+  "nt8_version": "8.1.5",
+  "strategy": "DUO"
+}
+```
+
+At least one license identifier is required. `machine_fingerprint` is required. `strategy` is optional; when supplied, the server returns `unlicensed_strategy` if the customer is active but that exact NT8 strategy key is not licensed.
+
+Response:
+
+```json
+{
+  "status": "active",
+  "licensed": true,
+  "message": "License active.",
+  "server_time": "2026-06-03T20:00:00Z",
+  "customer": {
+    "id": "customer-id",
+    "email": "customer@example.com",
+    "license_key_last4": "ABCD"
+  },
+  "device": {
+    "id": "device-id",
+    "fingerprint_last8": "f00dbabe",
+    "is_blocked": false,
+    "client_type": "nt8"
+  },
+  "strategies": [
+    {
+      "key": "DUO",
+      "name": "DUO Runtime",
+      "product_id": "product-id",
+      "status": "active",
+      "source": "whop",
+      "expires_at": "2026-07-03T20:00:00Z"
+    }
+  ],
+  "strategy_keys": ["DUO"],
+  "requested_strategy": "DUO",
+  "expires_at": "2026-07-03T20:00:00Z",
+  "next_check_seconds": 21600,
+  "grace_period_seconds": 259200,
+  "lease": {
+    "token": "server-signed-opaque-token",
+    "issued_at": "2026-06-03T20:00:00Z",
+    "expires_at": "2026-06-06T20:00:00Z"
+  }
+}
+```
+
+Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `unlicensed_strategy`, `expired`, `revoked`, `suspended`, `device_blocked`, `device_limit_exceeded`, `invalid_request`, and `rate_limited`. NT8 should allow strategy use only when `licensed == true` and the required strategy key is present in `strategy_keys`.
+
+The `lease.token` is HMAC-signed by the server and is useful as an opaque cache marker and for future server-side validation. It is not a public-key offline-verifiable token; do not embed the server lease secret in NT8. If true offline signature verification becomes required, add an asymmetric signing dependency and ship only a public key in NT8.
+
 ### Trader Release Manifest
 
 `POST /api/trader/releases/manifest`
@@ -449,6 +521,7 @@ The current Debian deployment runs on `solidparts.se` behind nginx:
 - Admin UI: `https://solidparts.se/admin/login`
 - Admin password rotation: sign in, then use `Change password` in the top navigation.
 - Trader endpoint: `https://solidparts.se/api/trader/license/check`
+- NT8 endpoint: `https://solidparts.se/api/nt8/license/check`
 - Trader release manifest: `https://solidparts.se/api/trader/releases/manifest`
 - Trader release downloads: `https://solidparts.se/api/trader/releases/download/{token}`
 - Whop endpoint: `https://solidparts.se/api/whop/entitlements`

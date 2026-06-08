@@ -39,6 +39,7 @@ class AppEndpointTests(unittest.TestCase):
             rate_limit_per_minute=60,
             release_artifact_dir=f"{self.tmp.name}/artifacts",
             release_download_token_seconds=600,
+            license_lease_secret="y" * 40,
         )
         self.app = create_app(settings)
 
@@ -101,6 +102,43 @@ class AppEndpointTests(unittest.TestCase):
         self.assertEqual("active", payload["entitlement_status"])
         self.assertEqual("whop_package", payload["mapping_mode"])
 
+    def test_nt8_license_endpoint_returns_strategy_key_and_lease(self) -> None:
+        product = self.app.service.upsert_product(
+            slug="duo-runtime",
+            name="DUO Runtime",
+            feature_id="strategy.duo.runtime",
+            nt8_strategy_key="DUO",
+        )
+        created = self.app.service.create_or_update_customer(email="nt8-http@example.com")
+        self.app.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="nt8 http",
+            actor_id="admin",
+            ip_address=None,
+        )
+
+        status, _, body = self.call(
+            "POST",
+            "/api/nt8/license/check",
+            {
+                "license_key": created.license_key,
+                "machine_fingerprint": "nt8-http-machine",
+                "nt8_version": "8.1.5",
+                "strategy": "DUO",
+            },
+            {},
+        )
+        payload = json.loads(body)
+
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual("active", payload["status"])
+        self.assertTrue(payload["licensed"])
+        self.assertEqual(["DUO"], payload["strategy_keys"])
+        self.assertIsNotNone(payload["lease"]["token"])
+
     def test_admin_product_list_hides_internal_slug_and_feature_ids(self) -> None:
         html = products_page(
             [
@@ -110,6 +148,9 @@ class AppEndpointTests(unittest.TestCase):
                     "slug": "duo-runtime",
                     "feature_id": "strategy.duo.runtime",
                     "whop_product_id": "",
+                    "nt8_strategy_key": "DUO",
+                    "trader_enabled": 1,
+                    "nt8_enabled": 1,
                     "is_active": 1,
                     "updated_at": "2026-06-04T00:00:00Z",
                 }
@@ -121,6 +162,8 @@ class AppEndpointTests(unittest.TestCase):
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("duo-runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
+        self.assertIn("NT8 key", html)
+        self.assertIn("DUO", html)
         self.assertIn("2026-06-03 20:00:00 ET", html)
 
     def test_packages_page_shows_bundle_without_internal_feature_ids(self) -> None:

@@ -35,9 +35,11 @@ class Settings:
     rate_limit_per_minute: int
     release_artifact_dir: str
     release_download_token_seconds: int
+    license_lease_secret: str
 
     @staticmethod
     def from_env() -> "Settings":
+        admin_cookie_secret = os.environ.get("AUTOEDGE_ADMIN_COOKIE_SECRET", "")
         return Settings(
             database_path=os.environ.get("AUTOEDGE_DATABASE_PATH", "data/autoedge.db"),
             bind_host=os.environ.get("AUTOEDGE_BIND_HOST", "127.0.0.1"),
@@ -45,7 +47,7 @@ class Settings:
             public_base_url=os.environ.get("AUTOEDGE_PUBLIC_BASE_URL", "https://licenses.example.com"),
             whop_webhook_secret=os.environ.get("WHOP_WEBHOOK_SECRET"),
             whop_bearer_token=os.environ.get("AUTOEDGE_WHOP_BEARER_TOKEN"),
-            admin_cookie_secret=os.environ.get("AUTOEDGE_ADMIN_COOKIE_SECRET", ""),
+            admin_cookie_secret=admin_cookie_secret,
             cookie_secure=_bool_env("AUTOEDGE_COOKIE_SECURE", True),
             session_hours=_int_env("AUTOEDGE_ADMIN_SESSION_HOURS", 12),
             license_check_interval_seconds=_int_env("AUTOEDGE_LICENSE_CHECK_INTERVAL_SECONDS", 21600),
@@ -54,10 +56,13 @@ class Settings:
             rate_limit_per_minute=_int_env("AUTOEDGE_RATE_LIMIT_PER_MINUTE", 60),
             release_artifact_dir=os.environ.get("AUTOEDGE_RELEASE_ARTIFACT_DIR", "data/artifacts"),
             release_download_token_seconds=_int_env("AUTOEDGE_RELEASE_DOWNLOAD_TOKEN_SECONDS", 600),
+            license_lease_secret=os.environ.get("AUTOEDGE_LICENSE_LEASE_SECRET") or admin_cookie_secret,
         )
 
     def validate_runtime(self) -> None:
         if not self.admin_cookie_secret or len(self.admin_cookie_secret) < 32:
             raise ValueError("AUTOEDGE_ADMIN_COOKIE_SECRET must be set to at least 32 characters.")
+        if not self.license_lease_secret or len(self.license_lease_secret) < 32:
+            raise ValueError("AUTOEDGE_LICENSE_LEASE_SECRET must be set to at least 32 characters.")
         if not self.whop_webhook_secret and not self.whop_bearer_token:
             raise ValueError("Set WHOP_WEBHOOK_SECRET or AUTOEDGE_WHOP_BEARER_TOKEN before accepting webhook updates.")

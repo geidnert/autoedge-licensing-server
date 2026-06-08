@@ -138,6 +138,8 @@ class AutoEdgeApp:
             return json_response({"status": "ok"})
         if request.path in {"/api/trader/license/check", "/api/trader/license/activate"} and request.method == "POST":
             return self.trader_license_check(request)
+        if request.path == "/api/nt8/license/check" and request.method == "POST":
+            return self.nt8_license_check(request)
         if request.path == "/api/trader/releases/manifest" and request.method == "POST":
             return self.trader_release_manifest(request)
         if request.path == "/api/trader/releases/download-token" and request.method == "POST":
@@ -185,6 +187,27 @@ class AutoEdgeApp:
             check_interval_seconds=self.settings.license_check_interval_seconds,
             grace_period_seconds=self.settings.grace_period_seconds,
             max_devices=self.settings.trader_max_devices,
+        )
+        return json_response(response)
+
+    def nt8_license_check(self, request: Request) -> Response:
+        if not self.rate_limiter.allow(f"nt8-license:{request.ip}"):
+            return json_response({"status": "rate_limited", "message": "Too many NT8 license checks."}, HTTPStatus.TOO_MANY_REQUESTS)
+        payload = request.json()
+        response = self.service.check_nt8_license(
+            license_key=payload.get("license_key"),
+            email=payload.get("email"),
+            customer_id=payload.get("customer_id"),
+            whop_user_id=payload.get("whop_user_id"),
+            machine_fingerprint=payload.get("machine_fingerprint") or "",
+            nt8_version=payload.get("nt8_version"),
+            strategy=payload.get("strategy"),
+            ip_address=request.ip,
+            user_agent=request.user_agent,
+            check_interval_seconds=self.settings.license_check_interval_seconds,
+            grace_period_seconds=self.settings.grace_period_seconds,
+            max_devices=self.settings.trader_max_devices,
+            lease_secret=self.settings.license_lease_secret,
         )
         return json_response(response)
 
@@ -359,6 +382,9 @@ class AutoEdgeApp:
                     feature_id=internal_feature_id,
                     whop_product_id=existing.get("whop_product_id") if existing else None,
                     is_active=form.get("is_active") == "on",
+                    nt8_strategy_key=form.get("nt8_strategy_key") or None,
+                    trader_enabled=form.get("trader_enabled") == "on",
+                    nt8_enabled=form.get("nt8_enabled") == "on",
                     actor_id=admin["id"],
                     ip_address=request.ip,
                 )
@@ -369,6 +395,9 @@ class AutoEdgeApp:
                     feature_id=internal_feature_id,
                     whop_product_id=form.get("whop_product_id") or None,
                     is_active=form.get("is_active") == "on",
+                    nt8_strategy_key=form.get("nt8_strategy_key") or None,
+                    trader_enabled=form.get("trader_enabled") == "on",
+                    nt8_enabled=form.get("nt8_enabled") == "on",
                     actor_id=admin["id"],
                     ip_address=request.ip,
                 )
@@ -805,12 +834,17 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     form_title = "Edit product" if is_editing else "Add or update product"
     button_text = "Save changes" if is_editing else "Save product"
     active_checked = "checked" if selected.get("is_active", 1) else ""
+    trader_checked = "checked" if selected.get("trader_enabled", 1) else ""
+    nt8_checked = "checked" if selected.get("nt8_enabled", 1) else ""
     cancel_link = '<a class="button secondary" href="/admin/products">Cancel</a>' if is_editing else ""
     selected_name = display_product_name(selected.get("name"))
     rows = "\n".join(
         f"""
         <tr>
           <td>{e(display_product_name(product.get('name')))}</td>
+          <td>{e(product.get('nt8_strategy_key'))}</td>
+          <td>{format_bool(product.get('trader_enabled', 1))}</td>
+          <td>{format_bool(product.get('nt8_enabled', 1))}</td>
           <td>{format_bool(product.get('is_active'))}</td>
           <td>{e(format_admin_time(product.get('updated_at')))}</td>
           <td><a class="button small" href="/admin/products?edit={e(product['id'])}">Edit</a></td>
@@ -833,6 +867,9 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
         <input type="hidden" name="slug" value="{e(selected.get('slug'))}">
         <input type="hidden" name="feature_id" value="{e(selected.get('feature_id'))}">
         <label>Strategy <input name="name" required placeholder="DUO" value="{e(selected_name)}"></label>
+        <label>NT8 key <input name="nt8_strategy_key" required placeholder="DUO" value="{e(selected.get('nt8_strategy_key') or selected_name)}"></label>
+        <label class="checkbox"><input name="trader_enabled" type="checkbox" {trader_checked}> Trader</label>
+        <label class="checkbox"><input name="nt8_enabled" type="checkbox" {nt8_checked}> NT8</label>
         <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
         <button type="submit">{button_text}</button>
         {cancel_link}
@@ -840,8 +877,8 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Strategy</th><th>Active</th><th>Updated ET</th><th></th></tr></thead>
-        <tbody>{rows or '<tr><td colspan="4">No products configured.</td></tr>'}</tbody>
+        <thead><tr><th>Strategy</th><th>NT8 key</th><th>Trader</th><th>NT8</th><th>Active</th><th>Updated ET</th><th></th></tr></thead>
+        <tbody>{rows or '<tr><td colspan="7">No products configured.</td></tr>'}</tbody>
       </table>
     </section>
     """
@@ -1119,6 +1156,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
         f"""
         <tr>
           <td>{e(device.get('fingerprint_last8'))}<small>{e(device.get('id'))}</small></td>
+          <td>{e(device.get('client_type'))}</td>
           <td>{e(device.get('app_version'))}</td>
           <td>{e(device.get('ip_last'))}</td>
           <td>{e(format_admin_time(device.get('first_seen_at')))}</td>
@@ -1140,6 +1178,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
         f"""
         <tr>
           <td>{e(format_admin_time(check.get('created_at')))}</td>
+          <td>{e(check.get('client_type'))}</td>
           <td><strong class="status {e(check.get('status'))}">{e(check.get('status'))}</strong></td>
           <td>{e(check.get('app_version'))}</td>
           <td>{e(check.get('ip_address'))}</td>
@@ -1227,11 +1266,11 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
     </section>
     <section class="panel">
       <h2>Devices</h2>
-      <table><thead><tr><th>Fingerprint</th><th>App</th><th>IP</th><th>First seen ET</th><th>Last seen ET</th><th>Licensed ET</th><th>Blocked</th><th></th></tr></thead><tbody>{devices or '<tr><td colspan="8">No devices.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Fingerprint</th><th>Client</th><th>App</th><th>IP</th><th>First seen ET</th><th>Last seen ET</th><th>Licensed ET</th><th>Blocked</th><th></th></tr></thead><tbody>{devices or '<tr><td colspan="9">No devices.</td></tr>'}</tbody></table>
     </section>
     <section class="panel">
       <h2>License check-ins</h2>
-      <table><thead><tr><th>Time ET</th><th>Status</th><th>App</th><th>IP</th><th>Response</th></tr></thead><tbody>{checks or '<tr><td colspan="5">No check-ins.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Time ET</th><th>Client</th><th>Status</th><th>App</th><th>IP</th><th>Response</th></tr></thead><tbody>{checks or '<tr><td colspan="6">No check-ins.</td></tr>'}</tbody></table>
     </section>
     <section class="panel">
       <h2>Audit log</h2>

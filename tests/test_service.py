@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
+import json
 import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
 
 from autoedge_licensing.db import Database, apply_migrations
+from autoedge_licensing.security import unsign_value
 from autoedge_licensing.service import LicensingService, iso, parse_time, utc_now
 
 
@@ -155,6 +158,132 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(["strategy.duo.runtime"], [grant["feature_id"] for grant in response["licensed_strategies"]])
         self.assertEqual(3600, response["next_check_seconds"])
         self.assertEqual(86400, response["grace_period_seconds"])
+
+    def test_nt8_active_grant_returns_strategy_key_and_signed_lease(self) -> None:
+        created = self.active_customer("nt8-active@example.com")
+        lease_secret = "lease-secret-" + ("x" * 40)
+
+        response = self.service.check_nt8_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="nt8-machine-001",
+            nt8_version="8.1.5",
+            strategy="DUO",
+            ip_address="127.0.0.1",
+            user_agent="NinjaTrader",
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+            lease_secret=lease_secret,
+        )
+
+        signed_payload = unsign_value(lease_secret, response["lease"]["token"])
+        lease_payload = json.loads(base64.urlsafe_b64decode(signed_payload.encode("ascii")).decode("utf-8"))
+
+        self.assertEqual("active", response["status"])
+        self.assertTrue(response["licensed"])
+        self.assertEqual(["DUO"], response["strategy_keys"])
+        self.assertEqual("nt8", response["device"]["client_type"])
+        self.assertEqual("nt8_license_lease", lease_payload["type"])
+        self.assertEqual(["DUO"], lease_payload["strategy_keys"])
+
+    def test_nt8_requested_unlicensed_strategy_blocks_without_lease(self) -> None:
+        created = self.active_customer("nt8-unlicensed-strategy@example.com")
+
+        response = self.service.check_nt8_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="nt8-machine-002",
+            nt8_version="8.1.5",
+            strategy="ADAM",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+            lease_secret="lease-secret-" + ("x" * 40),
+        )
+
+        self.assertEqual("unlicensed_strategy", response["status"])
+        self.assertFalse(response["licensed"])
+        self.assertIsNone(response["lease"])
+
+    def test_nt8_disabled_product_is_not_returned_but_trader_still_can_be(self) -> None:
+        self.service.update_product(
+            product_id=self.product["id"],
+            slug=self.product["slug"],
+            name=self.product["name"],
+            feature_id=self.product["feature_id"],
+            whop_product_id=self.product["whop_product_id"],
+            is_active=True,
+            nt8_strategy_key="DUO",
+            trader_enabled=True,
+            nt8_enabled=False,
+        )
+        created = self.active_customer("nt8-disabled@example.com")
+
+        nt8 = self.service.check_nt8_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="nt8-disabled-machine",
+            nt8_version="8.1.5",
+            strategy="DUO",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+            lease_secret="lease-secret-" + ("x" * 40),
+        )
+        trader = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="trader-disabled-machine",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=2,
+        )
+
+        self.assertEqual("unlicensed", nt8["status"])
+        self.assertFalse(nt8["licensed"])
+        self.assertEqual("active", trader["status"])
+        self.assertEqual(["strategy.duo.runtime"], [grant["feature_id"] for grant in trader["licensed_strategies"]])
+
+    def test_nt8_device_limit_exceeded_blocks_and_omits_lease(self) -> None:
+        created = self.active_customer("nt8-limit@example.com")
+        kwargs = {
+            "license_key": created.license_key,
+            "email": None,
+            "customer_id": None,
+            "whop_user_id": None,
+            "nt8_version": "8.1.5",
+            "strategy": "DUO",
+            "ip_address": None,
+            "user_agent": None,
+            "check_interval_seconds": 3600,
+            "grace_period_seconds": 86400,
+            "max_devices": 1,
+            "lease_secret": "lease-secret-" + ("x" * 40),
+        }
+
+        first = self.service.check_nt8_license(machine_fingerprint="nt8-limit-one", **kwargs)
+        second = self.service.check_nt8_license(machine_fingerprint="nt8-limit-two", **kwargs)
+
+        self.assertEqual("active", first["status"])
+        self.assertEqual("device_limit_exceeded", second["status"])
+        self.assertFalse(second["licensed"])
+        self.assertIsNone(second["lease"])
 
     def test_manual_grant_accepts_datetime_local_expiry(self) -> None:
         created = self.service.create_or_update_customer(email="picker@example.com")

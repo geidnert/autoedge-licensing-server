@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 import uuid
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -18,6 +19,7 @@ from .security import (
     hash_password,
     random_token,
     sha256_hex,
+    sign_value,
     verify_password,
 )
 
@@ -70,6 +72,18 @@ def slugify(value: str) -> str:
     return slug or "product"
 
 
+def normalize_client_type(value: str | None) -> str:
+    cleaned = (value or CLIENT_TYPE_TRADER).strip().lower().replace("-", "_")
+    return cleaned if cleaned in CLIENT_TYPES else "unknown"
+
+
+def nt8_key_from_product_name(value: str | None) -> str:
+    cleaned = (value or "").strip()
+    if cleaned.endswith(" Runtime"):
+        cleaned = cleaned[: -len(" Runtime")]
+    return re.sub(r"\s+", "", cleaned) or "Strategy"
+
+
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
@@ -82,6 +96,9 @@ DEFAULT_RELEASE_PLATFORM = "macos-arm64"
 SUPPORTED_RELEASE_PLATFORMS = ("macos-arm64", "windows-x64")
 CHANNEL_PRIORITY = {"stable": 0, "beta": 1, "canary": 2, "internal": 3}
 AUDIENCE_MODES = {"all", "allowlist", "roles", "percent", "disabled"}
+CLIENT_TYPE_TRADER = "trader_desktop"
+CLIENT_TYPE_NT8 = "nt8"
+CLIENT_TYPES = {CLIENT_TYPE_TRADER, CLIENT_TYPE_NT8, "unknown"}
 
 
 def display_strategy_name(value: str | None) -> str:
@@ -396,11 +413,15 @@ class LicensingService:
         feature_id: str,
         whop_product_id: str | None,
         is_active: bool,
+        nt8_strategy_key: str | None = None,
+        trader_enabled: bool = True,
+        nt8_enabled: bool = True,
         actor_id: str | None = None,
         ip_address: str | None = None,
     ) -> dict[str, Any]:
         now = iso()
         normalized_slug = slugify(slug)
+        normalized_nt8_key = (nt8_strategy_key or nt8_key_from_product_name(name)).strip()
         with self.database.session() as connection:
             existing = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
             if existing is None:
@@ -413,6 +434,9 @@ class LicensingService:
                     name = ?,
                     feature_id = ?,
                     is_active = ?,
+                    nt8_strategy_key = ?,
+                    trader_enabled = ?,
+                    nt8_enabled = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -422,6 +446,9 @@ class LicensingService:
                     name.strip(),
                     feature_id.strip(),
                     int(is_active),
+                    normalized_nt8_key,
+                    int(trader_enabled),
+                    int(nt8_enabled),
                     now,
                     product_id,
                 ),
@@ -433,7 +460,13 @@ class LicensingService:
                 "product.updated",
                 "product",
                 product_id,
-                {"slug": normalized_slug, "whop_product_id": whop_product_id},
+                {
+                    "slug": normalized_slug,
+                    "whop_product_id": whop_product_id,
+                    "nt8_strategy_key": normalized_nt8_key,
+                    "trader_enabled": trader_enabled,
+                    "nt8_enabled": nt8_enabled,
+                },
                 ip_address,
             )
             product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
@@ -447,12 +480,16 @@ class LicensingService:
         feature_id: str,
         whop_product_id: str | None = None,
         is_active: bool = True,
+        nt8_strategy_key: str | None = None,
+        trader_enabled: bool = True,
+        nt8_enabled: bool = True,
         metadata: dict[str, Any] | None = None,
         actor_id: str | None = None,
         ip_address: str | None = None,
     ) -> dict[str, Any]:
         now = iso()
         normalized_slug = slugify(slug)
+        normalized_nt8_key = (nt8_strategy_key or nt8_key_from_product_name(name)).strip()
         metadata_json = json.dumps(metadata or {}, sort_keys=True)
         with self.database.session() as connection:
             row = connection.execute(
@@ -463,10 +500,27 @@ class LicensingService:
                 product_id = uuid.uuid4().hex
                 connection.execute(
                     """
-                    INSERT INTO products(id, whop_product_id, slug, name, feature_id, is_active, metadata_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO products(
+                        id, whop_product_id, slug, name, feature_id, is_active,
+                        nt8_strategy_key, trader_enabled, nt8_enabled,
+                        metadata_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (product_id, whop_product_id, normalized_slug, name.strip(), feature_id.strip(), int(is_active), metadata_json, now, now),
+                    (
+                        product_id,
+                        whop_product_id,
+                        normalized_slug,
+                        name.strip(),
+                        feature_id.strip(),
+                        int(is_active),
+                        normalized_nt8_key,
+                        int(trader_enabled),
+                        int(nt8_enabled),
+                        metadata_json,
+                        now,
+                        now,
+                    ),
                 )
                 action = "product.created"
             else:
@@ -479,14 +533,43 @@ class LicensingService:
                         name = ?,
                         feature_id = ?,
                         is_active = ?,
+                        nt8_strategy_key = ?,
+                        trader_enabled = ?,
+                        nt8_enabled = ?,
                         metadata_json = ?,
                         updated_at = ?
                     WHERE id = ?
                     """,
-                    (whop_product_id, normalized_slug, name.strip(), feature_id.strip(), int(is_active), metadata_json, now, product_id),
+                    (
+                        whop_product_id,
+                        normalized_slug,
+                        name.strip(),
+                        feature_id.strip(),
+                        int(is_active),
+                        normalized_nt8_key,
+                        int(trader_enabled),
+                        int(nt8_enabled),
+                        metadata_json,
+                        now,
+                        product_id,
+                    ),
                 )
                 action = "product.updated"
-            self.audit(connection, "admin" if actor_id else "system", actor_id, action, "product", product_id, {"slug": normalized_slug}, ip_address)
+            self.audit(
+                connection,
+                "admin" if actor_id else "system",
+                actor_id,
+                action,
+                "product",
+                product_id,
+                {
+                    "slug": normalized_slug,
+                    "nt8_strategy_key": normalized_nt8_key,
+                    "trader_enabled": trader_enabled,
+                    "nt8_enabled": nt8_enabled,
+                },
+                ip_address,
+            )
             product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
             return dict(product)
 
@@ -2413,6 +2496,107 @@ class LicensingService:
             raise ValueError("Artifact path must stay inside AUTOEDGE_RELEASE_ARTIFACT_DIR.")
         return resolved
 
+    def check_nt8_license(
+        self,
+        *,
+        license_key: str | None,
+        email: str | None,
+        customer_id: str | None,
+        whop_user_id: str | None,
+        machine_fingerprint: str,
+        nt8_version: str | None,
+        strategy: str | None,
+        ip_address: str | None,
+        user_agent: str | None,
+        check_interval_seconds: int,
+        grace_period_seconds: int,
+        max_devices: int,
+        lease_secret: str,
+    ) -> dict[str, Any]:
+        app_version = f"NT8 {nt8_version.strip()}" if nt8_version and nt8_version.strip() else "NT8"
+        base_response = self.check_license(
+            license_key=license_key,
+            email=email,
+            customer_id=customer_id,
+            whop_user_id=whop_user_id,
+            machine_fingerprint=machine_fingerprint,
+            app_version=app_version,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            check_interval_seconds=check_interval_seconds,
+            grace_period_seconds=grace_period_seconds,
+            client_type=CLIENT_TYPE_NT8,
+            max_devices=max_devices,
+        )
+        requested_strategy = (strategy or "").strip()
+        strategies = [
+            {
+                "key": grant["nt8_strategy_key"],
+                "name": grant["name"],
+                "product_id": grant["product_id"],
+                "status": grant["status"],
+                "source": grant["source"],
+                "expires_at": grant["expires_at"],
+            }
+            for grant in base_response.get("licensed_strategies", [])
+            if grant.get("nt8_strategy_key")
+        ]
+        strategy_keys = [item["key"] for item in strategies]
+        licensed = base_response["status"] == "active" and (
+            not requested_strategy or requested_strategy in strategy_keys
+        )
+        status = base_response["status"]
+        message = base_response["message"]
+        if base_response["status"] == "active" and requested_strategy and requested_strategy not in strategy_keys:
+            status = "unlicensed_strategy"
+            message = f"License is active, but {requested_strategy} is not licensed."
+            licensed = False
+
+        lease = None
+        if licensed:
+            issued_at = base_response["server_time"]
+            lease_expires_at = iso(parse_time(issued_at) + timedelta(seconds=grace_period_seconds)) if parse_time(issued_at) else None
+            lease_payload = {
+                "type": "nt8_license_lease",
+                "customer_id": base_response["customer"]["id"] if base_response.get("customer") else None,
+                "device_id": base_response["device"]["id"] if base_response.get("device") else None,
+                "device_fingerprint_last8": base_response["device"]["fingerprint_last8"] if base_response.get("device") else None,
+                "strategy_keys": strategy_keys,
+                "requested_strategy": requested_strategy or None,
+                "license_expires_at": base_response.get("expires_at"),
+                "issued_at": issued_at,
+                "expires_at": lease_expires_at,
+            }
+            lease = {
+                "token": self._sign_lease(lease_payload, lease_secret),
+                "issued_at": issued_at,
+                "expires_at": lease_expires_at,
+            }
+
+        return {
+            "status": status,
+            "licensed": licensed,
+            "message": message,
+            "server_time": base_response["server_time"],
+            "customer": base_response.get("customer"),
+            "device": base_response.get("device"),
+            "strategies": strategies,
+            "strategy_keys": strategy_keys,
+            "requested_strategy": requested_strategy or None,
+            "expires_at": base_response.get("expires_at"),
+            "next_check_at": base_response["next_check_at"],
+            "next_check_seconds": base_response["next_check_seconds"],
+            "grace_period_seconds": base_response["grace_period_seconds"],
+            "device_limit": base_response.get("device_limit"),
+            "lease": lease,
+        }
+
+    def _sign_lease(self, payload: dict[str, Any], secret: str) -> str:
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        return sign_value(secret, encoded)
+
     def check_license(
         self,
         *,
@@ -2426,8 +2610,10 @@ class LicensingService:
         user_agent: str | None,
         check_interval_seconds: int,
         grace_period_seconds: int,
+        client_type: str = CLIENT_TYPE_TRADER,
         max_devices: int = 1,
     ) -> dict[str, Any]:
+        normalized_client_type = normalize_client_type(client_type)
         if not machine_fingerprint or not machine_fingerprint.strip():
             return self._license_response("invalid_request", "machine_fingerprint is required", [], check_interval_seconds, grace_period_seconds)
 
@@ -2435,17 +2621,18 @@ class LicensingService:
             customer = self._find_customer(connection, license_key, email, customer_id, whop_user_id)
             if customer is None:
                 response = self._license_response("unknown_customer", "No customer matched the supplied license identifier.", [], check_interval_seconds, grace_period_seconds)
-                self._record_check(connection, None, None, email or customer_id or whop_user_id or "license_key", app_version, ip_address, user_agent, response)
+                self._record_check(connection, None, None, email or customer_id or whop_user_id or "license_key", app_version, normalized_client_type, ip_address, user_agent, response)
                 return response
 
-            device = self._upsert_device(connection, customer["id"], machine_fingerprint, app_version, ip_address, user_agent)
+            device = self._upsert_device(connection, customer["id"], machine_fingerprint, app_version, normalized_client_type, ip_address, user_agent)
             device_limit = self._device_limit_snapshot(connection, customer, device, max_devices)
             if device["is_blocked"]:
                 response = self._license_response("device_blocked", "This machine is blocked for the license.", [], check_interval_seconds, grace_period_seconds, customer, device, device_limit)
-                self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, ip_address, user_agent, response)
+                self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, normalized_client_type, ip_address, user_agent, response)
                 return response
 
             grants = self._current_grants(connection, customer["id"])
+            grants = self._filter_grants_for_client(grants, normalized_client_type)
             licensed = [grant for grant in grants if grant["is_licensed"]]
             if licensed:
                 if not device_limit["device_is_counted"] and device_limit["active_devices"] >= device_limit["max_devices"]:
@@ -2474,7 +2661,7 @@ class LicensingService:
                         },
                         ip_address,
                     )
-                    self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, ip_address, user_agent, response)
+                    self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, normalized_client_type, ip_address, user_agent, response)
                     return response
                 device = self._mark_device_licensed(connection, device["id"])
                 device_limit = self._device_limit_snapshot(connection, customer, device, max_devices)
@@ -2483,8 +2670,19 @@ class LicensingService:
             else:
                 status, message = self._blocking_status(grants)
             response = self._license_response(status, message, licensed, check_interval_seconds, grace_period_seconds, customer, device, device_limit)
-            self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, ip_address, user_agent, response)
+            self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, normalized_client_type, ip_address, user_agent, response)
             return response
+
+    def _filter_grants_for_client(self, grants: list[dict[str, Any]], client_type: str) -> list[dict[str, Any]]:
+        if client_type == CLIENT_TYPE_NT8:
+            return [
+                grant
+                for grant in grants
+                if bool(grant.get("nt8_enabled", 1)) and bool((grant.get("nt8_strategy_key") or "").strip())
+            ]
+        if client_type == CLIENT_TYPE_TRADER:
+            return [grant for grant in grants if bool(grant.get("trader_enabled", 1))]
+        return grants
 
     def _license_response(
         self,
@@ -2519,6 +2717,7 @@ class LicensingService:
                 "id": device_dict["id"],
                 "fingerprint_last8": device_dict["fingerprint_last8"],
                 "is_blocked": bool(device_dict["is_blocked"]),
+                "client_type": device_dict.get("client_type"),
             }
             if device_dict
             else None,
@@ -2528,6 +2727,9 @@ class LicensingService:
                     "slug": grant["slug"],
                     "name": grant["name"],
                     "feature_id": grant["feature_id"],
+                    "nt8_strategy_key": grant.get("nt8_strategy_key"),
+                    "trader_enabled": bool(grant.get("trader_enabled", 1)),
+                    "nt8_enabled": bool(grant.get("nt8_enabled", 1)),
                     "status": grant["status"],
                     "source": grant["source"],
                     "expires_at": grant["expires_at"],
@@ -2548,6 +2750,7 @@ class LicensingService:
         device_id: str | None,
         identifier: str | None,
         app_version: str | None,
+        client_type: str,
         ip_address: str | None,
         user_agent: str | None,
         response: dict[str, Any],
@@ -2555,9 +2758,9 @@ class LicensingService:
         connection.execute(
             """
             INSERT INTO license_checks(
-                id, customer_id, device_id, request_identifier, app_version, ip_address, user_agent, status, response_json, created_at
+                id, customer_id, device_id, request_identifier, app_version, client_type, ip_address, user_agent, status, response_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 uuid.uuid4().hex,
@@ -2565,6 +2768,7 @@ class LicensingService:
                 device_id,
                 identifier,
                 app_version,
+                normalize_client_type(client_type),
                 ip_address,
                 user_agent,
                 response["status"],
@@ -2606,9 +2810,11 @@ class LicensingService:
         customer_id: str,
         machine_fingerprint: str,
         app_version: str | None,
+        client_type: str,
         ip_address: str | None,
         user_agent: str | None,
     ) -> sqlite3.Row:
+        normalized_client_type = normalize_client_type(client_type)
         fingerprint_hash = hash_fingerprint(machine_fingerprint)
         last8 = fingerprint_hash[-8:]
         now = iso()
@@ -2622,22 +2828,31 @@ class LicensingService:
                 """
                 INSERT INTO devices(
                     id, customer_id, fingerprint_hash, fingerprint_last8, first_seen_at,
-                    last_seen_at, app_version, ip_last, user_agent_last
+                    last_seen_at, app_version, client_type, ip_last, user_agent_last
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (device_id, customer_id, fingerprint_hash, last8, now, now, app_version, ip_address, user_agent),
+                (device_id, customer_id, fingerprint_hash, last8, now, now, app_version, normalized_client_type, ip_address, user_agent),
             )
-            self.audit(connection, "client", customer_id, "device.created", "device", device_id, {"customer_id": customer_id, "fingerprint_last8": last8}, ip_address)
+            self.audit(
+                connection,
+                "client",
+                customer_id,
+                "device.created",
+                "device",
+                device_id,
+                {"customer_id": customer_id, "fingerprint_last8": last8, "client_type": normalized_client_type},
+                ip_address,
+            )
         else:
             device_id = existing["id"]
             connection.execute(
                 """
                 UPDATE devices
-                SET last_seen_at = ?, app_version = COALESCE(?, app_version), ip_last = ?, user_agent_last = ?
+                SET last_seen_at = ?, app_version = COALESCE(?, app_version), client_type = ?, ip_last = ?, user_agent_last = ?
                 WHERE id = ?
                 """,
-                (now, app_version, ip_address, user_agent, device_id),
+                (now, app_version, normalized_client_type, ip_address, user_agent, device_id),
             )
         return connection.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
 
@@ -2694,7 +2909,8 @@ class LicensingService:
     def _current_grants(self, connection: sqlite3.Connection, customer_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
-            SELECT entitlements.*, products.id AS product_id, products.slug, products.name, products.feature_id, products.is_active
+            SELECT entitlements.*, products.id AS product_id, products.slug, products.name, products.feature_id,
+                   products.is_active, products.nt8_strategy_key, products.trader_enabled, products.nt8_enabled
             FROM entitlements
             JOIN products ON products.id = entitlements.product_id
             WHERE entitlements.customer_id = ?
