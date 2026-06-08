@@ -610,11 +610,13 @@ class AutoEdgeApp:
               <a href="/admin/packages">Whop Packages</a>
               <a href="/admin/releases">Releases</a>
               <span class="spacer"></span>
-              <span>{username}</span>
+              <span class="admin-clock" data-admin-clock aria-label="Current Eastern time">Loading ET...</span>
+              <span class="admin-user">{username}</span>
               <a href="/admin/password">Change password</a>
               <a href="/admin/logout">Sign out</a>
             </nav>
             """.format(username=e(admin["username"]))
+        clock_script = ADMIN_CLOCK_SCRIPT if admin else ""
         return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -626,6 +628,7 @@ class AutoEdgeApp:
 <body>
   {nav}
   <main>{body}</main>
+  {clock_script}
 </body>
 </html>"""
 
@@ -1286,6 +1289,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 nav { height: 52px; display: flex; align-items: center; gap: 18px; padding: 0 24px; background: #17202a; color: #fff; }
 nav a { color: #fff; text-decoration: none; font-weight: 600; }
 nav .spacer { flex: 1; }
+.admin-clock { color: #d7e3ea; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.admin-user { color: #fff; font-weight: 650; white-space: nowrap; }
 main { width: min(1180px, calc(100vw - 32px)); margin: 24px auto 48px; }
 h1 { margin: 0; font-size: 26px; }
 h2 { margin: 0 0 16px; font-size: 18px; }
@@ -1357,6 +1362,41 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   .grid-form, .package-form, .release-form, .release-artifact-form, .release-advanced-form, .release-targeting-form, .device-limit-form, .customer-tags-form, .facts { grid-template-columns: 1fr; }
   table { display: block; overflow-x: auto; }
 }
+"""
+
+
+ADMIN_CLOCK_SCRIPT = """
+<script>
+(function () {
+  const clock = document.querySelector("[data-admin-clock]");
+  if (!clock) {
+    return;
+  }
+  const formatter = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+  function clockPartMap() {
+    return formatter.formatToParts(new Date()).reduce(function (parts, part) {
+      parts[part.type] = part.value;
+      return parts;
+    }, {});
+  }
+  function tick() {
+    const parts = clockPartMap();
+    clock.textContent = parts.year + "-" + parts.month + "-" + parts.day + " " +
+      parts.hour + ":" + parts.minute + ":" + parts.second + " ET";
+  }
+  tick();
+  window.setInterval(tick, 1000);
+}());
+</script>
 """
 
 

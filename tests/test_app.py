@@ -50,6 +50,14 @@ class AppEndpointTests(unittest.TestCase):
         self.assertEqual("2026-06-06 22:30:00 ET", format_admin_time("2026-06-07T02:30:00Z"))
         self.assertEqual("2026-06-07T02:30:00Z", admin_time_input_to_utc("2026-06-06T22:30:00"))
 
+    def test_admin_page_includes_live_eastern_clock(self) -> None:
+        html = self.app.page("Admin", "<p>Body</p>", {"username": "admin"})
+
+        self.assertIn("data-admin-clock", html)
+        self.assertIn("Current Eastern time", html)
+        self.assertIn("America/New_York", html)
+        self.assertIn("admin-user", html)
+
     def test_whop_endpoint_rejects_missing_auth(self) -> None:
         status, _, body = self.call(
             "POST",
