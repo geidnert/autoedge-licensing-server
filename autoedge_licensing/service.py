@@ -2671,7 +2671,11 @@ class LicensingService:
             grants = self._filter_grants_for_client(grants, normalized_client_type)
             licensed = [grant for grant in grants if grant["is_licensed"]]
             if licensed:
-                if not device_limit["device_is_counted"] and device_limit["active_devices"] >= device_limit["max_devices"]:
+                device_over_limit = (
+                    (not device_limit["device_is_counted"] and device_limit["active_devices"] >= device_limit["max_devices"])
+                    or (device_limit["device_is_counted"] and not device_limit["device_is_within_limit"])
+                )
+                if device_over_limit:
                     response = self._license_response(
                         "device_limit_exceeded",
                         "This license is already active on the maximum number of machines.",
@@ -2694,6 +2698,8 @@ class LicensingService:
                             "fingerprint_last8": device["fingerprint_last8"],
                             "active_devices": device_limit["active_devices"],
                             "max_devices": device_limit["max_devices"],
+                            "device_is_counted": device_limit["device_is_counted"],
+                            "device_is_within_limit": device_limit["device_is_within_limit"],
                         },
                         ip_address,
                     )
@@ -2913,6 +2919,28 @@ class LicensingService:
             ).fetchone()[0]
         )
 
+    def _device_is_within_active_limit(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        customer_id: str,
+        device_id: str,
+        max_devices: int,
+    ) -> bool:
+        rows = connection.execute(
+            """
+            SELECT id
+            FROM devices
+            WHERE customer_id = ?
+              AND is_blocked = 0
+              AND first_licensed_at IS NOT NULL
+            ORDER BY first_licensed_at ASC, first_seen_at ASC, rowid ASC
+            LIMIT ?
+            """,
+            (customer_id, max_devices),
+        ).fetchall()
+        return device_id in {row["id"] for row in rows}
+
     def _device_limit_snapshot(
         self,
         connection: sqlite3.Connection,
@@ -2923,10 +2951,19 @@ class LicensingService:
         customer_dict = dict(customer)
         device_dict = dict(device)
         active_devices = self._active_device_count(connection, customer_dict["id"])
+        max_devices = self._effective_max_devices(customer, default_max_devices)
+        device_is_counted = bool(device_dict.get("first_licensed_at")) and not bool(device_dict.get("is_blocked"))
         return {
             "active_devices": active_devices,
-            "max_devices": self._effective_max_devices(customer, default_max_devices),
-            "device_is_counted": bool(device_dict.get("first_licensed_at")) and not bool(device_dict.get("is_blocked")),
+            "max_devices": max_devices,
+            "device_is_counted": device_is_counted,
+            "device_is_within_limit": device_is_counted
+            and self._device_is_within_active_limit(
+                connection,
+                customer_id=customer_dict["id"],
+                device_id=device_dict["id"],
+                max_devices=max_devices,
+            ),
         }
 
     def _mark_device_licensed(self, connection: sqlite3.Connection, device_id: str) -> sqlite3.Row:

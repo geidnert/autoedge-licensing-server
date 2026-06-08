@@ -325,6 +325,50 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertFalse(second["licensed"])
         self.assertIsNone(second["lease"])
 
+    def test_nt8_lowering_device_limit_blocks_existing_extra_device(self) -> None:
+        created = self.active_customer("nt8-limit-reduced@example.com")
+        self.service.set_customer_max_devices(
+            customer_id=created.customer["id"],
+            max_devices=2,
+            actor_id="admin",
+            ip_address=None,
+        )
+        kwargs = {
+            "license_key": created.license_key,
+            "email": None,
+            "customer_id": None,
+            "whop_user_id": None,
+            "nt8_version": "8.1.5",
+            "strategy": "DUO",
+            "ip_address": None,
+            "user_agent": None,
+            "check_interval_seconds": 3600,
+            "grace_period_seconds": 86400,
+            "max_devices": 1,
+            "lease_secret": "lease-secret-" + ("x" * 40),
+        }
+        first = self.service.check_nt8_license(machine_fingerprint="nt8-reduced-one", **kwargs)
+        second = self.service.check_nt8_license(machine_fingerprint="nt8-reduced-two", **kwargs)
+
+        self.service.set_customer_max_devices(
+            customer_id=created.customer["id"],
+            max_devices=1,
+            actor_id="admin",
+            ip_address=None,
+        )
+        first_after_limit_reduction = self.service.check_nt8_license(machine_fingerprint="nt8-reduced-one", **kwargs)
+        second_after_limit_reduction = self.service.check_nt8_license(machine_fingerprint="nt8-reduced-two", **kwargs)
+
+        self.assertEqual("active", first["status"])
+        self.assertEqual("active", second["status"])
+        self.assertEqual("active", first_after_limit_reduction["status"])
+        self.assertTrue(first_after_limit_reduction["licensed"])
+        self.assertEqual("device_limit_exceeded", second_after_limit_reduction["status"])
+        self.assertFalse(second_after_limit_reduction["licensed"])
+        self.assertIsNone(second_after_limit_reduction["lease"])
+        self.assertEqual(2, second_after_limit_reduction["device_limit"]["active_devices"])
+        self.assertEqual(1, second_after_limit_reduction["device_limit"]["max_devices"])
+
     def test_manual_grant_accepts_datetime_local_expiry(self) -> None:
         created = self.service.create_or_update_customer(email="picker@example.com")
         entitlement = self.service.manual_set_entitlement(
@@ -522,6 +566,81 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(2, second["device_limit"]["max_devices"])
         self.assertEqual(2, detail["device_limit"]["active_devices"])
         self.assertIn("customer.max_devices_updated", [audit["action"] for audit in detail["audit"]])
+
+    def test_lowering_device_limit_blocks_existing_extra_device(self) -> None:
+        created = self.active_customer("reduced-devices@example.com")
+        self.service.set_customer_max_devices(
+            customer_id=created.customer["id"],
+            max_devices=2,
+            actor_id="admin",
+            ip_address=None,
+        )
+        first = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="reduced-first",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        second = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="reduced-second",
+            app_version="1.0.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        self.service.set_customer_max_devices(
+            customer_id=created.customer["id"],
+            max_devices=1,
+            actor_id="admin",
+            ip_address=None,
+        )
+        first_after_limit_reduction = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="reduced-first",
+            app_version="1.0.1",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+        second_after_limit_reduction = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="reduced-second",
+            app_version="1.0.1",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            max_devices=1,
+        )
+
+        self.assertEqual("active", first["status"])
+        self.assertEqual("active", second["status"])
+        self.assertEqual("active", first_after_limit_reduction["status"])
+        self.assertEqual("device_limit_exceeded", second_after_limit_reduction["status"])
+        self.assertEqual(2, second_after_limit_reduction["device_limit"]["active_devices"])
+        self.assertEqual(1, second_after_limit_reduction["device_limit"]["max_devices"])
+        self.assertFalse(second_after_limit_reduction["device_limit"]["device_is_within_limit"])
 
     def test_blocked_device_returns_device_blocked_before_limit(self) -> None:
         created = self.active_customer("blocked-device@example.com")

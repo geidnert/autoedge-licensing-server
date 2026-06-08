@@ -132,7 +132,7 @@ Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `expired`, `re
 
 Trader should allow strategy access only when `status == "active"` and the required `feature_id` is present in `licensed_strategies`.
 
-`device_limit_exceeded` means the customer already has the maximum number of active licensed, non-blocked machines. Trader must block strategy access and must not offer package downloads for that machine. Admins can deauthorize a device, reset all devices for a customer, or set a customer-specific max device override in the customer detail page.
+`device_limit_exceeded` means the customer already has the maximum number of active licensed, non-blocked machines. Trader must block strategy access and must not offer package downloads for that machine. If an admin lowers a customer limit below the current active device count, only the earliest active device(s) up to the new limit remain allowed; later devices are denied until the admin deauthorizes/resets devices or raises the limit. Admins can deauthorize a device, reset all devices for a customer, or set a customer-specific max device override in the customer detail page.
 
 ### NinjaTrader 8 License Check
 
@@ -548,4 +548,4 @@ sudo systemctl start autoedge-licensing
 - SQLite is appropriate for this initial licensing control plane. If license checks become high volume, the service layer is isolated enough to migrate to PostgreSQL.
 - The admin UI intentionally stores only license key hashes and the last four characters of generated keys.
 - Machine fingerprints are stored as SHA-256 hashes plus the last eight hash characters for support lookup.
-- `AUTOEDGE_TRADER_MAX_DEVICES` defaults to `1`. Blocked devices do not count. Devices are counted only after a successful active license check.
+- `AUTOEDGE_TRADER_MAX_DEVICES` defaults to `1`. Blocked devices do not count. Devices are counted only after a successful active license check. Lowering a customer-specific limit is enforced on the next check for every existing device.
