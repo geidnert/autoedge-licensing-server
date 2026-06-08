@@ -147,6 +147,26 @@ class AppEndpointTests(unittest.TestCase):
         self.assertEqual(["DUO"], payload["strategy_keys"])
         self.assertIsNotNone(payload["lease"]["token"])
 
+    def test_nt8_license_endpoint_errors_use_client_json_shape(self) -> None:
+        get_status, _, get_body = self.call_raw("GET", "/api/nt8/license/check", b"", {})
+        bad_status, _, bad_body = self.call_raw(
+            "POST",
+            "/api/nt8/license/check",
+            b"not-json",
+            {"Content-Type": "application/json"},
+        )
+
+        get_payload = json.loads(get_body)
+        bad_payload = json.loads(bad_body)
+        self.assertTrue(get_status.startswith("405"), get_body)
+        self.assertEqual("invalid_request", get_payload["status"])
+        self.assertFalse(get_payload["licensed"])
+        self.assertEqual([], get_payload["strategy_keys"])
+        self.assertEqual(300, get_payload["next_check_seconds"])
+        self.assertTrue(bad_status.startswith("400"), bad_body)
+        self.assertEqual("invalid_request", bad_payload["status"])
+        self.assertFalse(bad_payload["licensed"])
+
     def test_admin_product_list_hides_internal_slug_and_feature_ids(self) -> None:
         html = products_page(
             [

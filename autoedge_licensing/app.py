@@ -138,8 +138,13 @@ class AutoEdgeApp:
             return json_response({"status": "ok"})
         if request.path in {"/api/trader/license/check", "/api/trader/license/activate"} and request.method == "POST":
             return self.trader_license_check(request)
-        if request.path == "/api/nt8/license/check" and request.method == "POST":
-            return self.nt8_license_check(request)
+        if request.path == "/api/nt8/license/check":
+            if request.method == "POST":
+                return self.nt8_license_check(request)
+            return json_response(
+                self.nt8_block_response("invalid_request", "Method not allowed.", None),
+                HTTPStatus.METHOD_NOT_ALLOWED,
+            )
         if request.path == "/api/trader/releases/manifest" and request.method == "POST":
             return self.trader_release_manifest(request)
         if request.path == "/api/trader/releases/download-token" and request.method == "POST":
@@ -192,8 +197,17 @@ class AutoEdgeApp:
 
     def nt8_license_check(self, request: Request) -> Response:
         if not self.rate_limiter.allow(f"nt8-license:{request.ip}"):
-            return json_response({"status": "rate_limited", "message": "Too many NT8 license checks."}, HTTPStatus.TOO_MANY_REQUESTS)
-        payload = request.json()
+            return json_response(
+                self.nt8_block_response("rate_limited", "Too many NT8 license checks.", None),
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+        try:
+            payload = request.json()
+        except ValueError:
+            return json_response(
+                self.nt8_block_response("invalid_request", "Request body must be a JSON object.", None),
+                HTTPStatus.BAD_REQUEST,
+            )
         response = self.service.check_nt8_license(
             license_key=payload.get("license_key"),
             email=payload.get("email"),
@@ -210,6 +224,18 @@ class AutoEdgeApp:
             lease_secret=self.settings.license_lease_secret,
         )
         return json_response(response)
+
+    def nt8_block_response(self, status: str, message: str, requested_strategy: str | None) -> dict[str, Any]:
+        return {
+            "status": status,
+            "licensed": False,
+            "message": message,
+            "strategy_keys": [],
+            "requested_strategy": requested_strategy,
+            "next_check_seconds": 300,
+            "grace_period_seconds": 0,
+            "lease": None,
+        }
 
     def trader_release_manifest(self, request: Request) -> Response:
         if not self.rate_limiter.allow(f"release-manifest:{request.ip}"):
