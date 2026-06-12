@@ -1169,6 +1169,18 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
         f"""
         <tr>
           <td>{e(display_product_name(entitlement.get('product_name')))}</td>
+          <td><strong class="status {e(entitlement['status'])}">{e(entitlement['status'])}</strong><small>{e(entitlement['source'])}{' - ' + e(entitlement.get('whop_membership_id')) if entitlement.get('whop_membership_id') else ''}</small></td>
+          <td>{e(format_admin_time(entitlement.get('expires_at')))}</td>
+          <td>{e(entitlement.get('manual_reason'))}</td>
+          <td>{e(format_admin_time(entitlement.get('updated_at')))}</td>
+        </tr>
+        """
+        for entitlement in detail.get("effective_entitlements", detail["entitlements"])
+    )
+    entitlement_history = "\n".join(
+        f"""
+        <tr>
+          <td>{e(display_product_name(entitlement.get('product_name')))}</td>
           <td>{e(entitlement.get('whop_membership_id'))}</td>
           <td><strong class="status {e(entitlement['status'])}">{e(entitlement['status'])}</strong><small>{e(entitlement['source'])}</small></td>
           <td>{e(format_admin_time(entitlement.get('expires_at')))}</td>
@@ -1303,7 +1315,11 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
     </section>
     <section class="panel">
       <h2>Entitlements</h2>
-      <table><thead><tr><th>Strategy</th><th>Whop membership</th><th>Status</th><th>Expiry ET</th><th>Reason</th><th>Updated ET</th></tr></thead><tbody>{entitlements or '<tr><td colspan="6">No entitlements.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Strategy</th><th>Status</th><th>Expiry ET</th><th>Reason</th><th>Updated ET</th></tr></thead><tbody>{entitlements or '<tr><td colspan="5">No entitlements.</td></tr>'}</tbody></table>
+      <details class="history-details">
+        <summary>Entitlement history <small>Raw Whop/manual rows, including previous memberships.</small></summary>
+        <table><thead><tr><th>Strategy</th><th>Whop membership</th><th>Status</th><th>Expiry ET</th><th>Reason</th><th>Updated ET</th></tr></thead><tbody>{entitlement_history or '<tr><td colspan="6">No entitlement history.</td></tr>'}</tbody></table>
+      </details>
     </section>
     <section class="panel">
       <h2>Subscriptions</h2>
@@ -1380,6 +1396,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .advanced-release { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; margin-bottom: 12px; background: #fbfcfd; }
 .advanced-release summary { cursor: pointer; color: #34404c; font-weight: 700; }
 .advanced-release summary small { display: inline; margin: 0 0 0 8px; font-weight: 400; }
+.history-details { margin-top: 14px; }
+.history-details summary { cursor: pointer; color: #34404c; font-weight: 700; }
+.history-details summary small { display: inline; margin: 0 0 0 8px; color: var(--muted); font-weight: 400; }
+.history-details table { margin-top: 10px; }
 .device-limit-form { grid-template-columns: minmax(180px, 260px) auto; margin-bottom: 12px; }
 .customer-tags-form { grid-template-columns: minmax(260px, 420px) auto; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }

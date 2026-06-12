@@ -254,6 +254,17 @@ class AppEndpointTests(unittest.TestCase):
                         "updated_at": "2026-06-04T00:00:00Z",
                     }
                 ],
+                "effective_entitlements": [
+                    {
+                        "product_name": "DUO Runtime",
+                        "feature_id": "strategy.duo.runtime",
+                        "status": "active",
+                        "source": "manual",
+                        "expires_at": None,
+                        "manual_reason": None,
+                        "updated_at": "2026-06-04T00:00:00Z",
+                    }
+                ],
                 "subscriptions": [],
                 "devices": [],
                 "checks": [],
@@ -286,6 +297,72 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("/admin/customers/customer-001/license-key", html)
         self.assertIn("Reissue key", html)
         self.assertIn("Shows the new key once.", html)
+
+    def test_customer_detail_shows_current_entitlements_before_history(self) -> None:
+        html = customer_detail_page(
+            {
+                "customer": {
+                    "id": "customer-001",
+                    "email": "customer@example.com",
+                    "name": "Customer",
+                    "whop_user_id": "user-001",
+                    "whop_member_id": "member-001",
+                    "license_key_last4": "ABCD",
+                    "max_devices": None,
+                },
+                "effective_entitlements": [
+                    {
+                        "product_name": "DUO Runtime",
+                        "status": "active",
+                        "source": "whop",
+                        "whop_membership_id": "mem_current",
+                        "expires_at": "2026-09-10T14:33:02Z",
+                        "manual_reason": None,
+                        "updated_at": "2026-06-12T16:59:34Z",
+                    }
+                ],
+                "entitlements": [
+                    {
+                        "product_name": "DUO Runtime",
+                        "status": "active",
+                        "source": "whop",
+                        "whop_membership_id": "mem_current",
+                        "expires_at": "2026-09-10T14:33:02Z",
+                        "manual_reason": None,
+                        "updated_at": "2026-06-12T16:59:34Z",
+                    },
+                    {
+                        "product_name": "DUO Runtime",
+                        "status": "expired",
+                        "source": "whop",
+                        "whop_membership_id": "mem_old",
+                        "expires_at": "2026-06-10T11:48:17Z",
+                        "manual_reason": None,
+                        "updated_at": "2026-06-10T11:48:17Z",
+                    },
+                ],
+                "subscriptions": [],
+                "devices": [],
+                "checks": [],
+                "audit": [],
+                "device_limit": {
+                    "active_devices": 0,
+                    "max_devices": 1,
+                    "customer_max_devices": None,
+                    "default_max_devices": 1,
+                },
+            },
+            [],
+            "csrf-token",
+            "",
+        )
+        current_section = html.split("Entitlement history", 1)[0]
+        history_section = html.split("Entitlement history", 1)[1]
+
+        self.assertIn("mem_current", current_section)
+        self.assertNotIn("mem_old", current_section)
+        self.assertIn("mem_old", history_section)
+        self.assertIn("Raw Whop/manual rows", history_section)
 
     def test_releases_page_can_list_trader_desktop_release(self) -> None:
         html = releases_page(

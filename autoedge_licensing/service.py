@@ -1153,6 +1153,7 @@ class LicensingService:
                 """,
                 (customer_id,),
             ).fetchall()
+            effective_entitlements = self._current_grants(connection, customer_id)
             subscriptions = connection.execute(
                 "SELECT * FROM subscriptions WHERE customer_id = ? ORDER BY updated_at DESC",
                 (customer_id,),
@@ -1178,6 +1179,13 @@ class LicensingService:
             "customer": dict(customer),
             "tags": json_list(dict(customer).get("tags_json")),
             "entitlements": [dict(row) for row in entitlements],
+            "effective_entitlements": [
+                {
+                    **dict(entitlement),
+                    "product_name": entitlement.get("name"),
+                }
+                for entitlement in effective_entitlements
+            ],
             "subscriptions": [dict(row) for row in subscriptions],
             "devices": [dict(row) for row in devices],
             "checks": [dict(row) for row in checks],
@@ -3028,9 +3036,11 @@ class LicensingService:
         rows = connection.execute(
             """
             SELECT entitlements.*, products.id AS product_id, products.slug, products.name, products.feature_id,
-                   products.is_active, products.nt8_strategy_key, products.trader_enabled, products.nt8_enabled
+                   products.is_active, products.nt8_strategy_key, products.trader_enabled, products.nt8_enabled,
+                   subscriptions.whop_membership_id
             FROM entitlements
             JOIN products ON products.id = entitlements.product_id
+            LEFT JOIN subscriptions ON subscriptions.id = entitlements.subscription_id
             WHERE entitlements.customer_id = ?
             ORDER BY products.name ASC, entitlements.updated_at DESC
             """,
@@ -3054,7 +3064,7 @@ class LicensingService:
         best_by_product: dict[str, dict[str, Any]] = {}
         for grant in grants:
             existing = best_by_product.get(grant["product_id"])
-            if existing is None or grant["is_licensed"] or not existing["is_licensed"]:
+            if existing is None or (grant["is_licensed"] and not existing["is_licensed"]):
                 best_by_product[grant["product_id"]] = grant
         return list(best_by_product.values())
 

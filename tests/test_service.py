@@ -1158,8 +1158,163 @@ class LicensingServiceTests(unittest.TestCase):
 
         self.assertEqual("ignored", cancel_at_period_end["applied_grants"][0]["grant_kind"])
         self.assertEqual("active", entitlement["status"])
+        self.assertEqual(1, len(detail["effective_entitlements"]))
+        self.assertEqual("active", detail["effective_entitlements"][0]["status"])
         self.assertEqual("active", response["status"])
         self.assertEqual(parse_time(entitlement["expires_at"]), parse_time(active["applied_grants"][0]["expires_at"]))
+
+    def test_customer_detail_effective_entitlements_are_one_current_row_per_product(self) -> None:
+        expired_product = self.service.upsert_product(
+            slug="duorc-runtime",
+            name="DUOrc Runtime",
+            feature_id="strategy.duorc.runtime",
+            whop_product_id="prod_duorc",
+        )
+        customer = self.service.create_or_update_customer(email="current-grants@example.com")
+        now = utc_now().replace(microsecond=0)
+        older = now - timedelta(days=2)
+        newer_inactive = now - timedelta(days=1)
+        current_expiry = now + timedelta(days=90)
+
+        with self.database.session() as connection:
+            connection.execute(
+                """
+                INSERT INTO subscriptions(
+                    id, customer_id, whop_membership_id, whop_plan_id, status, raw_status,
+                    current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    "sub-old",
+                    customer.customer["id"],
+                    "mem_old",
+                    "plan_old",
+                    "expired",
+                    "expired",
+                    iso(older - timedelta(days=30)),
+                    iso(older),
+                    iso(older),
+                    iso(older),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO subscriptions(
+                    id, customer_id, whop_membership_id, whop_plan_id, status, raw_status,
+                    current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    "sub-current",
+                    customer.customer["id"],
+                    "mem_current",
+                    "plan_current",
+                    "active",
+                    "active",
+                    iso(now),
+                    iso(current_expiry),
+                    iso(now),
+                    iso(now),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO entitlements(
+                    id, customer_id, product_id, subscription_id, external_id, source, status,
+                    starts_at, expires_at, revoked_at, whop_event_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'whop', ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    "ent-old",
+                    customer.customer["id"],
+                    self.product["id"],
+                    "sub-old",
+                    "mem_old",
+                    "expired",
+                    iso(older - timedelta(days=30)),
+                    iso(older),
+                    "evt-old",
+                    iso(older),
+                    iso(older),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO entitlements(
+                    id, customer_id, product_id, subscription_id, external_id, source, status,
+                    starts_at, expires_at, revoked_at, whop_event_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'whop', ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    "ent-current",
+                    customer.customer["id"],
+                    self.product["id"],
+                    "sub-current",
+                    "mem_current",
+                    "active",
+                    iso(now),
+                    iso(current_expiry),
+                    "evt-current",
+                    iso(now),
+                    iso(now),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO entitlements(
+                    id, customer_id, product_id, subscription_id, external_id, source, status,
+                    starts_at, expires_at, revoked_at, whop_event_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, NULL, ?, 'whop', ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    "ent-inactive-old",
+                    customer.customer["id"],
+                    expired_product["id"],
+                    "expired-old",
+                    "expired",
+                    iso(older - timedelta(days=30)),
+                    iso(older),
+                    "evt-inactive-old",
+                    iso(older),
+                    iso(older),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO entitlements(
+                    id, customer_id, product_id, subscription_id, external_id, source, status,
+                    starts_at, expires_at, revoked_at, whop_event_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, NULL, ?, 'whop', ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    "ent-inactive-new",
+                    customer.customer["id"],
+                    expired_product["id"],
+                    "expired-new",
+                    "expired",
+                    iso(newer_inactive - timedelta(days=30)),
+                    iso(newer_inactive),
+                    "evt-inactive-new",
+                    iso(newer_inactive),
+                    iso(newer_inactive),
+                ),
+            )
+
+        detail = self.service.customer_detail(customer.customer["id"])
+        effective_by_product = {entitlement["product_id"]: entitlement for entitlement in detail["effective_entitlements"]}
+
+        self.assertEqual(4, len(detail["entitlements"]))
+        self.assertEqual(2, len(detail["effective_entitlements"]))
+        self.assertEqual("active", effective_by_product[self.product["id"]]["status"])
+        self.assertEqual("mem_current", effective_by_product[self.product["id"]]["whop_membership_id"])
+        self.assertEqual("expired", effective_by_product[expired_product["id"]]["status"])
+        self.assertEqual(iso(newer_inactive), effective_by_product[expired_product["id"]]["expires_at"])
 
     def test_ignored_package_does_not_create_entitlement(self) -> None:
         self.service.upsert_whop_package(
