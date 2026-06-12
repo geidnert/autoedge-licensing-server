@@ -1316,6 +1316,53 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("expired", effective_by_product[expired_product["id"]]["status"])
         self.assertEqual(iso(newer_inactive), effective_by_product[expired_product["id"]]["expires_at"])
 
+    def test_search_customers_counts_entitled_products_not_raw_rows(self) -> None:
+        extra_product = self.service.upsert_product(
+            slug="adam-runtime",
+            name="ADAM Runtime",
+            feature_id="strategy.adam.runtime",
+            whop_product_id="prod_adam",
+        )
+        customer = self.service.create_or_update_customer(email="count-products@example.com")
+        now = iso()
+
+        with self.database.session() as connection:
+            connection.execute(
+                """
+                INSERT INTO entitlements(
+                    id, customer_id, product_id, external_id, source, status,
+                    starts_at, expires_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'whop', 'expired', ?, ?, ?, ?)
+                """,
+                ("raw-duo-old", customer.customer["id"], self.product["id"], "raw-duo-old", now, now, now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO entitlements(
+                    id, customer_id, product_id, external_id, source, status,
+                    starts_at, expires_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'whop', 'active', ?, NULL, ?, ?)
+                """,
+                ("raw-duo-current", customer.customer["id"], self.product["id"], "raw-duo-current", now, now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO entitlements(
+                    id, customer_id, product_id, external_id, source, status,
+                    starts_at, expires_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'whop', 'active', ?, NULL, ?, ?)
+                """,
+                ("raw-adam-current", customer.customer["id"], extra_product["id"], "raw-adam-current", now, now, now),
+            )
+
+        rows = self.service.search_customers("count-products")
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(2, rows[0]["entitlement_count"])
+
     def test_ignored_package_does_not_create_entitlement(self) -> None:
         self.service.upsert_whop_package(
             package_id=None,

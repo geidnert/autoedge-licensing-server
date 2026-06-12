@@ -1102,7 +1102,7 @@ class LicensingService:
                     """
                     SELECT customers.*,
                            COUNT(DISTINCT devices.id) AS device_count,
-                           COUNT(DISTINCT entitlements.id) AS entitlement_count
+                           COUNT(DISTINCT entitlements.product_id) AS entitlement_count
                     FROM customers
                     LEFT JOIN devices ON devices.customer_id = customers.id
                     LEFT JOIN entitlements ON entitlements.customer_id = customers.id
@@ -1122,7 +1122,7 @@ class LicensingService:
                     """
                     SELECT customers.*,
                            COUNT(DISTINCT devices.id) AS device_count,
-                           COUNT(DISTINCT entitlements.id) AS entitlement_count
+                           COUNT(DISTINCT entitlements.product_id) AS entitlement_count
                     FROM customers
                     LEFT JOIN devices ON devices.customer_id = customers.id
                     LEFT JOIN entitlements ON entitlements.customer_id = customers.id
