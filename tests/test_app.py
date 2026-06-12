@@ -281,6 +281,7 @@ class AppEndpointTests(unittest.TestCase):
         self.assertNotIn("strategy.duo.runtime", html)
         self.assertIn('name="expires_at" type="datetime-local" step="1"', html)
         self.assertIn("Expiry ET", html)
+        self.assertIn("Whop membership", html)
         self.assertIn("2026-06-03 20:00:00 ET", html)
         self.assertIn("/admin/customers/customer-001/license-key", html)
         self.assertIn("Reissue key", html)

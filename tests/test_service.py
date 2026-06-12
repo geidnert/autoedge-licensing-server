@@ -1039,6 +1039,128 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("duplicate_grant", second["applied_grants"][0]["status"])
         self.assertLess(expires_at, utc_now() + timedelta(days=32))
 
+    def test_payment_succeeded_and_membership_activated_do_not_add_days_twice(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_pay_activation_90",
+            whop_id_type="plan",
+            name="DUO 90 days",
+            default_days=90,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 90}],
+        )
+        period_start = utc_now().replace(microsecond=0)
+        period_end = period_start + timedelta(days=90)
+        payment = self.service.process_whop_event(
+            {
+                "type": "payment.succeeded",
+                "data": {
+                    "id": "pay_same_period_001",
+                    "status": "succeeded",
+                    "email": "same-period@example.com",
+                    "user_id": "user_same_period",
+                    "plan_id": "plan_pay_activation_90",
+                    "created_at": iso(period_start),
+                    "membership": {"id": "mem_same_period_001", "status": "active"},
+                },
+            },
+            "evt_same_period_payment",
+            signature_valid=True,
+            ip_address=None,
+        )
+        activated = self.service.process_whop_event(
+            {
+                "action": "membership.activated",
+                "data": {
+                    "id": "mem_same_period_001",
+                    "status": "active",
+                    "email": "same-period@example.com",
+                    "user_id": "user_same_period",
+                    "plan_id": "plan_pay_activation_90",
+                    "renewal_period_start": iso(period_start),
+                    "renewal_period_end": iso(period_end),
+                },
+            },
+            "evt_same_period_activated",
+            signature_valid=True,
+            ip_address=None,
+        )
+        detail = self.service.customer_detail(payment["customer_id"])
+        expires_at = parse_time(detail["entitlements"][0]["expires_at"])
+
+        self.assertEqual("paid", payment["applied_grants"][0]["grant_kind"])
+        self.assertEqual("duplicate_grant", activated["applied_grants"][0]["status"])
+        self.assertLess(expires_at, period_start + timedelta(days=92))
+
+    def test_cancel_at_period_end_changed_keeps_entitlement_active(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_cancel_later_90",
+            whop_id_type="plan",
+            name="DUO 90 days",
+            default_days=90,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 90}],
+        )
+        period_start = utc_now().replace(microsecond=0)
+        period_end = period_start + timedelta(days=90)
+        active = self.service.process_whop_event(
+            {
+                "type": "payment.succeeded",
+                "data": {
+                    "id": "pay_cancel_later_001",
+                    "status": "succeeded",
+                    "email": "cancel-later@example.com",
+                    "user_id": "user_cancel_later",
+                    "plan_id": "plan_cancel_later_90",
+                    "created_at": iso(period_start),
+                    "membership": {"id": "mem_cancel_later_001", "status": "active"},
+                },
+            },
+            "evt_cancel_later_payment",
+            signature_valid=True,
+            ip_address=None,
+        )
+        cancel_at_period_end = self.service.process_whop_event(
+            {
+                "action": "membership.cancel_at_period_end_changed",
+                "data": {
+                    "id": "mem_cancel_later_001",
+                    "status": "active",
+                    "email": "cancel-later@example.com",
+                    "user_id": "user_cancel_later",
+                    "plan_id": "plan_cancel_later_90",
+                    "cancel_at_period_end": True,
+                    "renewal_period_start": iso(period_start),
+                    "renewal_period_end": iso(period_end),
+                },
+            },
+            "evt_cancel_later_changed",
+            signature_valid=True,
+            ip_address=None,
+        )
+        detail = self.service.customer_detail(active["customer_id"])
+        entitlement = detail["entitlements"][0]
+        response = self.service.check_license(
+            license_key=None,
+            email="cancel-later@example.com",
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-cancel-later",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("ignored", cancel_at_period_end["applied_grants"][0]["grant_kind"])
+        self.assertEqual("active", entitlement["status"])
+        self.assertEqual("active", response["status"])
+        self.assertEqual(parse_time(entitlement["expires_at"]), parse_time(active["applied_grants"][0]["expires_at"]))
+
     def test_ignored_package_does_not_create_entitlement(self) -> None:
         self.service.upsert_whop_package(
             package_id=None,

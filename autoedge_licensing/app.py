@@ -1169,6 +1169,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
         f"""
         <tr>
           <td>{e(display_product_name(entitlement.get('product_name')))}</td>
+          <td>{e(entitlement.get('whop_membership_id'))}</td>
           <td><strong class="status {e(entitlement['status'])}">{e(entitlement['status'])}</strong><small>{e(entitlement['source'])}</small></td>
           <td>{e(format_admin_time(entitlement.get('expires_at')))}</td>
           <td>{e(entitlement.get('manual_reason'))}</td>
@@ -1302,7 +1303,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
     </section>
     <section class="panel">
       <h2>Entitlements</h2>
-      <table><thead><tr><th>Strategy</th><th>Status</th><th>Expiry ET</th><th>Reason</th><th>Updated ET</th></tr></thead><tbody>{entitlements or '<tr><td colspan="5">No entitlements.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Strategy</th><th>Whop membership</th><th>Status</th><th>Expiry ET</th><th>Reason</th><th>Updated ET</th></tr></thead><tbody>{entitlements or '<tr><td colspan="6">No entitlements.</td></tr>'}</tbody></table>
     </section>
     <section class="panel">
       <h2>Subscriptions</h2>

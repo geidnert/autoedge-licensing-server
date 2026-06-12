@@ -1143,9 +1143,11 @@ class LicensingService:
             effective_max_devices = self._effective_max_devices(customer, default_max_devices)
             entitlements = connection.execute(
                 """
-                SELECT entitlements.*, products.slug, products.name AS product_name, products.feature_id
+                SELECT entitlements.*, products.slug, products.name AS product_name, products.feature_id,
+                       subscriptions.whop_membership_id
                 FROM entitlements
                 JOIN products ON products.id = entitlements.product_id
+                LEFT JOIN subscriptions ON subscriptions.id = entitlements.subscription_id
                 WHERE entitlements.customer_id = ?
                 ORDER BY entitlements.updated_at DESC
                 """,
@@ -1723,7 +1725,16 @@ class LicensingService:
                 "SELECT * FROM license_grant_ledger WHERE event_fingerprint = ?",
                 (fingerprint,),
             ).fetchone()
-            if duplicate is not None:
+            duplicate_period = self._paid_period_duplicate_exists(
+                connection,
+                customer_id=customer_id,
+                package_id=package["id"],
+                product_id=product_id,
+                subscription_id=subscription_id,
+                grant_kind=grant_kind,
+                period_start=subscription_info["period_start"],
+            )
+            if duplicate is not None or duplicate_period:
                 return {
                     "product_id": product_id,
                     "strategy": grant["product_name"],
@@ -1862,6 +1873,36 @@ class LicensingService:
             "expires_at": iso(expires_after) if expires_after else None,
         }
 
+    def _paid_period_duplicate_exists(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        customer_id: str,
+        package_id: str,
+        product_id: str,
+        subscription_id: str | None,
+        grant_kind: str,
+        period_start: datetime | None,
+    ) -> bool:
+        if grant_kind not in {"paid", "renewal"} or not subscription_id or period_start is None:
+            return False
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM license_grant_ledger
+            WHERE customer_id = ?
+              AND package_id = ?
+              AND product_id = ?
+              AND subscription_id = ?
+              AND grant_kind = ?
+              AND days_applied > 0
+              AND period_start = ?
+            LIMIT 1
+            """,
+            (customer_id, package_id, product_id, subscription_id, grant_kind, iso(period_start)),
+        ).fetchone()
+        return row is not None
+
     def _package_grants(self, connection: sqlite3.Connection, package_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
@@ -1902,6 +1943,8 @@ class LicensingService:
 
     def _grant_kind(self, status: str, event_type: str) -> str:
         combined = f"{status} {event_type}".lower()
+        if is_cancel_at_period_end_event(event_type):
+            return "ignored"
         if status == "revoked":
             return "revoke"
         if status == "expired":
@@ -1932,6 +1975,8 @@ class LicensingService:
         period_end = iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else ""
         if grant_kind == "trial":
             source = f"trial:{membership_id}:{package_id}:{product_id}"
+        elif grant_kind in {"paid", "renewal"} and membership_id and period_start:
+            source = f"{grant_kind}:period-start:{membership_id}:{package_id}:{product_id}:{period_start}"
         elif grant_kind in {"paid", "renewal"} and payment_id:
             source = f"{grant_kind}:payment:{payment_id}:{product_id}"
         elif grant_kind in {"paid", "renewal"}:
@@ -3187,6 +3232,9 @@ def ceil_days(delta: timedelta) -> int:
 def normalize_entitlement_status(raw_status: str | None, event_type: str) -> str:
     combined = f"{raw_status or ''} {event_type}".lower()
     event = event_type.lower().replace("_", ".")
+    raw = (raw_status or "").lower()
+    if is_cancel_at_period_end_event(event_type) and "active" in raw:
+        return "active"
     if any(word in combined for word in ("refund", "chargeback", "dispute", "revoke", "ban", "terminate", "went_invalid")):
         return "revoked"
     if (
@@ -3205,6 +3253,12 @@ def normalize_entitlement_status(raw_status: str | None, event_type: str) -> str
     if "trial" in combined:
         return "trialing"
     return "pending"
+
+
+def is_cancel_at_period_end_event(event_type: str) -> bool:
+    raw_event = event_type.lower()
+    dotted_event = raw_event.replace("_", ".")
+    return "cancel_at_period_end" in raw_event or "cancel.at.period.end" in dotted_event
 
 
 def normalize_subscription_status(raw_status: str | None, event_type: str) -> str:
