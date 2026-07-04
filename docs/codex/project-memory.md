@@ -103,6 +103,8 @@ testing fallback, not the production default.
 Implemented routes in `AutoEdgeApp.route`:
 
 - `GET /healthz`
+- `GET /privacy`
+- `GET /terms`
 - `POST /api/whop/entitlements`
 - `POST /api/trader/license/check`
 - `POST /api/trader/license/activate`
@@ -338,6 +340,8 @@ Current deployment documented in `README.md`:
 - Trader endpoint: `https://solidparts.se/api/trader/license/check`
 - NT8 endpoint: `https://solidparts.se/api/nt8/license/check`
 - Trader manifest: `https://solidparts.se/api/trader/releases/manifest`
+- Public legal pages: `https://solidparts.se/privacy` and
+  `https://solidparts.se/terms`
 - Trader Tradovate OAuth: `https://solidparts.se/api/trader/tradovate/oauth/start`,
   `/callback`, `/complete`, and `/refresh`
 - Whop endpoint: `https://solidparts.se/api/whop/entitlements`
@@ -347,8 +351,9 @@ Current deployment documented in `README.md`:
 - Artifacts: `/var/lib/autoedge-licensing/artifacts`
 - Environment file: `/etc/autoedge-licensing.env`
 
-nginx must proxy root-relative `/admin`, `/api/trader/`, `/api/nt8/`, and exact
-`/api/whop/entitlements` paths without mounting the app under an extra prefix.
+nginx must proxy root-relative `/privacy`, `/terms`, `/admin`, `/api/trader/`,
+`/api/nt8/`, and exact `/api/whop/entitlements` paths without mounting the app
+under an extra prefix.
 
 ## Things Not To Reintroduce
 

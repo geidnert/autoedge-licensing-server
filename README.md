@@ -632,6 +632,9 @@ The current Debian deployment runs on `solidparts.se` behind nginx:
 - Admin password rotation: sign in, then use `Change password` in the top navigation.
 - Trader endpoint: `https://solidparts.se/api/trader/license/check`
 - NT8 endpoint: `https://solidparts.se/api/nt8/license/check`
+- Public legal pages:
+  - `https://solidparts.se/privacy`
+  - `https://solidparts.se/terms`
 - Trader release manifest: `https://solidparts.se/api/trader/releases/manifest`
 - Trader release downloads: `https://solidparts.se/api/trader/releases/download/{token}`
 - Trader Tradovate OAuth:

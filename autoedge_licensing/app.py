@@ -144,6 +144,10 @@ class AutoEdgeApp:
     def route(self, request: Request) -> Response:
         if request.path == "/healthz":
             return json_response({"status": "ok"})
+        if request.path in {"/privacy", "/privacy/"} and request.method == "GET":
+            return html_response(public_privacy_page())
+        if request.path in {"/terms", "/terms/"} and request.method == "GET":
+            return html_response(public_terms_page())
         if request.path in {"/api/trader/license/check", "/api/trader/license/activate"} and request.method == "POST":
             return self.trader_license_check(request)
         if request.path == "/api/nt8/license/check":
@@ -1014,6 +1018,116 @@ def tradovate_oauth_result_page(status: str, message: str) -> str:
   </main>
 </body>
 </html>"""
+
+
+def public_legal_page(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{e(title)} · AutoEdge Trader</title>
+  <style>
+    :root {{ color-scheme: light; }}
+    body {{
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f7fa;
+      color: #1d252d;
+    }}
+    main {{
+      width: min(820px, calc(100vw - 32px));
+      margin: 48px auto;
+      padding: 32px;
+      background: #fff;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      box-sizing: border-box;
+    }}
+    h1 {{ margin: 0 0 8px; font-size: 32px; line-height: 1.15; }}
+    h2 {{ margin: 28px 0 8px; font-size: 19px; }}
+    p, li {{ color: #394550; line-height: 1.55; }}
+    p {{ margin: 0 0 12px; }}
+    ul {{ margin: 0 0 12px; padding-left: 22px; }}
+    .updated {{ color: #687684; margin-bottom: 24px; }}
+    a {{ color: #0b68d8; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{e(title)}</h1>
+    <p class="updated">Last updated: July 4, 2026</p>
+    {body}
+  </main>
+</body>
+</html>"""
+
+
+def public_privacy_page() -> str:
+    body = """
+    <p>AutoEdge Trader uses this service to provide licensing, release delivery, and Tradovate OAuth sign-in for the Trader Desktop application.</p>
+
+    <h2>Information We Process</h2>
+    <ul>
+      <li>License and customer identifiers such as license key hashes, email address, customer id, and Whop user id when provided.</li>
+      <li>Device information used for licensing, including a hashed machine fingerprint, app version, platform, channel, IP address, and user agent.</li>
+      <li>Tradovate OAuth metadata needed to connect Trader Desktop, including OAuth state/session records, Tradovate user id, token expiry, and encrypted access-token material.</li>
+      <li>Operational records such as license checks, release downloads, webhook events, and security audit entries.</li>
+    </ul>
+
+    <h2>How We Use Information</h2>
+    <ul>
+      <li>To verify licenses and enforce device limits.</li>
+      <li>To complete Tradovate OAuth sign-in without putting the Tradovate client secret in Trader Desktop.</li>
+      <li>To provide software releases, support, abuse prevention, and service diagnostics.</li>
+    </ul>
+
+    <h2>Security</h2>
+    <p>License keys and machine fingerprints are stored as hashes. Tradovate token material is encrypted on the server. We do not intentionally log OAuth authorization codes, access tokens, refresh tokens, or client secrets.</p>
+
+    <h2>Sharing</h2>
+    <p>We do not sell personal information. We share data only as needed to operate AutoEdge Trader, integrate with licensing/payment providers, comply with law, or protect the service.</p>
+
+    <h2>Retention</h2>
+    <p>Licensing, entitlement, device, audit, and OAuth records are kept as long as needed for the service, security, accounting, support, and legal obligations. Unfinished OAuth state records expire automatically.</p>
+
+    <h2>Contact</h2>
+    <p>For privacy questions or requests, contact AutoEdge support at <a href="mailto:geidnert@gmail.com">geidnert@gmail.com</a>.</p>
+    """
+    return public_legal_page("AutoEdge Trader Privacy Policy", body)
+
+
+def public_terms_page() -> str:
+    body = """
+    <p>These Terms apply to AutoEdge Trader, the AutoEdge licensing service, and related Tradovate OAuth connectivity.</p>
+
+    <h2>Trading Risk</h2>
+    <p>AutoEdge Trader is software for market analysis, automation, and order routing. Trading futures and other financial instruments involves substantial risk. You are responsible for all trading decisions, account configuration, broker permissions, exchange fees, and losses. AutoEdge does not provide financial, investment, tax, or legal advice.</p>
+
+    <h2>Account Access</h2>
+    <p>When you connect Tradovate through OAuth, you authorize AutoEdge to help Trader Desktop obtain and renew access tokens for the permissions you grant. You can revoke access through Tradovate/NinjaTrader account controls. Do not share your license, OAuth session, or access tokens with others.</p>
+
+    <h2>License and Availability</h2>
+    <p>Access to AutoEdge Trader may require an active license or subscription. We may suspend or revoke access for expired payment, abuse, security concerns, or violation of these Terms. The service is provided on an as-available basis and may be interrupted for maintenance, provider outages, market conditions, or technical issues.</p>
+
+    <h2>User Responsibilities</h2>
+    <ul>
+      <li>Use the software only with accounts and data you are authorized to access.</li>
+      <li>Review orders, risk settings, symbols, accounts, and strategy settings before live trading.</li>
+      <li>Comply with exchange, broker, Tradovate/NinjaTrader, and applicable legal requirements.</li>
+      <li>Do not attempt to bypass licensing, device limits, security controls, or rate limits.</li>
+    </ul>
+
+    <h2>No Warranty</h2>
+    <p>To the maximum extent permitted by law, AutoEdge Trader and the licensing service are provided without warranties of profitability, uninterrupted operation, data accuracy, or fitness for a particular purpose.</p>
+
+    <h2>Limitation of Liability</h2>
+    <p>To the maximum extent permitted by law, AutoEdge is not liable for trading losses, missed trades, rejected orders, market data issues, broker/API outages, lost profits, or indirect damages.</p>
+
+    <h2>Contact</h2>
+    <p>For questions about these Terms, contact AutoEdge support at <a href="mailto:geidnert@gmail.com">geidnert@gmail.com</a>.</p>
+    """
+    return public_legal_page("AutoEdge Trader Terms & Conditions", body)
 
 
 def file_response(path: Path, filename: str, size_bytes: int) -> FileResponse:

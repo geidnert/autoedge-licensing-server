@@ -72,6 +72,18 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("America/New_York", html)
         self.assertIn("admin-user", html)
 
+    def test_public_privacy_and_terms_pages(self) -> None:
+        privacy_status, privacy_headers, privacy_body = self.call_raw("GET", "/privacy", b"", {})
+        terms_status, terms_headers, terms_body = self.call_raw("GET", "/terms", b"", {})
+
+        self.assertTrue(privacy_status.startswith("200"), privacy_body)
+        self.assertTrue(terms_status.startswith("200"), terms_body)
+        self.assertIn(("Content-Type", "text/html; charset=utf-8"), privacy_headers)
+        self.assertIn("AutoEdge Trader Privacy Policy", privacy_body)
+        self.assertIn("AutoEdge Trader Terms &amp; Conditions", terms_body)
+        self.assertIn("Tradovate", privacy_body)
+        self.assertIn("Trading Risk", terms_body)
+
     def test_admin_customer_create_allows_blank_whop_fields(self) -> None:
         first = self.admin_customer_create_response(
             {
