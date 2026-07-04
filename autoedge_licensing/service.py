@@ -13,6 +13,8 @@ from typing import Any
 
 from .db import Database
 from .security import (
+    decrypt_secret,
+    encrypt_secret,
     generate_license_key,
     hash_fingerprint,
     hash_license_key,
@@ -84,6 +86,13 @@ def normalize_client_type(value: str | None) -> str:
     return cleaned if cleaned in CLIENT_TYPES else "unknown"
 
 
+def normalize_tradovate_environment(value: str | None) -> str:
+    cleaned = (value or "live").strip().lower()
+    if cleaned not in TRADOVATE_ENVIRONMENTS:
+        return "live"
+    return cleaned
+
+
 def nt8_key_from_product_name(value: str | None) -> str:
     cleaned = (value or "").strip()
     if cleaned.endswith(" Runtime"):
@@ -106,6 +115,11 @@ AUDIENCE_MODES = {"all", "allowlist", "roles", "percent", "disabled"}
 CLIENT_TYPE_TRADER = "trader_desktop"
 CLIENT_TYPE_NT8 = "nt8"
 CLIENT_TYPES = {CLIENT_TYPE_TRADER, CLIENT_TYPE_NT8, "unknown"}
+TRADOVATE_ENVIRONMENTS = {"live", "demo"}
+TRADOVATE_OAUTH_PENDING = "pending"
+TRADOVATE_OAUTH_AUTHORIZED = "authorized"
+TRADOVATE_OAUTH_FAILED = "failed"
+TRADOVATE_OAUTH_EXPIRED = "expired"
 
 
 def display_strategy_name(value: str | None) -> str:
@@ -2695,6 +2709,408 @@ class LicensingService:
         ).decode("ascii")
         return sign_value(secret, encoded)
 
+    def start_tradovate_oauth(
+        self,
+        *,
+        state: str,
+        license_key: str | None,
+        email: str | None,
+        customer_id: str | None,
+        whop_user_id: str | None,
+        machine_fingerprint: str,
+        app_version: str | None,
+        platform: str | None,
+        channel: str | None,
+        environment: str,
+        ip_address: str | None,
+        user_agent: str | None,
+        check_interval_seconds: int,
+        grace_period_seconds: int,
+        max_devices: int,
+        state_seconds: int,
+    ) -> dict[str, Any]:
+        normalized_environment = normalize_tradovate_environment(environment)
+        license_response = self.check_license(
+            license_key=license_key,
+            email=email,
+            customer_id=customer_id,
+            whop_user_id=whop_user_id,
+            machine_fingerprint=machine_fingerprint,
+            app_version=app_version,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            check_interval_seconds=check_interval_seconds,
+            grace_period_seconds=grace_period_seconds,
+            client_type=CLIENT_TYPE_TRADER,
+            max_devices=max_devices,
+        )
+        if license_response["status"] != "active":
+            return {
+                "status": license_response["status"],
+                "message": license_response["message"],
+                "authorization_url": None,
+                "state": None,
+                "expires_at": None,
+            }
+        if not license_response.get("customer") or not license_response.get("device"):
+            return {
+                "status": "invalid_request",
+                "message": "Customer or device could not be resolved.",
+                "authorization_url": None,
+                "state": None,
+                "expires_at": None,
+            }
+
+        now = utc_now()
+        expires = now + timedelta(seconds=max(60, state_seconds))
+        fingerprint_hash = hash_fingerprint(machine_fingerprint)
+        state_hash = sha256_hex(state)
+        customer = license_response["customer"]
+        device = license_response["device"]
+        with self.database.session() as connection:
+            self._cleanup_tradovate_oauth_states(connection)
+            connection.execute(
+                """
+                INSERT INTO tradovate_oauth_states(
+                    state_hash, state_last8, status, environment, customer_id, device_id,
+                    license_key_hash, email_normalized, whop_user_id,
+                    machine_fingerprint_hash, machine_fingerprint_last8,
+                    app_version, platform, channel, metadata_json, ip_address, user_agent,
+                    created_at, state_expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    state_hash,
+                    state_hash[-8:],
+                    TRADOVATE_OAUTH_PENDING,
+                    normalized_environment,
+                    customer["id"],
+                    device["id"],
+                    hash_license_key(license_key) if license_key else None,
+                    normalize_email(email),
+                    normalize_optional_text(whop_user_id),
+                    fingerprint_hash,
+                    fingerprint_hash[-8:],
+                    normalize_optional_text(app_version),
+                    normalize_optional_text(platform),
+                    normalize_optional_text(channel),
+                    "{}",
+                    ip_address,
+                    user_agent,
+                    iso(now),
+                    iso(expires),
+                ),
+            )
+            self.audit(
+                connection,
+                "client",
+                customer["id"],
+                "tradovate.oauth_started",
+                "tradovate_oauth_state",
+                state_hash[-8:],
+                {
+                    "customer_id": customer["id"],
+                    "device_id": device["id"],
+                    "environment": normalized_environment,
+                    "state_last8": state_hash[-8:],
+                },
+                ip_address,
+            )
+        return {
+            "status": "ok",
+            "message": "Tradovate OAuth login started.",
+            "state": state,
+            "expires_at": iso(expires),
+            "environment": normalized_environment,
+            "customer": customer,
+            "device": device,
+        }
+
+    def tradovate_oauth_callback_context(self, state: str) -> dict[str, Any]:
+        if not state or not state.strip():
+            return {"status": TRADOVATE_OAUTH_FAILED, "message": "OAuth state is missing."}
+        state_hash = sha256_hex(state)
+        with self.database.session() as connection:
+            row = self._tradovate_oauth_state(connection, state_hash)
+            if row is None:
+                return {"status": TRADOVATE_OAUTH_FAILED, "message": "OAuth state is invalid."}
+            row = self._expire_tradovate_oauth_row_if_needed(connection, row)
+            if row["status"] != TRADOVATE_OAUTH_PENDING:
+                return {
+                    "status": row["status"],
+                    "message": self._tradovate_oauth_status_message(row),
+                    "environment": row["environment"],
+                }
+            return {
+                "status": TRADOVATE_OAUTH_PENDING,
+                "environment": row["environment"],
+                "state_last8": row["state_last8"],
+            }
+
+    def fail_tradovate_oauth(
+        self,
+        *,
+        state: str,
+        failure_code: str,
+        failure_message: str,
+        ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        state_hash = sha256_hex(state)
+        safe_code = normalize_optional_text(failure_code) or "oauth_failed"
+        safe_message = (normalize_optional_text(failure_message) or "Tradovate OAuth failed.")[:300]
+        now = iso()
+        with self.database.session() as connection:
+            row = self._tradovate_oauth_state(connection, state_hash)
+            if row is None:
+                return {"status": TRADOVATE_OAUTH_FAILED, "message": "OAuth state is invalid."}
+            connection.execute(
+                """
+                UPDATE tradovate_oauth_states
+                SET status = ?, failure_code = ?, failure_message = ?, completed_at = ?
+                WHERE state_hash = ?
+                """,
+                (TRADOVATE_OAUTH_FAILED, safe_code, safe_message, now, state_hash),
+            )
+            self.audit(
+                connection,
+                "client",
+                row["customer_id"],
+                "tradovate.oauth_failed",
+                "tradovate_oauth_state",
+                row["state_last8"],
+                {"environment": row["environment"], "failure_code": safe_code},
+                ip_address,
+            )
+        return {"status": TRADOVATE_OAUTH_FAILED, "message": safe_message}
+
+    def authorize_tradovate_oauth(
+        self,
+        *,
+        state: str,
+        token_response: dict[str, Any],
+        me_response: dict[str, Any] | None,
+        token_secret: str,
+        ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        access_token = normalize_optional_text(token_response.get("access_token"))
+        if not access_token:
+            return self.fail_tradovate_oauth(
+                state=state,
+                failure_code="missing_access_token",
+                failure_message="Tradovate did not return an access token.",
+                ip_address=ip_address,
+            )
+        state_hash = sha256_hex(state)
+        now = utc_now()
+        expires_at = self._tradovate_token_expires_at(token_response, now)
+        me_response = me_response or {}
+        user_id = first_text(me_response, "userId", "user_id") or first_text(token_response, "userId", "user_id")
+        metadata = {
+            key: value
+            for key, value in token_response.items()
+            if key not in {"access_token", "refresh_token", "client_secret", "code"}
+        }
+        if me_response:
+            metadata["me"] = {
+                key: value
+                for key, value in me_response.items()
+                if key in {"userId", "name", "fullName", "email", "emailVerified", "isTrial", "organizationName"}
+            }
+        with self.database.session() as connection:
+            row = self._tradovate_oauth_state(connection, state_hash)
+            if row is None:
+                return {"status": TRADOVATE_OAUTH_FAILED, "message": "OAuth state is invalid."}
+            row = self._expire_tradovate_oauth_row_if_needed(connection, row)
+            if row["status"] != TRADOVATE_OAUTH_PENDING:
+                return {"status": row["status"], "message": self._tradovate_oauth_status_message(row)}
+            connection.execute(
+                """
+                UPDATE tradovate_oauth_states
+                SET status = ?,
+                    tradovate_user_id = ?,
+                    tradovate_user_name = ?,
+                    tradovate_email = ?,
+                    token_type = ?,
+                    scopes = ?,
+                    access_token_encrypted = ?,
+                    refresh_token_encrypted = ?,
+                    token_expires_at = ?,
+                    metadata_json = ?,
+                    completed_at = ?
+                WHERE state_hash = ?
+                """,
+                (
+                    TRADOVATE_OAUTH_AUTHORIZED,
+                    user_id,
+                    first_text(me_response, "fullName", "name"),
+                    first_text(me_response, "email"),
+                    first_text(token_response, "token_type") or "Bearer",
+                    first_text(token_response, "scope", "scopes"),
+                    encrypt_secret(token_secret, access_token),
+                    encrypt_secret(token_secret, normalize_optional_text(token_response.get("refresh_token"))),
+                    iso(expires_at) if expires_at else None,
+                    json.dumps(metadata, sort_keys=True),
+                    iso(now),
+                    state_hash,
+                ),
+            )
+            self.audit(
+                connection,
+                "client",
+                row["customer_id"],
+                "tradovate.oauth_authorized",
+                "tradovate_oauth_state",
+                row["state_last8"],
+                {
+                    "environment": row["environment"],
+                    "tradovate_user_id": user_id,
+                    "token_expires_at": iso(expires_at) if expires_at else None,
+                },
+                ip_address,
+            )
+        return {"status": TRADOVATE_OAUTH_AUTHORIZED, "message": "Tradovate OAuth authorized."}
+
+    def complete_tradovate_oauth(
+        self,
+        *,
+        state: str,
+        license_key: str | None,
+        email: str | None,
+        customer_id: str | None,
+        whop_user_id: str | None,
+        machine_fingerprint: str,
+        app_version: str | None,
+        ip_address: str | None,
+        user_agent: str | None,
+        check_interval_seconds: int,
+        grace_period_seconds: int,
+        max_devices: int,
+        token_secret: str,
+    ) -> dict[str, Any]:
+        license_response = self.check_license(
+            license_key=license_key,
+            email=email,
+            customer_id=customer_id,
+            whop_user_id=whop_user_id,
+            machine_fingerprint=machine_fingerprint,
+            app_version=app_version,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            check_interval_seconds=check_interval_seconds,
+            grace_period_seconds=grace_period_seconds,
+            client_type=CLIENT_TYPE_TRADER,
+            max_devices=max_devices,
+        )
+        if license_response["status"] != "active":
+            return {
+                "status": TRADOVATE_OAUTH_FAILED,
+                "message": "License is not active for Tradovate OAuth.",
+                "access_token": None,
+                "user_id": None,
+                "environment": None,
+                "expires_at": None,
+            }
+        return self._tradovate_oauth_claim_or_refresh_context(
+            state=state,
+            customer_id=license_response["customer"]["id"],
+            device_id=license_response["device"]["id"],
+            token_secret=token_secret,
+            include_access_token=True,
+            mark_claimed=True,
+        )
+
+    def tradovate_oauth_refresh_context(
+        self,
+        *,
+        state: str,
+        license_key: str | None,
+        email: str | None,
+        customer_id: str | None,
+        whop_user_id: str | None,
+        machine_fingerprint: str,
+        app_version: str | None,
+        ip_address: str | None,
+        user_agent: str | None,
+        check_interval_seconds: int,
+        grace_period_seconds: int,
+        max_devices: int,
+        token_secret: str,
+    ) -> dict[str, Any]:
+        license_response = self.check_license(
+            license_key=license_key,
+            email=email,
+            customer_id=customer_id,
+            whop_user_id=whop_user_id,
+            machine_fingerprint=machine_fingerprint,
+            app_version=app_version,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            check_interval_seconds=check_interval_seconds,
+            grace_period_seconds=grace_period_seconds,
+            client_type=CLIENT_TYPE_TRADER,
+            max_devices=max_devices,
+        )
+        if license_response["status"] != "active":
+            return {
+                "status": TRADOVATE_OAUTH_FAILED,
+                "message": "License is not active for Tradovate OAuth.",
+            }
+        return self._tradovate_oauth_claim_or_refresh_context(
+            state=state,
+            customer_id=license_response["customer"]["id"],
+            device_id=license_response["device"]["id"],
+            token_secret=token_secret,
+            include_access_token=True,
+            mark_claimed=False,
+        )
+
+    def store_tradovate_oauth_refresh(
+        self,
+        *,
+        state: str,
+        token_response: dict[str, Any],
+        token_secret: str,
+    ) -> dict[str, Any]:
+        access_token = normalize_optional_text(token_response.get("accessToken")) or normalize_optional_text(token_response.get("access_token"))
+        if not access_token:
+            return {"status": TRADOVATE_OAUTH_FAILED, "message": "Tradovate did not return a renewed access token."}
+        state_hash = sha256_hex(state)
+        expires_at = parse_time(token_response.get("expirationTime")) or self._tradovate_token_expires_at(token_response, utc_now())
+        with self.database.session() as connection:
+            row = self._tradovate_oauth_state(connection, state_hash)
+            if row is None:
+                return {"status": TRADOVATE_OAUTH_FAILED, "message": "OAuth state is invalid."}
+            if row["status"] != TRADOVATE_OAUTH_AUTHORIZED:
+                return {"status": row["status"], "message": self._tradovate_oauth_status_message(row)}
+            connection.execute(
+                """
+                UPDATE tradovate_oauth_states
+                SET access_token_encrypted = ?,
+                    token_expires_at = ?,
+                    tradovate_user_id = COALESCE(?, tradovate_user_id),
+                    last_refreshed_at = ?
+                WHERE state_hash = ?
+                """,
+                (
+                    encrypt_secret(token_secret, access_token),
+                    iso(expires_at) if expires_at else None,
+                    first_text(token_response, "userId", "user_id"),
+                    iso(),
+                    state_hash,
+                ),
+            )
+            refreshed = self._tradovate_oauth_state(connection, state_hash)
+        return {
+            "status": TRADOVATE_OAUTH_AUTHORIZED,
+            "message": "Tradovate access token renewed.",
+            "access_token": access_token,
+            "user_id": refreshed["tradovate_user_id"],
+            "environment": refreshed["environment"],
+            "expires_at": refreshed["token_expires_at"],
+            "token_type": refreshed["token_type"] or "Bearer",
+        }
+
     def check_license(
         self,
         *,
@@ -2776,6 +3192,159 @@ class LicensingService:
             response = self._license_response(status, message, licensed, check_interval_seconds, grace_period_seconds, customer, device, device_limit)
             self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, normalized_client_type, ip_address, user_agent, response)
             return response
+
+    def _tradovate_oauth_state(self, connection: sqlite3.Connection, state_hash: str) -> sqlite3.Row | None:
+        return connection.execute(
+            "SELECT * FROM tradovate_oauth_states WHERE state_hash = ?",
+            (state_hash,),
+        ).fetchone()
+
+    def _cleanup_tradovate_oauth_states(self, connection: sqlite3.Connection) -> None:
+        now = utc_now()
+        connection.execute(
+            """
+            UPDATE tradovate_oauth_states
+            SET status = ?, completed_at = COALESCE(completed_at, ?)
+            WHERE status = ?
+              AND state_expires_at <= ?
+            """,
+            (TRADOVATE_OAUTH_EXPIRED, iso(now), TRADOVATE_OAUTH_PENDING, iso(now)),
+        )
+        delete_before = iso(now - timedelta(days=7))
+        connection.execute(
+            """
+            DELETE FROM tradovate_oauth_states
+            WHERE status IN (?, ?, ?)
+              AND created_at < ?
+            """,
+            (TRADOVATE_OAUTH_PENDING, TRADOVATE_OAUTH_FAILED, TRADOVATE_OAUTH_EXPIRED, delete_before),
+        )
+
+    def _expire_tradovate_oauth_row_if_needed(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> sqlite3.Row:
+        if row["status"] == TRADOVATE_OAUTH_PENDING:
+            state_expiry = parse_time(row["state_expires_at"])
+            if state_expiry is not None and state_expiry <= utc_now():
+                connection.execute(
+                    """
+                    UPDATE tradovate_oauth_states
+                    SET status = ?, completed_at = COALESCE(completed_at, ?)
+                    WHERE state_hash = ?
+                    """,
+                    (TRADOVATE_OAUTH_EXPIRED, iso(), row["state_hash"]),
+                )
+                return self._tradovate_oauth_state(connection, row["state_hash"])
+        if row["status"] == TRADOVATE_OAUTH_AUTHORIZED:
+            token_expiry = parse_time(row["token_expires_at"])
+            if token_expiry is not None and token_expiry <= utc_now():
+                connection.execute(
+                    """
+                    UPDATE tradovate_oauth_states
+                    SET status = ?, completed_at = COALESCE(completed_at, ?)
+                    WHERE state_hash = ?
+                    """,
+                    (TRADOVATE_OAUTH_EXPIRED, iso(), row["state_hash"]),
+                )
+                return self._tradovate_oauth_state(connection, row["state_hash"])
+        return row
+
+    def _tradovate_oauth_status_message(self, row: sqlite3.Row | dict[str, Any]) -> str:
+        row_dict = dict(row)
+        if row_dict["status"] == TRADOVATE_OAUTH_PENDING:
+            return "Tradovate OAuth login is pending."
+        if row_dict["status"] == TRADOVATE_OAUTH_AUTHORIZED:
+            return "Tradovate OAuth authorized."
+        if row_dict["status"] == TRADOVATE_OAUTH_EXPIRED:
+            return "Tradovate OAuth login expired."
+        return row_dict.get("failure_message") or "Tradovate OAuth failed."
+
+    def _tradovate_oauth_claim_or_refresh_context(
+        self,
+        *,
+        state: str,
+        customer_id: str,
+        device_id: str,
+        token_secret: str,
+        include_access_token: bool,
+        mark_claimed: bool,
+    ) -> dict[str, Any]:
+        if not state or not state.strip():
+            return {
+                "status": TRADOVATE_OAUTH_FAILED,
+                "message": "OAuth state is missing.",
+                "access_token": None,
+                "user_id": None,
+                "environment": None,
+                "expires_at": None,
+            }
+        state_hash = sha256_hex(state)
+        with self.database.session() as connection:
+            row = self._tradovate_oauth_state(connection, state_hash)
+            if row is None:
+                return {
+                    "status": TRADOVATE_OAUTH_EXPIRED,
+                    "message": "Tradovate OAuth login was not found.",
+                    "access_token": None,
+                    "user_id": None,
+                    "environment": None,
+                    "expires_at": None,
+                }
+            row = self._expire_tradovate_oauth_row_if_needed(connection, row)
+            if row["customer_id"] != customer_id or row["device_id"] != device_id:
+                return {
+                    "status": TRADOVATE_OAUTH_FAILED,
+                    "message": "Tradovate OAuth login does not match this license/device.",
+                    "access_token": None,
+                    "user_id": None,
+                    "environment": row["environment"],
+                    "expires_at": row["token_expires_at"],
+                }
+            if row["status"] != TRADOVATE_OAUTH_AUTHORIZED:
+                return {
+                    "status": row["status"],
+                    "message": self._tradovate_oauth_status_message(row),
+                    "access_token": None,
+                    "user_id": row["tradovate_user_id"],
+                    "environment": row["environment"],
+                    "expires_at": row["token_expires_at"],
+                }
+            access_token = decrypt_secret(token_secret, row["access_token_encrypted"]) if include_access_token else None
+            if include_access_token and not access_token:
+                return {
+                    "status": TRADOVATE_OAUTH_FAILED,
+                    "message": "Stored Tradovate token could not be read.",
+                    "access_token": None,
+                    "user_id": row["tradovate_user_id"],
+                    "environment": row["environment"],
+                    "expires_at": row["token_expires_at"],
+                }
+            if mark_claimed:
+                connection.execute(
+                    "UPDATE tradovate_oauth_states SET claimed_at = COALESCE(claimed_at, ?) WHERE state_hash = ?",
+                    (iso(), state_hash),
+                )
+            return {
+                "status": TRADOVATE_OAUTH_AUTHORIZED,
+                "message": "Tradovate OAuth authorized.",
+                "access_token": access_token if include_access_token else None,
+                "user_id": row["tradovate_user_id"],
+                "environment": row["environment"],
+                "expires_at": row["token_expires_at"],
+                "token_type": row["token_type"] or "Bearer",
+            }
+
+    def _tradovate_token_expires_at(self, token_response: dict[str, Any], now: datetime) -> datetime | None:
+        explicit = parse_time(token_response.get("expirationTime")) or parse_time(token_response.get("expires_at"))
+        if explicit is not None:
+            return explicit
+        try:
+            expires_in = int(token_response.get("expires_in"))
+        except (TypeError, ValueError):
+            return None
+        return now + timedelta(seconds=max(0, expires_in))
 
     def _filter_grants_for_client(self, grants: list[dict[str, Any]], client_type: str) -> list[dict[str, Any]]:
         if client_type == CLIENT_TYPE_NT8:

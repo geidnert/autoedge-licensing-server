@@ -344,6 +344,97 @@ Response:
 
 `GET /api/trader/releases/download/{token}` streams the artifact. Tokens are stored as hashes, expire quickly, and each download attempt is recorded in `release_downloads`.
 
+### Trader Tradovate OAuth
+
+The server can act as Trader Desktop's Tradovate OAuth backend so the Tradovate client secret is never shipped in the desktop app. Trader starts the flow, opens the returned authorization URL in the user's browser, receives tokens only from this server, then connects directly to Tradovate with the returned access token.
+
+Required server environment:
+
+```dotenv
+TRADOVATE_OAUTH_CLIENT_ID=replace-with-tradovate-client-id
+TRADOVATE_OAUTH_CLIENT_SECRET=replace-with-tradovate-client-secret
+TRADOVATE_OAUTH_REDIRECT_URI=https://licenses.example.com/api/trader/tradovate/oauth/callback
+TRADOVATE_OAUTH_AUTHORIZE_URL=https://trader.tradovate.com/oauth
+TRADOVATE_OAUTH_TOKEN_URL=https://live.tradovateapi.com/auth/oauthtoken
+```
+
+Optional:
+
+```dotenv
+TRADOVATE_OAUTH_SCOPES=
+TRADOVATE_OAUTH_STATE_SECONDS=600
+TRADOVATE_OAUTH_TOKEN_SECRET=replace-with-openssl-rand-base64-48
+TRADOVATE_OAUTH_DEMO_AUTHORIZE_URL=
+TRADOVATE_OAUTH_DEMO_TOKEN_URL=
+TRADOVATE_LIVE_API_BASE_URL=https://live.tradovateapi.com/v1
+TRADOVATE_DEMO_API_BASE_URL=https://demo.tradovateapi.com/v1
+```
+
+If `TRADOVATE_OAUTH_TOKEN_SECRET` is unset, token encryption derives from `AUTOEDGE_ADMIN_COOKIE_SECRET`. Use a dedicated random token secret in production.
+
+`POST /api/trader/tradovate/oauth/start`
+
+Request:
+
+```json
+{
+  "license_key": "AE-XXXX-XXXX-XXXX-XXXX-XXXX",
+  "email": "customer@example.com",
+  "customer_id": "optional-internal-customer-id",
+  "whop_user_id": "optional-whop-user-id",
+  "machine_fingerprint": "stable-client-machine-fingerprint",
+  "app_version": "0.5.0",
+  "platform": "windows-x64",
+  "channel": "stable",
+  "environment": "live"
+}
+```
+
+The server requires an active Trader license on the same device. It stores only a hashed OAuth state, hashed license/device identity, and encrypted token material.
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "authorization_url": "https://trader.tradovate.com/oauth?response_type=code&client_id=...",
+  "state": "opaque-one-time-state",
+  "environment": "live",
+  "expires_at": "2026-06-04T12:10:00Z"
+}
+```
+
+`GET /api/trader/tradovate/oauth/callback`
+
+Tradovate redirects the browser here with `code` and `state`. The server validates state, exchanges the code server-side, stores the encrypted Tradovate access token and any refresh token if Tradovate adds one, calls `/auth/me` for user metadata when possible, and returns a small browser success/failure page.
+
+`POST /api/trader/tradovate/oauth/complete`
+
+Request includes the original `state` plus the same license/device identity used at start. Response statuses are `pending`, `authorized`, `failed`, or `expired`. The `access_token` field is present only when authorized.
+
+```json
+{
+  "status": "authorized",
+  "access_token": "tradovate-access-token",
+  "user_id": "123456",
+  "environment": "live",
+  "api_base_url": "https://live.tradovateapi.com/v1",
+  "expires_at": "2026-06-04T13:30:00Z"
+}
+```
+
+`POST /api/trader/tradovate/oauth/refresh`
+
+Request includes the original `state` plus the same license/device identity. Tradovate's official OAuth token response documents `access_token` and `expires_in`, not a refresh token. Their documented renewal path is `/auth/renewAccessToken`, which renews the current non-expired bearer token without creating a new session. This server endpoint uses the encrypted stored access token to call that renewal endpoint and returns the fresh access token to Trader. Trader Desktop may alternatively renew directly against Tradovate with its current access token; it does not need the client secret for renewal.
+
+Security behavior:
+
+- `TRADOVATE_OAUTH_CLIENT_SECRET` never appears in any client response.
+- Authorization codes, access tokens, refresh tokens, and client secrets are never written to audit logs.
+- OAuth state expires by default after 10 minutes.
+- Completion and refresh are bound to the same active license/customer/device that started the flow.
+- Stored tokens are encrypted and authenticated with a server-side secret.
+
 Configure releases in `/admin/releases`. Artifact uploads are not handled by the web UI yet; copy package files under `AUTOEDGE_RELEASE_ARTIFACT_DIR` first, then register their relative path in the release form. If the file exists, the server calculates size and SHA-256 automatically.
 
 Admin pages display and accept manual expiry times in US Eastern trading time (`ET`, America/New_York). The database and Trader API responses continue to store and return UTC timestamps with a `Z` suffix.
@@ -450,6 +541,14 @@ AUTOEDGE_TRADER_MAX_DEVICES=1
 AUTOEDGE_RATE_LIMIT_PER_MINUTE=60
 AUTOEDGE_RELEASE_ARTIFACT_DIR=/var/lib/autoedge-licensing/artifacts
 AUTOEDGE_RELEASE_DOWNLOAD_TOKEN_SECONDS=600
+TRADOVATE_OAUTH_CLIENT_ID=replace-with-tradovate-client-id
+TRADOVATE_OAUTH_CLIENT_SECRET=replace-with-tradovate-client-secret
+TRADOVATE_OAUTH_REDIRECT_URI=https://licenses.example.com/api/trader/tradovate/oauth/callback
+TRADOVATE_OAUTH_AUTHORIZE_URL=https://trader.tradovate.com/oauth
+TRADOVATE_OAUTH_TOKEN_URL=https://live.tradovateapi.com/auth/oauthtoken
+TRADOVATE_OAUTH_TOKEN_SECRET=replace-with-openssl-rand-base64-48
+TRADOVATE_LIVE_API_BASE_URL=https://live.tradovateapi.com/v1
+TRADOVATE_DEMO_API_BASE_URL=https://demo.tradovateapi.com/v1
 ```
 
 Protect the environment file:
@@ -524,6 +623,11 @@ The current Debian deployment runs on `solidparts.se` behind nginx:
 - NT8 endpoint: `https://solidparts.se/api/nt8/license/check`
 - Trader release manifest: `https://solidparts.se/api/trader/releases/manifest`
 - Trader release downloads: `https://solidparts.se/api/trader/releases/download/{token}`
+- Trader Tradovate OAuth:
+  - `POST https://solidparts.se/api/trader/tradovate/oauth/start`
+  - `GET https://solidparts.se/api/trader/tradovate/oauth/callback`
+  - `POST https://solidparts.se/api/trader/tradovate/oauth/complete`
+  - `POST https://solidparts.se/api/trader/tradovate/oauth/refresh`
 - Whop endpoint: `https://solidparts.se/api/whop/entitlements`
 - Service unit: `autoedge-licensing.service`
 - App directory: `/opt/autoedge-licensing`

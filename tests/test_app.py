@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from autoedge_licensing.app import (
     Request,
@@ -42,6 +42,18 @@ class AppEndpointTests(unittest.TestCase):
             release_artifact_dir=f"{self.tmp.name}/artifacts",
             release_download_token_seconds=600,
             license_lease_secret="y" * 40,
+            tradovate_oauth_client_id="tradovate-client",
+            tradovate_oauth_client_secret="tradovate-secret",
+            tradovate_oauth_redirect_uri="https://licenses.example.test/api/trader/tradovate/oauth/callback",
+            tradovate_oauth_authorize_url="https://trader.example.test/oauth",
+            tradovate_oauth_token_url="https://tradovate.example.test/auth/oauthtoken",
+            tradovate_oauth_demo_authorize_url="https://trader-demo.example.test/oauth",
+            tradovate_oauth_demo_token_url="https://tradovate-demo.example.test/auth/oauthtoken",
+            tradovate_oauth_scopes="trading",
+            tradovate_oauth_state_seconds=600,
+            tradovate_live_api_base_url="https://live-api.example.test/v1",
+            tradovate_demo_api_base_url="https://demo-api.example.test/v1",
+            tradovate_oauth_token_secret="z" * 40,
         )
         self.app = create_app(settings)
 
@@ -589,6 +601,164 @@ class AppEndpointTests(unittest.TestCase):
         self.assertTrue(status.startswith("400"), body)
         self.assertEqual("unknown_customer", json.loads(body)["status"])
 
+    def test_tradovate_oauth_start_returns_authorization_url_without_secret(self) -> None:
+        created = self.active_http_customer("tradovate-start@example.com")
+
+        status, _, body = self.call(
+            "POST",
+            "/api/trader/tradovate/oauth/start",
+            {
+                "license_key": created.license_key,
+                "machine_fingerprint": "tradovate-start-machine",
+                "app_version": "1.2.3",
+                "platform": "windows-x64",
+                "channel": "stable",
+                "environment": "demo",
+            },
+            {},
+        )
+
+        payload = json.loads(body)
+        parsed = urlparse(payload["authorization_url"])
+        query = parse_qs(parsed.query)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual("ok", payload["status"])
+        self.assertEqual("https://trader-demo.example.test/oauth", f"{parsed.scheme}://{parsed.netloc}{parsed.path}")
+        self.assertEqual(["code"], query["response_type"])
+        self.assertEqual(["tradovate-client"], query["client_id"])
+        self.assertEqual(["https://licenses.example.test/api/trader/tradovate/oauth/callback"], query["redirect_uri"])
+        self.assertEqual([payload["state"]], query["state"])
+        self.assertEqual(["trading"], query["scope"])
+        self.assertNotIn("tradovate-secret", payload["authorization_url"])
+
+    def test_tradovate_oauth_callback_complete_and_refresh(self) -> None:
+        fake = FakeTradovateOAuth()
+        self.app.tradovate_oauth = fake
+        created = self.active_http_customer("tradovate-flow@example.com")
+
+        start_status, _, start_body = self.call(
+            "POST",
+            "/api/trader/tradovate/oauth/start",
+            {
+                "license_key": created.license_key,
+                "machine_fingerprint": "tradovate-flow-machine",
+                "environment": "live",
+            },
+            {},
+        )
+        state = json.loads(start_body)["state"]
+        callback_status, _, callback_body = self.call_raw(
+            "GET",
+            "/api/trader/tradovate/oauth/callback?" + urlencode({"state": state, "code": "oauth-code-001"}),
+            b"",
+            {},
+        )
+        complete_status, _, complete_body = self.call(
+            "POST",
+            "/api/trader/tradovate/oauth/complete",
+            {
+                "state": state,
+                "license_key": created.license_key,
+                "machine_fingerprint": "tradovate-flow-machine",
+            },
+            {},
+        )
+        refresh_status, _, refresh_body = self.call(
+            "POST",
+            "/api/trader/tradovate/oauth/refresh",
+            {
+                "state": state,
+                "license_key": created.license_key,
+                "machine_fingerprint": "tradovate-flow-machine",
+            },
+            {},
+        )
+
+        complete_payload = json.loads(complete_body)
+        refresh_payload = json.loads(refresh_body)
+        self.assertTrue(start_status.startswith("200"), start_body)
+        self.assertTrue(callback_status.startswith("200"), callback_body)
+        self.assertIn("Tradovate Login Complete", callback_body)
+        self.assertTrue(complete_status.startswith("200"), complete_body)
+        self.assertEqual("authorized", complete_payload["status"])
+        self.assertEqual("tv-access-token", complete_payload["access_token"])
+        self.assertEqual("12345", complete_payload["user_id"])
+        self.assertEqual("https://live-api.example.test/v1", complete_payload["api_base_url"])
+        self.assertTrue(refresh_status.startswith("200"), refresh_body)
+        self.assertEqual("authorized", refresh_payload["status"])
+        self.assertEqual("tv-renewed-token", refresh_payload["access_token"])
+        self.assertEqual("tv-access-token", fake.renewed_from)
+        self.assertEqual("https://tradovate.example.test/auth/oauthtoken", fake.exchange_call["token_url"])
+        self.assertEqual("tradovate-secret", fake.exchange_call["client_secret"])
+        with self.app.database.session() as connection:
+            row = connection.execute("SELECT * FROM tradovate_oauth_states").fetchone()
+            self.assertIsNotNone(row)
+            self.assertNotIn(state, row["state_hash"])
+            self.assertNotIn("tv-access-token", row["access_token_encrypted"])
+            self.assertNotIn("tv-renewed-token", row["access_token_encrypted"])
+
+    def test_tradovate_oauth_complete_rejects_different_device(self) -> None:
+        fake = FakeTradovateOAuth()
+        self.app.tradovate_oauth = fake
+        created = self.active_http_customer("tradovate-binding@example.com")
+        self.app.service.set_customer_max_devices(
+            customer_id=created.customer["id"],
+            max_devices=2,
+            actor_id="admin",
+            ip_address=None,
+        )
+        _, _, start_body = self.call(
+            "POST",
+            "/api/trader/tradovate/oauth/start",
+            {
+                "license_key": created.license_key,
+                "machine_fingerprint": "tradovate-bound-machine",
+                "environment": "live",
+            },
+            {},
+        )
+        state = json.loads(start_body)["state"]
+        self.call_raw(
+            "GET",
+            "/api/trader/tradovate/oauth/callback?" + urlencode({"state": state, "code": "oauth-code-002"}),
+            b"",
+            {},
+        )
+
+        _, _, complete_body = self.call(
+            "POST",
+            "/api/trader/tradovate/oauth/complete",
+            {
+                "state": state,
+                "license_key": created.license_key,
+                "machine_fingerprint": "different-machine",
+            },
+            {},
+        )
+
+        payload = json.loads(complete_body)
+        self.assertEqual("failed", payload["status"])
+        self.assertNotIn("access_token", payload)
+        self.assertIn("does not match", payload["message"])
+
+    def active_http_customer(self, email: str):
+        product = self.app.service.upsert_product(
+            slug=f"duo-{email}",
+            name="DUO Runtime",
+            feature_id=f"strategy.{email.replace('@', '-').replace('.', '-')}.runtime",
+        )
+        created = self.app.service.create_or_update_customer(email=email)
+        self.app.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="tradovate oauth test",
+            actor_id="admin",
+            ip_address=None,
+        )
+        return created
+
     def call(self, method: str, path: str, payload: dict, headers: dict[str, str]) -> tuple[str, list[tuple[str, str]], str]:
         body = json.dumps(payload).encode("utf-8")
         return self.call_raw(method, path, body, {"Content-Type": "application/json", **headers})
@@ -609,10 +779,11 @@ class AppEndpointTests(unittest.TestCase):
         return self.app.admin_customers(request, {"id": "admin-001", "username": "admin"})
 
     def call_raw(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> tuple[str, list[tuple[str, str]], str]:
+        path_info, _, query_string = path.partition("?")
         environ = {
             "REQUEST_METHOD": method,
-            "PATH_INFO": path,
-            "QUERY_STRING": "",
+            "PATH_INFO": path_info,
+            "QUERY_STRING": query_string,
             "CONTENT_LENGTH": str(len(body)),
             "wsgi.input": io.BytesIO(body),
             "REMOTE_ADDR": "127.0.0.1",
@@ -630,6 +801,36 @@ class AppEndpointTests(unittest.TestCase):
 
         chunks = self.app(environ, start_response)
         return captured["status"], captured["headers"], b"".join(chunks).decode("utf-8")  # type: ignore[index,return-value]
+
+
+class FakeTradovateOAuth:
+    def __init__(self) -> None:
+        self.exchange_call: dict[str, str] = {}
+        self.renewed_from: str | None = None
+
+    def exchange_code(self, **kwargs):
+        self.exchange_call = kwargs
+        self.assert_secret_not_returned = kwargs["client_secret"]
+        return {
+            "access_token": "tv-access-token",
+            "token_type": "Bearer",
+            "expires_in": 5400,
+        }
+
+    def me(self, **kwargs):
+        return {
+            "userId": 12345,
+            "fullName": "Tradovate User",
+            "email": "tradovate@example.com",
+        }
+
+    def renew_access_token(self, **kwargs):
+        self.renewed_from = kwargs["access_token"]
+        return {
+            "accessToken": "tv-renewed-token",
+            "expirationTime": iso(utc_now() + timedelta(minutes=90)),
+            "userId": 12345,
+        }
 
 
 if __name__ == "__main__":

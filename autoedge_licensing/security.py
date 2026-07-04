@@ -19,6 +19,71 @@ def sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode((value + "=" * (-len(value) % 4)).encode("ascii"))
+
+
+def _derive_token_keys(secret: str) -> tuple[bytes, bytes]:
+    root = hashlib.sha256(secret.encode("utf-8")).digest()
+    encryption_key = hmac.new(root, b"autoedge-token-encryption:v1:enc", hashlib.sha256).digest()
+    mac_key = hmac.new(root, b"autoedge-token-encryption:v1:mac", hashlib.sha256).digest()
+    return encryption_key, mac_key
+
+
+def _token_keystream(key: bytes, nonce: bytes, length: int) -> bytes:
+    blocks: list[bytes] = []
+    counter = 0
+    generated = 0
+    while generated < length:
+        block = hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
+        blocks.append(block)
+        generated += len(block)
+        counter += 1
+    return b"".join(blocks)[:length]
+
+
+def encrypt_secret(secret: str, plaintext: str | None) -> str | None:
+    if plaintext in (None, ""):
+        return None
+    encryption_key, mac_key = _derive_token_keys(secret)
+    nonce = os.urandom(16)
+    plain_bytes = plaintext.encode("utf-8")
+    stream = _token_keystream(encryption_key, nonce, len(plain_bytes))
+    ciphertext = bytes(left ^ right for left, right in zip(plain_bytes, stream))
+    body = nonce + ciphertext
+    tag = hmac.new(mac_key, b"v1" + body, hashlib.sha256).digest()
+    return "v1:" + _b64url_encode(body + tag)
+
+
+def decrypt_secret(secret: str, encrypted_value: str | None) -> str | None:
+    if encrypted_value in (None, ""):
+        return None
+    if not encrypted_value.startswith("v1:"):
+        return None
+    try:
+        payload = _b64url_decode(encrypted_value[3:])
+    except Exception:
+        return None
+    if len(payload) < 16 + 32:
+        return None
+    body, actual_tag = payload[:-32], payload[-32:]
+    encryption_key, mac_key = _derive_token_keys(secret)
+    expected_tag = hmac.new(mac_key, b"v1" + body, hashlib.sha256).digest()
+    if not hmac.compare_digest(expected_tag, actual_tag):
+        return None
+    nonce, ciphertext = body[:16], body[16:]
+    stream = _token_keystream(encryption_key, nonce, len(ciphertext))
+    plain_bytes = bytes(left ^ right for left, right in zip(ciphertext, stream))
+    try:
+        return plain_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 def hash_license_key(value: str) -> str:
     return sha256_hex(value.strip().upper())
 

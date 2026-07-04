@@ -6,10 +6,20 @@ import hmac
 import time
 import unittest
 
-from autoedge_licensing.security import verify_standard_webhook
+from autoedge_licensing.security import decrypt_secret, encrypt_secret, verify_standard_webhook
 
 
 class StandardWebhookTests(unittest.TestCase):
+    def test_secret_encryption_round_trips_and_detects_tampering(self) -> None:
+        secret = "token-secret-" + ("x" * 40)
+        encrypted = encrypt_secret(secret, "tradovate-token-value")
+
+        self.assertIsNotNone(encrypted)
+        self.assertNotIn("tradovate-token-value", encrypted)
+        self.assertEqual("tradovate-token-value", decrypt_secret(secret, encrypted))
+        tampered = encrypted[:-1] + ("A" if encrypted[-1] != "A" else "B")
+        self.assertIsNone(decrypt_secret(secret, tampered))
+
     def test_valid_signature_is_accepted(self) -> None:
         raw_body = b'{"type":"membership.created","data":{"status":"active"}}'
         secret = "test-secret"

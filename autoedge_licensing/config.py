@@ -36,10 +36,23 @@ class Settings:
     release_artifact_dir: str
     release_download_token_seconds: int
     license_lease_secret: str
+    tradovate_oauth_client_id: str | None = None
+    tradovate_oauth_client_secret: str | None = None
+    tradovate_oauth_redirect_uri: str | None = None
+    tradovate_oauth_authorize_url: str = "https://trader.tradovate.com/oauth"
+    tradovate_oauth_token_url: str = "https://live.tradovateapi.com/auth/oauthtoken"
+    tradovate_oauth_demo_authorize_url: str | None = None
+    tradovate_oauth_demo_token_url: str | None = None
+    tradovate_oauth_scopes: str | None = None
+    tradovate_oauth_state_seconds: int = 600
+    tradovate_live_api_base_url: str = "https://live.tradovateapi.com/v1"
+    tradovate_demo_api_base_url: str = "https://demo.tradovateapi.com/v1"
+    tradovate_oauth_token_secret: str | None = None
 
     @staticmethod
     def from_env() -> "Settings":
         admin_cookie_secret = os.environ.get("AUTOEDGE_ADMIN_COOKIE_SECRET", "")
+        tradovate_token_secret = os.environ.get("TRADOVATE_OAUTH_TOKEN_SECRET") or admin_cookie_secret
         return Settings(
             database_path=os.environ.get("AUTOEDGE_DATABASE_PATH", "data/autoedge.db"),
             bind_host=os.environ.get("AUTOEDGE_BIND_HOST", "127.0.0.1"),
@@ -57,6 +70,18 @@ class Settings:
             release_artifact_dir=os.environ.get("AUTOEDGE_RELEASE_ARTIFACT_DIR", "data/artifacts"),
             release_download_token_seconds=_int_env("AUTOEDGE_RELEASE_DOWNLOAD_TOKEN_SECONDS", 600),
             license_lease_secret=os.environ.get("AUTOEDGE_LICENSE_LEASE_SECRET") or admin_cookie_secret,
+            tradovate_oauth_client_id=os.environ.get("TRADOVATE_OAUTH_CLIENT_ID"),
+            tradovate_oauth_client_secret=os.environ.get("TRADOVATE_OAUTH_CLIENT_SECRET"),
+            tradovate_oauth_redirect_uri=os.environ.get("TRADOVATE_OAUTH_REDIRECT_URI"),
+            tradovate_oauth_authorize_url=os.environ.get("TRADOVATE_OAUTH_AUTHORIZE_URL", "https://trader.tradovate.com/oauth"),
+            tradovate_oauth_token_url=os.environ.get("TRADOVATE_OAUTH_TOKEN_URL", "https://live.tradovateapi.com/auth/oauthtoken"),
+            tradovate_oauth_demo_authorize_url=os.environ.get("TRADOVATE_OAUTH_DEMO_AUTHORIZE_URL"),
+            tradovate_oauth_demo_token_url=os.environ.get("TRADOVATE_OAUTH_DEMO_TOKEN_URL"),
+            tradovate_oauth_scopes=os.environ.get("TRADOVATE_OAUTH_SCOPES"),
+            tradovate_oauth_state_seconds=_int_env("TRADOVATE_OAUTH_STATE_SECONDS", 600),
+            tradovate_live_api_base_url=os.environ.get("TRADOVATE_LIVE_API_BASE_URL", "https://live.tradovateapi.com/v1"),
+            tradovate_demo_api_base_url=os.environ.get("TRADOVATE_DEMO_API_BASE_URL", "https://demo.tradovateapi.com/v1"),
+            tradovate_oauth_token_secret=tradovate_token_secret,
         )
 
     def validate_runtime(self) -> None:
@@ -66,3 +91,24 @@ class Settings:
             raise ValueError("AUTOEDGE_LICENSE_LEASE_SECRET must be set to at least 32 characters.")
         if not self.whop_webhook_secret and not self.whop_bearer_token:
             raise ValueError("Set WHOP_WEBHOOK_SECRET or AUTOEDGE_WHOP_BEARER_TOKEN before accepting webhook updates.")
+        oauth_values = [
+            self.tradovate_oauth_client_id,
+            self.tradovate_oauth_client_secret,
+            self.tradovate_oauth_redirect_uri,
+        ]
+        if any(oauth_values) and not all(oauth_values):
+            raise ValueError(
+                "Set TRADOVATE_OAUTH_CLIENT_ID, TRADOVATE_OAUTH_CLIENT_SECRET, "
+                "and TRADOVATE_OAUTH_REDIRECT_URI together."
+            )
+        if all(oauth_values) and (
+            not self.tradovate_oauth_token_secret or len(self.tradovate_oauth_token_secret) < 32
+        ):
+            raise ValueError("TRADOVATE_OAUTH_TOKEN_SECRET must be at least 32 characters when Tradovate OAuth is enabled.")
+
+    def tradovate_oauth_enabled(self) -> bool:
+        return bool(
+            self.tradovate_oauth_client_id
+            and self.tradovate_oauth_client_secret
+            and self.tradovate_oauth_redirect_uri
+        )

@@ -17,6 +17,7 @@ from .config import Settings
 from .db import Database, apply_migrations
 from .security import (
     parse_cookie,
+    random_token,
     sha256_hex,
     sign_value,
     unsign_value,
@@ -24,6 +25,12 @@ from .security import (
     verify_standard_webhook,
 )
 from .service import DEFAULT_RELEASE_PLATFORM, SUPPORTED_RELEASE_PLATFORMS, LicensingService, parse_time, slugify
+from .tradovate import (
+    TradovateOAuthClient,
+    TradovateOAuthError,
+    build_authorization_url,
+    normalize_tradovate_environment,
+)
 
 
 HeaderList = list[tuple[str, str]]
@@ -124,6 +131,7 @@ class AutoEdgeApp:
         apply_migrations(self.database)
         self.service = LicensingService(self.database)
         self.rate_limiter = RateLimiter(settings.rate_limit_per_minute)
+        self.tradovate_oauth = TradovateOAuthClient()
 
     def __call__(self, environ: dict[str, Any], start_response: StartResponse) -> list[bytes]:
         request = Request(environ)
@@ -151,6 +159,14 @@ class AutoEdgeApp:
             return self.trader_release_download_token(request)
         if request.path.startswith("/api/trader/releases/download/") and request.method == "GET":
             return self.trader_release_download(request)
+        if request.path == "/api/trader/tradovate/oauth/start" and request.method == "POST":
+            return self.tradovate_oauth_start(request)
+        if request.path == "/api/trader/tradovate/oauth/callback" and request.method == "GET":
+            return self.tradovate_oauth_callback(request)
+        if request.path == "/api/trader/tradovate/oauth/complete" and request.method == "POST":
+            return self.tradovate_oauth_complete(request)
+        if request.path == "/api/trader/tradovate/oauth/refresh" and request.method == "POST":
+            return self.tradovate_oauth_refresh(request)
         if request.path == "/api/whop/entitlements" and request.method == "POST":
             return self.whop_entitlement_update(request)
 
@@ -315,6 +331,191 @@ class AutoEdgeApp:
             result["artifact_filename"],
             size_bytes=result["size_bytes"],
         )
+
+    def tradovate_oauth_start(self, request: Request) -> Response:
+        if not self.rate_limiter.allow(f"tradovate-oauth-start:{request.ip}"):
+            return json_response({"status": "rate_limited", "message": "Too many Tradovate OAuth requests."}, HTTPStatus.TOO_MANY_REQUESTS)
+        if not self.settings.tradovate_oauth_enabled():
+            return json_response(
+                {"status": "unavailable", "message": "Tradovate OAuth is not configured on this server."},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+        payload = request.json()
+        try:
+            environment = normalize_tradovate_environment(payload.get("environment"))
+        except ValueError as exc:
+            return json_response({"status": "invalid_request", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+        state = random_token()
+        authorization_url = build_authorization_url(
+            authorize_url=self.tradovate_authorize_url(environment),
+            client_id=self.settings.tradovate_oauth_client_id or "",
+            redirect_uri=self.tradovate_redirect_uri(),
+            state=state,
+            scopes=self.settings.tradovate_oauth_scopes,
+        )
+        result = self.service.start_tradovate_oauth(
+            state=state,
+            license_key=payload.get("license_key"),
+            email=payload.get("email"),
+            customer_id=payload.get("customer_id"),
+            whop_user_id=payload.get("whop_user_id"),
+            machine_fingerprint=payload.get("machine_fingerprint") or "",
+            app_version=payload.get("app_version"),
+            platform=payload.get("platform"),
+            channel=payload.get("channel"),
+            environment=environment,
+            ip_address=request.ip,
+            user_agent=request.user_agent,
+            check_interval_seconds=self.settings.license_check_interval_seconds,
+            grace_period_seconds=self.settings.grace_period_seconds,
+            max_devices=self.settings.trader_max_devices,
+            state_seconds=self.settings.tradovate_oauth_state_seconds,
+        )
+        status = HTTPStatus.OK if result["status"] == "ok" else HTTPStatus.FORBIDDEN
+        if result["status"] in {"invalid_request", "unknown_customer"}:
+            status = HTTPStatus.BAD_REQUEST
+        response = {
+            "status": result["status"],
+            "message": result["message"],
+            "authorization_url": authorization_url if result["status"] == "ok" else None,
+            "state": result["state"],
+            "expires_at": result["expires_at"],
+            "environment": result.get("environment") or environment,
+        }
+        return json_response(response, status)
+
+    def tradovate_oauth_callback(self, request: Request) -> Response:
+        if not self.settings.tradovate_oauth_enabled():
+            return html_response(tradovate_oauth_result_page("failed", "Tradovate OAuth is not configured."), HTTPStatus.SERVICE_UNAVAILABLE)
+        state = request.query_value("state")
+        error = request.query_value("error")
+        code = request.query_value("code")
+        context = self.service.tradovate_oauth_callback_context(state)
+        if context["status"] != "pending":
+            status = HTTPStatus.OK if context["status"] == "authorized" else HTTPStatus.BAD_REQUEST
+            return html_response(tradovate_oauth_result_page(context["status"], context["message"]), status)
+        if error:
+            result = self.service.fail_tradovate_oauth(
+                state=state,
+                failure_code=error,
+                failure_message=request.query_value("error_description") or "Tradovate OAuth was cancelled or failed.",
+                ip_address=request.ip,
+            )
+            return html_response(tradovate_oauth_result_page(result["status"], result["message"]), HTTPStatus.BAD_REQUEST)
+        if not code:
+            result = self.service.fail_tradovate_oauth(
+                state=state,
+                failure_code="missing_code",
+                failure_message="Tradovate did not return an authorization code.",
+                ip_address=request.ip,
+            )
+            return html_response(tradovate_oauth_result_page(result["status"], result["message"]), HTTPStatus.BAD_REQUEST)
+
+        environment = context["environment"]
+        try:
+            token_response = self.tradovate_oauth.exchange_code(
+                token_url=self.tradovate_token_url(environment),
+                client_id=self.settings.tradovate_oauth_client_id or "",
+                client_secret=self.settings.tradovate_oauth_client_secret or "",
+                redirect_uri=self.tradovate_redirect_uri(),
+                code=code,
+            )
+            me_response = self.tradovate_oauth.me(
+                api_base_url=self.tradovate_api_base_url(environment),
+                access_token=token_response["access_token"],
+            )
+            result = self.service.authorize_tradovate_oauth(
+                state=state,
+                token_response=token_response,
+                me_response=me_response,
+                token_secret=self.tradovate_token_secret(),
+                ip_address=request.ip,
+            )
+        except TradovateOAuthError as exc:
+            result = self.service.fail_tradovate_oauth(
+                state=state,
+                failure_code=exc.code,
+                failure_message=exc.message,
+                ip_address=request.ip,
+            )
+            return html_response(tradovate_oauth_result_page(result["status"], result["message"]), HTTPStatus.BAD_REQUEST)
+
+        status = HTTPStatus.OK if result["status"] == "authorized" else HTTPStatus.BAD_REQUEST
+        return html_response(tradovate_oauth_result_page(result["status"], result["message"]), status)
+
+    def tradovate_oauth_complete(self, request: Request) -> Response:
+        if not self.rate_limiter.allow(f"tradovate-oauth-complete:{request.ip}"):
+            return json_response({"status": "rate_limited", "message": "Too many Tradovate OAuth requests."}, HTTPStatus.TOO_MANY_REQUESTS)
+        if not self.settings.tradovate_oauth_enabled():
+            return json_response(
+                {"status": "failed", "message": "Tradovate OAuth is not configured on this server."},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+        payload = request.json()
+        result = self.service.complete_tradovate_oauth(
+            state=payload.get("state") or "",
+            license_key=payload.get("license_key"),
+            email=payload.get("email"),
+            customer_id=payload.get("customer_id"),
+            whop_user_id=payload.get("whop_user_id"),
+            machine_fingerprint=payload.get("machine_fingerprint") or "",
+            app_version=payload.get("app_version"),
+            ip_address=request.ip,
+            user_agent=request.user_agent,
+            check_interval_seconds=self.settings.license_check_interval_seconds,
+            grace_period_seconds=self.settings.grace_period_seconds,
+            max_devices=self.settings.trader_max_devices,
+            token_secret=self.tradovate_token_secret(),
+        )
+        self.add_tradovate_public_api_fields(result)
+        if result.get("status") != "authorized":
+            result.pop("access_token", None)
+        return json_response(result)
+
+    def tradovate_oauth_refresh(self, request: Request) -> Response:
+        if not self.rate_limiter.allow(f"tradovate-oauth-refresh:{request.ip}"):
+            return json_response({"status": "rate_limited", "message": "Too many Tradovate OAuth requests."}, HTTPStatus.TOO_MANY_REQUESTS)
+        if not self.settings.tradovate_oauth_enabled():
+            return json_response(
+                {"status": "failed", "message": "Tradovate OAuth is not configured on this server."},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+        payload = request.json()
+        context = self.service.tradovate_oauth_refresh_context(
+            state=payload.get("state") or "",
+            license_key=payload.get("license_key"),
+            email=payload.get("email"),
+            customer_id=payload.get("customer_id"),
+            whop_user_id=payload.get("whop_user_id"),
+            machine_fingerprint=payload.get("machine_fingerprint") or "",
+            app_version=payload.get("app_version"),
+            ip_address=request.ip,
+            user_agent=request.user_agent,
+            check_interval_seconds=self.settings.license_check_interval_seconds,
+            grace_period_seconds=self.settings.grace_period_seconds,
+            max_devices=self.settings.trader_max_devices,
+            token_secret=self.tradovate_token_secret(),
+        )
+        stored_access_token = context.pop("access_token", None)
+        if context.get("status") != "authorized" or not stored_access_token:
+            self.add_tradovate_public_api_fields(context)
+            return json_response(context)
+        try:
+            token_response = self.tradovate_oauth.renew_access_token(
+                api_base_url=self.tradovate_api_base_url(context["environment"]),
+                access_token=stored_access_token,
+            )
+        except TradovateOAuthError as exc:
+            return json_response({"status": "failed", "message": exc.message, "environment": context.get("environment")}, HTTPStatus.BAD_GATEWAY)
+        result = self.service.store_tradovate_oauth_refresh(
+            state=payload.get("state") or "",
+            token_response=token_response,
+            token_secret=self.tradovate_token_secret(),
+        )
+        self.add_tradovate_public_api_fields(result)
+        if result.get("status") != "authorized":
+            result.pop("access_token", None)
+        return json_response(result)
 
     def whop_entitlement_update(self, request: Request) -> Response:
         if not self.rate_limiter.allow(f"whop:{request.ip}"):
@@ -612,6 +813,34 @@ class AutoEdgeApp:
         )
         return redirect(form.get("return_to") or "/admin/customers")
 
+    def tradovate_redirect_uri(self) -> str:
+        return self.settings.tradovate_oauth_redirect_uri or (
+            self.settings.public_base_url.rstrip("/") + "/api/trader/tradovate/oauth/callback"
+        )
+
+    def tradovate_authorize_url(self, environment: str) -> str:
+        if environment == "demo" and self.settings.tradovate_oauth_demo_authorize_url:
+            return self.settings.tradovate_oauth_demo_authorize_url
+        return self.settings.tradovate_oauth_authorize_url
+
+    def tradovate_token_url(self, environment: str) -> str:
+        if environment == "demo" and self.settings.tradovate_oauth_demo_token_url:
+            return self.settings.tradovate_oauth_demo_token_url
+        return self.settings.tradovate_oauth_token_url
+
+    def tradovate_api_base_url(self, environment: str) -> str:
+        if environment == "demo":
+            return self.settings.tradovate_demo_api_base_url
+        return self.settings.tradovate_live_api_base_url
+
+    def tradovate_token_secret(self) -> str:
+        return self.settings.tradovate_oauth_token_secret or self.settings.admin_cookie_secret
+
+    def add_tradovate_public_api_fields(self, result: dict[str, Any]) -> None:
+        environment = result.get("environment")
+        if environment in {"live", "demo"}:
+            result["api_base_url"] = self.tradovate_api_base_url(environment)
+
     def session_token(self, request: Request) -> str | None:
         cookies = parse_cookie(request.headers.get("cookie"))
         signed = cookies.get("autoedge_admin")
@@ -756,6 +985,31 @@ def text_response(status: HTTPStatus, text: str) -> Response:
 
 def html_response(html_body: str, status: HTTPStatus = HTTPStatus.OK) -> Response:
     return Response(status, html_body.encode("utf-8"), [("Content-Type", "text/html; charset=utf-8")])
+
+
+def tradovate_oauth_result_page(status: str, message: str) -> str:
+    title = "Tradovate Login Complete" if status == "authorized" else "Tradovate Login Failed"
+    body_message = "You can return to Trader Desktop." if status == "authorized" else message
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{e(title)} · AutoEdge</title>
+  <style>
+    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f8; color: #202428; }}
+    main {{ width: min(520px, calc(100vw - 32px)); margin: 80px auto; padding: 24px; background: #fff; border: 1px solid #d8dee4; border-radius: 8px; }}
+    h1 {{ margin: 0 0 10px; font-size: 24px; }}
+    p {{ margin: 0; color: #64707d; line-height: 1.45; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{e(title)}</h1>
+    <p>{e(body_message)}</p>
+  </main>
+</body>
+</html>"""
 
 
 def file_response(path: Path, filename: str, size_bytes: int) -> FileResponse:

@@ -81,6 +81,19 @@ Key environment variables:
   cookie secret and must also be at least 32 chars
 - `AUTOEDGE_TRADER_MAX_DEVICES`, default `1`
 - `AUTOEDGE_RELEASE_ARTIFACT_DIR`, default `data/artifacts`
+- `TRADOVATE_OAUTH_CLIENT_ID`, `TRADOVATE_OAUTH_CLIENT_SECRET`, and
+  `TRADOVATE_OAUTH_REDIRECT_URI`, required together to enable Tradovate OAuth
+- `TRADOVATE_OAUTH_AUTHORIZE_URL`, default `https://trader.tradovate.com/oauth`
+- `TRADOVATE_OAUTH_TOKEN_URL`, default
+  `https://live.tradovateapi.com/auth/oauthtoken`
+- `TRADOVATE_OAUTH_TOKEN_SECRET`, optional dedicated encryption secret for
+  stored Tradovate tokens; defaults to `AUTOEDGE_ADMIN_COOKIE_SECRET`
+- `TRADOVATE_OAUTH_SCOPES`, optional; official Tradovate OAuth examples do not
+  require a scope parameter
+- `TRADOVATE_OAUTH_STATE_SECONDS`, default `600`
+- `TRADOVATE_OAUTH_DEMO_AUTHORIZE_URL`,
+  `TRADOVATE_OAUTH_DEMO_TOKEN_URL`, `TRADOVATE_LIVE_API_BASE_URL`, and
+  `TRADOVATE_DEMO_API_BASE_URL` for live/demo URL overrides
 
 Production should use `WHOP_WEBHOOK_SECRET`. Treat bearer-token auth as a local
 testing fallback, not the production default.
@@ -97,6 +110,10 @@ Implemented routes in `AutoEdgeApp.route`:
 - `POST /api/trader/releases/manifest`
 - `POST /api/trader/releases/download-token`
 - `GET /api/trader/releases/download/{token}`
+- `POST /api/trader/tradovate/oauth/start`
+- `GET /api/trader/tradovate/oauth/callback`
+- `POST /api/trader/tradovate/oauth/complete`
+- `POST /api/trader/tradovate/oauth/refresh`
 - `/admin/login`, `/admin/logout`, `/admin/password`
 - `/admin/customers`, `/admin/customers/{id}/...`
 - `/admin/products`
@@ -136,6 +153,47 @@ Keep blocking states explicit for clients. Important statuses include
 `unknown_customer`, `unlicensed`, `unlicensed_strategy`, `expired`, `revoked`,
 `suspended`, `device_blocked`, `device_limit_exceeded`, `invalid_request`, and
 `rate_limited`.
+
+## Tradovate OAuth
+
+Trader Desktop uses this licensing server as the Tradovate OAuth backend so the
+Tradovate client secret never ships in the desktop app.
+
+Flow:
+
+- `POST /api/trader/tradovate/oauth/start` validates the current Trader license
+  and device with the same device-limit logic as license checks, creates a
+  random one-time state, stores only `sha256(state)`, and returns a Tradovate
+  authorization URL plus the raw state for the desktop to poll with.
+- `GET /api/trader/tradovate/oauth/callback` validates state and expiry, then
+  exchanges `code` server-side at the configured Tradovate `/auth/oAuthToken`
+  URL using `TRADOVATE_OAUTH_CLIENT_SECRET`. It returns only small HTML
+  success/failure pages to the browser.
+- `POST /api/trader/tradovate/oauth/complete` accepts the original state and
+  the same license/device identity. It returns `pending`, `authorized`,
+  `failed`, or `expired`; `access_token` is present only when authorized.
+- `POST /api/trader/tradovate/oauth/refresh` accepts the original state and the
+  same license/device identity, decrypts the stored access token, calls
+  Tradovate `/auth/renewAccessToken`, stores the renewed token, and returns the
+  new access token.
+
+Tradovate's official OAuth token response documents `access_token` and
+`expires_in`, not a refresh token. If Tradovate adds `refresh_token`, the schema
+has a nullable encrypted column for it, but current refresh behavior is based on
+renewing the existing non-expired bearer token. Trader Desktop can also renew
+directly with Tradovate using its current access token; that does not require
+the client secret.
+
+Security:
+
+- Never log or persist OAuth codes, access tokens, refresh tokens, or client
+  secrets in plaintext.
+- Stored token material uses stdlib authenticated encryption helpers derived
+  from `TRADOVATE_OAUTH_TOKEN_SECRET` or the admin cookie secret fallback.
+- Completion and refresh must stay bound to the same active customer/device that
+  started OAuth.
+- Pending OAuth states expire after `TRADOVATE_OAUTH_STATE_SECONDS`; old
+  pending/failed/expired rows are cleaned on new starts.
 
 ## Whop Entitlements And Package Mapping
 
@@ -232,6 +290,9 @@ Current migration sequence:
   device/check columns.
 - `009_blank_customer_whop_ids.sql`: cleans legacy blank customer Whop user and
   member ids to `NULL`.
+- `010_tradovate_oauth.sql`: Tradovate OAuth state/session rows with hashed
+  state, license/device binding, encrypted token columns, expiry/failure
+  metadata, and lookup indexes.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not
@@ -272,6 +333,8 @@ Current deployment documented in `README.md`:
 - Trader endpoint: `https://solidparts.se/api/trader/license/check`
 - NT8 endpoint: `https://solidparts.se/api/nt8/license/check`
 - Trader manifest: `https://solidparts.se/api/trader/releases/manifest`
+- Trader Tradovate OAuth: `https://solidparts.se/api/trader/tradovate/oauth/start`,
+  `/callback`, `/complete`, and `/refresh`
 - Whop endpoint: `https://solidparts.se/api/whop/entitlements`
 - Service unit: `autoedge-licensing.service`
 - App directory: `/opt/autoedge-licensing`
@@ -295,6 +358,10 @@ nginx must proxy root-relative `/admin`, `/api/trader/`, `/api/nt8/`, and exact
 - Do not reintroduce product code assumptions that every Whop product maps to
   exactly one strategy.
 - Do not treat NT8 lease tokens as public offline signatures.
+- Do not put the Tradovate OAuth client secret in Trader Desktop or return it
+  from any API.
+- Do not store Tradovate OAuth state, codes, or tokens in plaintext; state is
+  hashed and token material is encrypted.
 - Do not add artifact upload handling to the admin UI unless the full storage,
   validation, and security model is designed.
 
