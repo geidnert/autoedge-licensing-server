@@ -390,7 +390,7 @@ Request:
 }
 ```
 
-The server requires an active Trader license on the same device. It stores only a hashed OAuth state, hashed license/device identity, and encrypted token material.
+The server requires an active Trader license on the same device. It stores only hashed OAuth state/session handles, hashed license/device identity, and encrypted token material.
 
 Response:
 
@@ -416,6 +416,7 @@ Request includes the original `state` plus the same license/device identity used
 {
   "status": "authorized",
   "access_token": "tradovate-access-token",
+  "oauth_session_id": "opaque-refresh-session-handle",
   "user_id": "123456",
   "environment": "live",
   "api_base_url": "https://live.tradovateapi.com/v1",
@@ -425,13 +426,23 @@ Request includes the original `state` plus the same license/device identity used
 
 `POST /api/trader/tradovate/oauth/refresh`
 
-Request includes the original `state` plus the same license/device identity. Tradovate's official OAuth token response documents `access_token` and `expires_in`, not a refresh token. Their documented renewal path is `/auth/renewAccessToken`, which renews the current non-expired bearer token without creating a new session. This server endpoint uses the encrypted stored access token to call that renewal endpoint and returns the fresh access token to Trader. Trader Desktop may alternatively renew directly against Tradovate with its current access token; it does not need the client secret for renewal.
+Request includes the `oauth_session_id` returned by `complete` plus the same license/device identity. The original OAuth `state` is intentionally short-lived and should not be treated as the durable refresh handle. Tradovate's official OAuth token response documents `access_token` and `expires_in`, not a refresh token. Their documented renewal path is `/auth/renewAccessToken`, which renews the current non-expired bearer token without creating a new session. This server endpoint uses the encrypted stored access token to call that renewal endpoint and returns the fresh access token to Trader. Trader Desktop may alternatively renew directly against Tradovate with its current access token; it does not need the client secret for renewal.
+
+```json
+{
+  "oauth_session_id": "opaque-refresh-session-handle",
+  "license_key": "AE-XXXX-XXXX-XXXX-XXXX-XXXX",
+  "machine_fingerprint": "stable-client-machine-fingerprint",
+  "app_version": "0.5.0"
+}
+```
 
 Security behavior:
 
 - `TRADOVATE_OAUTH_CLIENT_SECRET` never appears in any client response.
 - Authorization codes, access tokens, refresh tokens, and client secrets are never written to audit logs.
 - OAuth state expires by default after 10 minutes.
+- `oauth_session_id` is returned only after authorization and is stored server-side as a hash plus encrypted copy.
 - Completion and refresh are bound to the same active license/customer/device that started the flow.
 - Stored tokens are encrypted and authenticated with a server-side secret.
 

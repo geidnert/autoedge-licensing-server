@@ -663,30 +663,33 @@ class AppEndpointTests(unittest.TestCase):
             },
             {},
         )
-        refresh_status, _, refresh_body = self.call(
-            "POST",
-            "/api/trader/tradovate/oauth/refresh",
-            {
-                "state": state,
-                "license_key": created.license_key,
-                "machine_fingerprint": "tradovate-flow-machine",
-            },
-            {},
-        )
-
         complete_payload = json.loads(complete_body)
-        refresh_payload = json.loads(refresh_body)
         self.assertTrue(start_status.startswith("200"), start_body)
         self.assertTrue(callback_status.startswith("200"), callback_body)
         self.assertIn("Tradovate Login Complete", callback_body)
         self.assertTrue(complete_status.startswith("200"), complete_body)
         self.assertEqual("authorized", complete_payload["status"])
         self.assertEqual("tv-access-token", complete_payload["access_token"])
+        self.assertTrue(complete_payload["oauth_session_id"])
+        self.assertNotEqual(state, complete_payload["oauth_session_id"])
         self.assertEqual("12345", complete_payload["user_id"])
         self.assertEqual("https://live-api.example.test/v1", complete_payload["api_base_url"])
+
+        refresh_status, _, refresh_body = self.call(
+            "POST",
+            "/api/trader/tradovate/oauth/refresh",
+            {
+                "oauth_session_id": complete_payload["oauth_session_id"],
+                "license_key": created.license_key,
+                "machine_fingerprint": "tradovate-flow-machine",
+            },
+            {},
+        )
+        refresh_payload = json.loads(refresh_body)
         self.assertTrue(refresh_status.startswith("200"), refresh_body)
         self.assertEqual("authorized", refresh_payload["status"])
         self.assertEqual("tv-renewed-token", refresh_payload["access_token"])
+        self.assertEqual(complete_payload["oauth_session_id"], refresh_payload["oauth_session_id"])
         self.assertEqual("tv-access-token", fake.renewed_from)
         self.assertEqual("https://tradovate.example.test/auth/oauthtoken", fake.exchange_call["token_url"])
         self.assertEqual("tradovate-secret", fake.exchange_call["client_secret"])
@@ -694,6 +697,8 @@ class AppEndpointTests(unittest.TestCase):
             row = connection.execute("SELECT * FROM tradovate_oauth_states").fetchone()
             self.assertIsNotNone(row)
             self.assertNotIn(state, row["state_hash"])
+            self.assertNotIn(complete_payload["oauth_session_id"], row["oauth_session_hash"])
+            self.assertNotIn(complete_payload["oauth_session_id"], row["oauth_session_encrypted"])
             self.assertNotIn("tv-access-token", row["access_token_encrypted"])
             self.assertNotIn("tv-renewed-token", row["access_token_encrypted"])
 
@@ -739,6 +744,7 @@ class AppEndpointTests(unittest.TestCase):
         payload = json.loads(complete_body)
         self.assertEqual("failed", payload["status"])
         self.assertNotIn("access_token", payload)
+        self.assertNotIn("oauth_session_id", payload)
         self.assertIn("does not match", payload["message"])
 
     def active_http_customer(self, email: str):

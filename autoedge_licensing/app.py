@@ -470,6 +470,7 @@ class AutoEdgeApp:
         self.add_tradovate_public_api_fields(result)
         if result.get("status") != "authorized":
             result.pop("access_token", None)
+            result.pop("oauth_session_id", None)
         return json_response(result)
 
     def tradovate_oauth_refresh(self, request: Request) -> Response:
@@ -481,7 +482,9 @@ class AutoEdgeApp:
                 HTTPStatus.SERVICE_UNAVAILABLE,
             )
         payload = request.json()
+        oauth_session_id = payload.get("oauth_session_id") or payload.get("session_id")
         context = self.service.tradovate_oauth_refresh_context(
+            oauth_session_id=oauth_session_id,
             state=payload.get("state") or "",
             license_key=payload.get("license_key"),
             email=payload.get("email"),
@@ -508,6 +511,7 @@ class AutoEdgeApp:
         except TradovateOAuthError as exc:
             return json_response({"status": "failed", "message": exc.message, "environment": context.get("environment")}, HTTPStatus.BAD_GATEWAY)
         result = self.service.store_tradovate_oauth_refresh(
+            oauth_session_id=oauth_session_id,
             state=payload.get("state") or "",
             token_response=token_response,
             token_secret=self.tradovate_token_secret(),

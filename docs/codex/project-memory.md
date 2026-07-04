@@ -171,11 +171,13 @@ Flow:
   success/failure pages to the browser.
 - `POST /api/trader/tradovate/oauth/complete` accepts the original state and
   the same license/device identity. It returns `pending`, `authorized`,
-  `failed`, or `expired`; `access_token` is present only when authorized.
-- `POST /api/trader/tradovate/oauth/refresh` accepts the original state and the
-  same license/device identity, decrypts the stored access token, calls
-  Tradovate `/auth/renewAccessToken`, stores the renewed token, and returns the
-  new access token.
+  `failed`, or `expired`; `access_token` and `oauth_session_id` are present only
+  when authorized.
+- `POST /api/trader/tradovate/oauth/refresh` accepts the `oauth_session_id`
+  returned by `complete` and the same license/device identity, decrypts the
+  stored access token, calls Tradovate `/auth/renewAccessToken`, stores the
+  renewed token, and returns the new access token. The original OAuth `state` is
+  a short-lived correlation value, not the durable refresh handle.
 
 Tradovate's official OAuth token response documents `access_token` and
 `expires_in`, not a refresh token. If Tradovate adds `refresh_token`, the schema
@@ -290,9 +292,12 @@ Current migration sequence:
   device/check columns.
 - `009_blank_customer_whop_ids.sql`: cleans legacy blank customer Whop user and
   member ids to `NULL`.
-- `010_tradovate_oauth.sql`: Tradovate OAuth state/session rows with hashed
+- `010_tradovate_oauth.sql`: Tradovate OAuth state rows with hashed
   state, license/device binding, encrypted token columns, expiry/failure
   metadata, and lookup indexes.
+- `011_tradovate_oauth_sessions.sql`: adds separate hashed/encrypted
+  `oauth_session_id` storage so Desktop refresh uses a session handle instead
+  of the short-lived OAuth `state`.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not

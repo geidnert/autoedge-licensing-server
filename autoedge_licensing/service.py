@@ -2902,6 +2902,8 @@ class LicensingService:
                 ip_address=ip_address,
             )
         state_hash = sha256_hex(state)
+        oauth_session_id = random_token()
+        oauth_session_hash = sha256_hex(oauth_session_id)
         now = utc_now()
         expires_at = self._tradovate_token_expires_at(token_response, now)
         me_response = me_response or {}
@@ -2928,6 +2930,9 @@ class LicensingService:
                 """
                 UPDATE tradovate_oauth_states
                 SET status = ?,
+                    oauth_session_hash = ?,
+                    oauth_session_last8 = ?,
+                    oauth_session_encrypted = ?,
                     tradovate_user_id = ?,
                     tradovate_user_name = ?,
                     tradovate_email = ?,
@@ -2942,6 +2947,9 @@ class LicensingService:
                 """,
                 (
                     TRADOVATE_OAUTH_AUTHORIZED,
+                    oauth_session_hash,
+                    oauth_session_hash[-8:],
+                    encrypt_secret(token_secret, oauth_session_id),
                     user_id,
                     first_text(me_response, "fullName", "name"),
                     first_text(me_response, "email"),
@@ -3023,6 +3031,7 @@ class LicensingService:
     def tradovate_oauth_refresh_context(
         self,
         *,
+        oauth_session_id: str | None,
         state: str,
         license_key: str | None,
         email: str | None,
@@ -3056,8 +3065,14 @@ class LicensingService:
                 "status": TRADOVATE_OAUTH_FAILED,
                 "message": "License is not active for Tradovate OAuth.",
             }
+        if not (oauth_session_id and oauth_session_id.strip()) and not (state and state.strip()):
+            return {
+                "status": TRADOVATE_OAUTH_FAILED,
+                "message": "OAuth session id is missing.",
+            }
         return self._tradovate_oauth_claim_or_refresh_context(
             state=state,
+            oauth_session_id=oauth_session_id,
             customer_id=license_response["customer"]["id"],
             device_id=license_response["device"]["id"],
             token_secret=token_secret,
@@ -3068,6 +3083,7 @@ class LicensingService:
     def store_tradovate_oauth_refresh(
         self,
         *,
+        oauth_session_id: str | None,
         state: str,
         token_response: dict[str, Any],
         token_secret: str,
@@ -3075,12 +3091,13 @@ class LicensingService:
         access_token = normalize_optional_text(token_response.get("accessToken")) or normalize_optional_text(token_response.get("access_token"))
         if not access_token:
             return {"status": TRADOVATE_OAUTH_FAILED, "message": "Tradovate did not return a renewed access token."}
-        state_hash = sha256_hex(state)
+        lookup_by_session = bool(oauth_session_id and oauth_session_id.strip())
+        lookup_hash = sha256_hex(oauth_session_id) if lookup_by_session else sha256_hex(state)
         expires_at = parse_time(token_response.get("expirationTime")) or self._tradovate_token_expires_at(token_response, utc_now())
         with self.database.session() as connection:
-            row = self._tradovate_oauth_state(connection, state_hash)
+            row = self._tradovate_oauth_session(connection, lookup_hash) if lookup_by_session else self._tradovate_oauth_state(connection, lookup_hash)
             if row is None:
-                return {"status": TRADOVATE_OAUTH_FAILED, "message": "OAuth state is invalid."}
+                return {"status": TRADOVATE_OAUTH_FAILED, "message": "Tradovate OAuth session is invalid."}
             if row["status"] != TRADOVATE_OAUTH_AUTHORIZED:
                 return {"status": row["status"], "message": self._tradovate_oauth_status_message(row)}
             connection.execute(
@@ -3097,14 +3114,16 @@ class LicensingService:
                     iso(expires_at) if expires_at else None,
                     first_text(token_response, "userId", "user_id"),
                     iso(),
-                    state_hash,
+                    row["state_hash"],
                 ),
             )
-            refreshed = self._tradovate_oauth_state(connection, state_hash)
+            refreshed = self._tradovate_oauth_state(connection, row["state_hash"])
+            returned_session_id = self._tradovate_oauth_session_id(connection, refreshed, token_secret)
         return {
             "status": TRADOVATE_OAUTH_AUTHORIZED,
             "message": "Tradovate access token renewed.",
             "access_token": access_token,
+            "oauth_session_id": returned_session_id,
             "user_id": refreshed["tradovate_user_id"],
             "environment": refreshed["environment"],
             "expires_at": refreshed["token_expires_at"],
@@ -3199,6 +3218,12 @@ class LicensingService:
             (state_hash,),
         ).fetchone()
 
+    def _tradovate_oauth_session(self, connection: sqlite3.Connection, oauth_session_hash: str) -> sqlite3.Row | None:
+        return connection.execute(
+            "SELECT * FROM tradovate_oauth_states WHERE oauth_session_hash = ?",
+            (oauth_session_hash,),
+        ).fetchone()
+
     def _cleanup_tradovate_oauth_states(self, connection: sqlite3.Connection) -> None:
         now = utc_now()
         connection.execute(
@@ -3265,29 +3290,33 @@ class LicensingService:
         self,
         *,
         state: str,
+        oauth_session_id: str | None = None,
         customer_id: str,
         device_id: str,
         token_secret: str,
         include_access_token: bool,
         mark_claimed: bool,
     ) -> dict[str, Any]:
-        if not state or not state.strip():
+        lookup_by_session = bool(oauth_session_id and oauth_session_id.strip())
+        if not lookup_by_session and (not state or not state.strip()):
             return {
                 "status": TRADOVATE_OAUTH_FAILED,
                 "message": "OAuth state is missing.",
                 "access_token": None,
+                "oauth_session_id": None,
                 "user_id": None,
                 "environment": None,
                 "expires_at": None,
             }
-        state_hash = sha256_hex(state)
+        lookup_hash = sha256_hex(oauth_session_id) if lookup_by_session else sha256_hex(state)
         with self.database.session() as connection:
-            row = self._tradovate_oauth_state(connection, state_hash)
+            row = self._tradovate_oauth_session(connection, lookup_hash) if lookup_by_session else self._tradovate_oauth_state(connection, lookup_hash)
             if row is None:
                 return {
                     "status": TRADOVATE_OAUTH_EXPIRED,
-                    "message": "Tradovate OAuth login was not found.",
+                    "message": "Tradovate OAuth session was not found." if lookup_by_session else "Tradovate OAuth login was not found.",
                     "access_token": None,
+                    "oauth_session_id": None,
                     "user_id": None,
                     "environment": None,
                     "expires_at": None,
@@ -3298,6 +3327,7 @@ class LicensingService:
                     "status": TRADOVATE_OAUTH_FAILED,
                     "message": "Tradovate OAuth login does not match this license/device.",
                     "access_token": None,
+                    "oauth_session_id": None,
                     "user_id": None,
                     "environment": row["environment"],
                     "expires_at": row["token_expires_at"],
@@ -3307,16 +3337,19 @@ class LicensingService:
                     "status": row["status"],
                     "message": self._tradovate_oauth_status_message(row),
                     "access_token": None,
+                    "oauth_session_id": None,
                     "user_id": row["tradovate_user_id"],
                     "environment": row["environment"],
                     "expires_at": row["token_expires_at"],
                 }
             access_token = decrypt_secret(token_secret, row["access_token_encrypted"]) if include_access_token else None
+            returned_session_id = self._tradovate_oauth_session_id(connection, row, token_secret)
             if include_access_token and not access_token:
                 return {
                     "status": TRADOVATE_OAUTH_FAILED,
                     "message": "Stored Tradovate token could not be read.",
                     "access_token": None,
+                    "oauth_session_id": None,
                     "user_id": row["tradovate_user_id"],
                     "environment": row["environment"],
                     "expires_at": row["token_expires_at"],
@@ -3324,17 +3357,47 @@ class LicensingService:
             if mark_claimed:
                 connection.execute(
                     "UPDATE tradovate_oauth_states SET claimed_at = COALESCE(claimed_at, ?) WHERE state_hash = ?",
-                    (iso(), state_hash),
+                    (iso(), row["state_hash"]),
                 )
             return {
                 "status": TRADOVATE_OAUTH_AUTHORIZED,
                 "message": "Tradovate OAuth authorized.",
                 "access_token": access_token if include_access_token else None,
+                "oauth_session_id": returned_session_id,
                 "user_id": row["tradovate_user_id"],
                 "environment": row["environment"],
                 "expires_at": row["token_expires_at"],
                 "token_type": row["token_type"] or "Bearer",
             }
+
+    def _tradovate_oauth_session_id(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        token_secret: str,
+    ) -> str | None:
+        session_id = decrypt_secret(token_secret, row["oauth_session_encrypted"])
+        if session_id:
+            return session_id
+        session_id = random_token()
+        session_hash = sha256_hex(session_id)
+        connection.execute(
+            """
+            UPDATE tradovate_oauth_states
+            SET oauth_session_hash = ?,
+                oauth_session_last8 = ?,
+                oauth_session_encrypted = ?
+            WHERE state_hash = ?
+              AND oauth_session_hash IS NULL
+            """,
+            (
+                session_hash,
+                session_hash[-8:],
+                encrypt_secret(token_secret, session_id),
+                row["state_hash"],
+            ),
+        )
+        return session_id
 
     def _tradovate_token_expires_at(self, token_response: dict[str, Any], now: datetime) -> datetime | None:
         explicit = parse_time(token_response.get("expirationTime")) or parse_time(token_response.get("expires_at"))
