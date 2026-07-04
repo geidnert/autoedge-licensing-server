@@ -1,6 +1,6 @@
 # AutoEdge Licensing Server Codex Memory
 
-Last refreshed: 2026-06-29
+Last refreshed: 2026-07-04
 
 ## Repository Shape
 
@@ -230,6 +230,12 @@ Current migration sequence:
   percent, and rollback reason.
 - `008_nt8_licensing.sql`: NT8 strategy key/product enablement and per-client
   device/check columns.
+- `009_blank_customer_whop_ids.sql`: cleans legacy blank customer Whop user and
+  member ids to `NULL`.
+
+Customer Whop user/member identifiers are optional. Service writes should strip
+them and treat blank strings as absent so manual admin-created customers do not
+store empty strings in unique columns.
 
 For schema changes, add a new numbered SQL migration. Avoid modifying already
 applied migrations unless the user explicitly asks for a history rewrite.
@@ -304,4 +310,3 @@ When future work changes durable project knowledge, update the relevant
 - client response contracts
 - release targeting or package-mapping rules
 - regression traps discovered while debugging
-

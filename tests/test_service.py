@@ -159,6 +159,26 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(3600, response["next_check_seconds"])
         self.assertEqual(86400, response["grace_period_seconds"])
 
+    def test_manual_customers_can_share_blank_whop_fields(self) -> None:
+        first = self.service.create_or_update_customer(
+            email="first-manual@example.com",
+            name="First Manual",
+            whop_user_id="",
+            whop_member_id="",
+        )
+        second = self.service.create_or_update_customer(
+            email="second-manual@example.com",
+            name="Second Manual",
+            whop_user_id=" ",
+            whop_member_id="\t",
+        )
+
+        self.assertNotEqual(first.customer["id"], second.customer["id"])
+        self.assertIsNone(first.customer["whop_user_id"])
+        self.assertIsNone(first.customer["whop_member_id"])
+        self.assertIsNone(second.customer["whop_user_id"])
+        self.assertIsNone(second.customer["whop_member_id"])
+
     def test_rotate_customer_license_key_replaces_old_key_and_audits(self) -> None:
         created = self.active_customer("rotate@example.com")
 

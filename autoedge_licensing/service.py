@@ -67,6 +67,13 @@ def normalize_email(value: str | None) -> str | None:
     return cleaned or None
 
 
+def normalize_optional_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "product"
@@ -981,17 +988,19 @@ class LicensingService:
         ip_address: str | None = None,
     ) -> CreatedCustomer:
         normalized_email = normalize_email(email)
+        normalized_whop_user_id = normalize_optional_text(whop_user_id)
+        normalized_whop_member_id = normalize_optional_text(whop_member_id)
         lookup_conditions: list[str] = []
         parameters: list[Any] = []
         if normalized_email:
             lookup_conditions.append("email_normalized = ?")
             parameters.append(normalized_email)
-        if whop_user_id:
+        if normalized_whop_user_id:
             lookup_conditions.append("whop_user_id = ?")
-            parameters.append(whop_user_id)
-        if whop_member_id:
+            parameters.append(normalized_whop_user_id)
+        if normalized_whop_member_id:
             lookup_conditions.append("whop_member_id = ?")
-            parameters.append(whop_member_id)
+            parameters.append(normalized_whop_member_id)
         if license_key:
             lookup_conditions.append("license_key_hash = ?")
             parameters.append(hash_license_key(license_key))
@@ -1013,8 +1022,8 @@ class LicensingService:
                     """,
                     (
                         customer_id,
-                        whop_user_id,
-                        whop_member_id,
+                        normalized_whop_user_id,
+                        normalized_whop_member_id,
                         email.strip() if email else None,
                         normalized_email,
                         name.strip() if name else None,
@@ -1039,8 +1048,8 @@ class LicensingService:
                     WHERE id = ?
                     """,
                     (
-                        whop_user_id,
-                        whop_member_id,
+                        normalized_whop_user_id,
+                        normalized_whop_member_id,
                         email.strip() if email else None,
                         normalized_email,
                         name.strip() if name else None,
@@ -2893,8 +2902,9 @@ class LicensingService:
             row = connection.execute("SELECT * FROM customers WHERE email_normalized = ?", (normalized_email,)).fetchone()
             if row:
                 return row
-        if whop_user_id:
-            row = connection.execute("SELECT * FROM customers WHERE whop_user_id = ?", (whop_user_id.strip(),)).fetchone()
+        normalized_whop_user_id = normalize_optional_text(whop_user_id)
+        if normalized_whop_user_id:
+            row = connection.execute("SELECT * FROM customers WHERE whop_user_id = ?", (normalized_whop_user_id,)).fetchone()
             if row:
                 return row
         return None

@@ -6,8 +6,10 @@ import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlencode
 
 from autoedge_licensing.app import (
+    Request,
     admin_time_input_to_utc,
     create_app,
     customer_detail_page,
@@ -57,6 +59,29 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("Current Eastern time", html)
         self.assertIn("America/New_York", html)
         self.assertIn("admin-user", html)
+
+    def test_admin_customer_create_allows_blank_whop_fields(self) -> None:
+        first = self.admin_customer_create_response(
+            {
+                "email": "stevetorrence@icloud.com",
+                "name": "Steve Torrence",
+                "whop_user_id": "",
+                "whop_member_id": "",
+            }
+        )
+        second = self.admin_customer_create_response(
+            {
+                "email": "other-manual@example.com",
+                "name": "Other Manual",
+                "whop_user_id": "",
+                "whop_member_id": "",
+            }
+        )
+
+        self.assertEqual(303, first.status.value)
+        self.assertEqual(303, second.status.value)
+        self.assertTrue(first.headers[0][1].startswith("/admin/customers/"))
+        self.assertTrue(second.headers[0][1].startswith("/admin/customers/"))
 
     def test_whop_endpoint_rejects_missing_auth(self) -> None:
         status, _, body = self.call(
@@ -567,6 +592,21 @@ class AppEndpointTests(unittest.TestCase):
     def call(self, method: str, path: str, payload: dict, headers: dict[str, str]) -> tuple[str, list[tuple[str, str]], str]:
         body = json.dumps(payload).encode("utf-8")
         return self.call_raw(method, path, body, {"Content-Type": "application/json", **headers})
+
+    def admin_customer_create_response(self, fields: dict[str, str]):
+        body = urlencode(fields).encode("utf-8")
+        request = Request(
+            {
+                "REQUEST_METHOD": "POST",
+                "PATH_INFO": "/admin/customers",
+                "QUERY_STRING": "",
+                "CONTENT_LENGTH": str(len(body)),
+                "CONTENT_TYPE": "application/x-www-form-urlencoded",
+                "wsgi.input": io.BytesIO(body),
+                "REMOTE_ADDR": "127.0.0.1",
+            }
+        )
+        return self.app.admin_customers(request, {"id": "admin-001", "username": "admin"})
 
     def call_raw(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> tuple[str, list[tuple[str, str]], str]:
         environ = {
