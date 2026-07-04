@@ -15,6 +15,7 @@ from autoedge_licensing.app import (
     customer_detail_page,
     format_admin_time,
     packages_page,
+    redact_http_request_line,
     products_page,
     releases_page,
 )
@@ -83,6 +84,18 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("AutoEdge Trader Terms &amp; Conditions", terms_body)
         self.assertIn("Tradovate", privacy_body)
         self.assertIn("Trading Risk", terms_body)
+
+    def test_access_log_request_line_redacts_oauth_query_secrets(self) -> None:
+        redacted = redact_http_request_line(
+            "GET /api/trader/tradovate/oauth/callback?code=oauth-code-001&state=oauth-state-001&ok=1 HTTP/1.1"
+        )
+
+        self.assertEqual(
+            "GET /api/trader/tradovate/oauth/callback?code=REDACTED&state=REDACTED&ok=1 HTTP/1.1",
+            redacted,
+        )
+        self.assertNotIn("oauth-code-001", redacted)
+        self.assertNotIn("oauth-state-001", redacted)
 
     def test_admin_customer_create_allows_blank_whop_fields(self) -> None:
         first = self.admin_customer_create_response(

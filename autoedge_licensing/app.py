@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs
-from wsgiref.simple_server import make_server
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
+from wsgiref.simple_server import WSGIRequestHandler, make_server
 from zoneinfo import ZoneInfo
 
 from .config import Settings
@@ -37,6 +37,42 @@ HeaderList = list[tuple[str, str]]
 StartResponse = Callable[[str, HeaderList], None]
 ADMIN_TIME_ZONE = ZoneInfo("America/New_York")
 ADMIN_TIME_LABEL = "ET"
+SENSITIVE_QUERY_PARAMS = {
+    "access_token",
+    "client_secret",
+    "code",
+    "id_token",
+    "refresh_token",
+    "state",
+    "token",
+}
+
+
+def redact_http_request_line(request_line: str) -> str:
+    parts = request_line.split(" ", 2)
+    if len(parts) != 3:
+        return request_line
+
+    method, target, protocol = parts
+    parsed = urlsplit(target)
+    if not parsed.query:
+        return request_line
+
+    query = urlencode(
+        [
+            (key, "REDACTED" if key.lower() in SENSITIVE_QUERY_PARAMS else value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        ]
+    )
+    redacted_target = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
+    return f"{method} {redacted_target} {protocol}"
+
+
+class RedactingWSGIRequestHandler(WSGIRequestHandler):
+    def log_message(self, format: str, *args: Any) -> None:
+        if args and isinstance(args[0], str):
+            args = (redact_http_request_line(args[0]),) + args[1:]
+        super().log_message(format, *args)
 
 
 class RateLimiter:
@@ -1844,7 +1880,7 @@ def main() -> int:
     if os.environ.get("AUTOEDGE_SKIP_RUNTIME_VALIDATION") != "1":
         settings.validate_runtime()
     app = create_app(settings)
-    with make_server(settings.bind_host, settings.bind_port, app) as server:
+    with make_server(settings.bind_host, settings.bind_port, app, handler_class=RedactingWSGIRequestHandler) as server:
         print(f"AutoEdge licensing server listening on http://{settings.bind_host}:{settings.bind_port}", flush=True)
         server.serve_forever()
     return 0

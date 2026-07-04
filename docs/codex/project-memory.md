@@ -6,7 +6,7 @@ Last refreshed: 2026-07-04
 
 - `autoedge_licensing/app.py` is the stdlib WSGI entrypoint, router, admin HTML,
   JSON response layer, release download streaming, CSRF/session cookie handling,
-  and in-memory per-IP rate limiter.
+  in-memory per-IP rate limiter, and redacting WSGI access-log handler.
 - `autoedge_licensing/service.py` owns business logic: customers, products, Whop
   packages, entitlements, device limits, release manifests, download tokens,
   NT8 checks, audit logging, and Whop event processing.
@@ -192,6 +192,9 @@ Security:
 
 - Never log or persist OAuth codes, access tokens, refresh tokens, or client
   secrets in plaintext.
+- The stdlib WSGI request handler must keep redacting sensitive query params
+  such as `code`, `state`, tokens, and `client_secret`; OAuth callbacks include
+  authorization codes in the URL query string.
 - Stored token material uses stdlib authenticated encryption helpers derived
   from `TRADOVATE_OAUTH_TOKEN_SECRET` or the admin cookie secret fallback.
 - Completion and refresh must stay bound to the same active customer/device that
