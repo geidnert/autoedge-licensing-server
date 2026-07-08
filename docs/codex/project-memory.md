@@ -17,8 +17,9 @@ Last refreshed: 2026-07-08
 - `autoedge_licensing/security.py` contains hashing, signing, password hashing,
   cookie parsing, bearer-token auth, and Standard Webhooks verification.
 - `scripts/create_admin.py` creates an admin user after applying migrations.
-- `scripts/seed_products.py` seeds default strategy products:
-  DUO, DUOrc, ORBO2, ORBOib, ADAM, EVE, MICH, and HUGO.
+- `scripts/seed_products.py` seeds default strategy products
+  DUO, DUOrc, ORBO2, ORBOib, ADAM, EVE, MICH, and HUGO, plus the Trader
+  Desktop extension product Discord Notifier.
 - `deploy/` contains nginx and Caddy reverse-proxy examples.
 - `systemd/autoedge-licensing.service` runs the app with `/etc/autoedge-licensing.env`
   and writes only to `/var/lib/autoedge-licensing`.
@@ -222,7 +223,11 @@ Security:
 
 Mapping model:
 
-- Internal `products` are Trader/NT8 strategies.
+- Internal `products` are licensed Trader capabilities. Most are Trader/NT8
+  strategies, but the table also holds optional Trader Desktop extensions.
+- Discord Notifier is the first optional extension product: display name
+  `Discord Notifier`, product slug/package id `discord-notifier`, feature id
+  `trader.notifications.discord`, Trader enabled, NT8 disabled.
 - `whop_packages` represent what Whop sells.
 - A package can grant one or more internal products through
   `whop_package_grants`.
@@ -247,7 +252,15 @@ Grant behavior:
 Release types:
 
 - `strategy_package`
+- `extension_package`
 - `trader_desktop`
+
+`extension_package` is the generic release type for optional Trader Desktop
+extensions. Discord Notifier uses this type. The persisted
+`trader_releases.scope` column is legacy app-vs-product-bound state; product
+bound packages such as `strategy_package` and `extension_package` still use the
+existing product-bound scope internally, while `release_type` is authoritative
+in manifests.
 
 Supported platforms:
 
@@ -269,13 +282,24 @@ or deterministic rollout percent.
 Download flow:
 
 - Manifest returns visible releases and app updates only for active licenses.
+- If `include_types` is omitted, manifests intentionally keep the old default:
+  `strategy_package` and `trader_desktop`. Clients that support optional
+  extensions must request `extension_package`.
+- Product-bound release manifest rows now include `package_id`, `display_name`,
+  `required_features`, `release_id`, artifact `path`/`filename`,
+  `license_status`, and product grant `expires_at` in addition to the existing
+  strategy-package fields.
 - `/api/trader/releases/download-token` rechecks license, device limit, platform,
-  and targeting before issuing a short-lived token.
+  and targeting before issuing a short-lived token. Product-bound packages,
+  including `extension_package`, require an active grant for the release product.
 - `GET /api/trader/releases/download/{token}` streams the artifact and records
   attempts in `release_downloads`.
 - Artifact uploads are not in the admin UI. Copy files under
   `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register relative paths in
   `/admin/releases`.
+- To publish Discord Notifier, seed/create the product, copy one artifact for
+  `macos-arm64` and one for `windows-x64`, and register two `Extension package`
+  releases with product/package id `discord-notifier`.
 
 Rollback behavior is server-directed. Clients must not assume that a newer local
 version is valid when the server returns a lower `target_version` with

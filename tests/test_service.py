@@ -129,6 +129,61 @@ class LicensingServiceTests(unittest.TestCase):
             rollback_reason=rollback_reason,
         )
 
+    def discord_product(self):
+        return self.service.upsert_product(
+            slug="discord-notifier",
+            name="Discord Notifier",
+            feature_id="trader.notifications.discord",
+            nt8_enabled=False,
+            metadata={"seeded": True, "package_kind": "extension", "release_type": "extension_package"},
+        )
+
+    def extension_release(
+        self,
+        *,
+        product_id: str | None = None,
+        version: str = "1.0.0",
+        channel: str = "stable",
+        platform: str = "windows-x64",
+        audience_mode: str = "all",
+        allowed_customer_ids: str | None = None,
+        allowed_emails: str | None = None,
+        allowed_license_keys: str | None = None,
+        required_tags: str | None = None,
+        rollout_percent: int | None = None,
+    ):
+        product = self.discord_product()
+        artifact_dir = Path(self.tmp.name) / "extension-test-artifacts"
+        artifact_dir.mkdir(exist_ok=True)
+        path = f"discord-notifier-{version}-{channel}-{platform}.zip"
+        (artifact_dir / path).write_bytes(f"discord notifier {version}".encode())
+        return self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            release_type="extension_package",
+            product_key="discord-notifier",
+            product_id=product_id or product["id"],
+            channel=channel,
+            platform=platform,
+            version=version,
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path=path,
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes="Discord Notifier release",
+            artifact_dir=str(artifact_dir),
+            audience_mode=audience_mode,
+            allowed_customer_ids=allowed_customer_ids,
+            allowed_emails=allowed_emails,
+            allowed_license_keys=allowed_license_keys,
+            required_tags=required_tags,
+            rollout_percent=rollout_percent,
+        )
+
     def test_manual_active_grant_returns_licensed_strategy(self) -> None:
         created = self.service.create_or_update_customer(email="alice@example.com", name="Alice")
         self.service.manual_set_entitlement(
@@ -1750,6 +1805,232 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(["DUO"], [release["strategy"] for release in manifest["releases"]])
         self.assertTrue(manifest["releases"][0]["update_available"])
         self.assertEqual(len(b"duo package"), manifest["releases"][0]["artifact"]["size_bytes"])
+
+    def test_extension_package_hidden_and_not_downloadable_without_feature_grant(self) -> None:
+        created = self.active_customer("discord-hidden@example.com")
+        release = self.extension_release(version="1.0.0")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="discord-hidden-machine",
+            app_version="0.9.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["extension_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="discord-hidden-machine",
+            app_version="0.9.0",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual([], manifest["releases"])
+        self.assertEqual("not_licensed", token["status"])
+        self.assertIsNone(token["token"])
+
+    def test_active_discord_feature_grant_exposes_extension_package_metadata(self) -> None:
+        product = self.discord_product()
+        created = self.service.create_or_update_customer(email="discord-active@example.com")
+        expires_at = iso(utc_now() + timedelta(days=30))
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=product["id"],
+            status="active",
+            expires_at=expires_at,
+            reason="discord extension",
+            actor_id="admin",
+            ip_address=None,
+        )
+        release = self.extension_release(product_id=product["id"], version="1.2.0", platform="macos-arm64")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="discord-active-machine",
+            app_version="1.1.0",
+            channel="stable",
+            platform="macos-arm64",
+            include_types=["extension_package"],
+            installed_packages=[{"package_id": "discord-notifier", "version": "1.1.0"}],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual(1, len(manifest["releases"]))
+        item = manifest["releases"][0]
+        self.assertEqual(release["id"], item["id"])
+        self.assertEqual(release["id"], item["release_id"])
+        self.assertEqual("extension", item["scope"])
+        self.assertEqual("extension_package", item["release_type"])
+        self.assertEqual("discord-notifier", item["package_id"])
+        self.assertEqual("Discord Notifier", item["display_name"])
+        self.assertIsNone(item["strategy"])
+        self.assertEqual(product["id"], item["product_id"])
+        self.assertEqual("trader.notifications.discord", item["feature_id"])
+        self.assertEqual(["trader.notifications.discord"], item["required_features"])
+        self.assertEqual("1.2.0", item["version"])
+        self.assertEqual("macos-arm64", item["platform"])
+        self.assertEqual("discord-notifier-1.2.0-stable-macos-arm64.zip", item["artifact"]["path"])
+        self.assertEqual("discord-notifier-1.2.0-stable-macos-arm64.zip", item["artifact"]["filename"])
+        self.assertEqual("Discord Notifier release", item["release_notes"])
+        self.assertEqual("active", item["license_status"])
+        self.assertEqual(expires_at, item["expires_at"])
+        self.assertEqual("1.1.0", item["current_version"])
+        self.assertEqual("update", item["action"])
+
+    def test_expired_discord_feature_grant_does_not_expose_extension_package(self) -> None:
+        product = self.discord_product()
+        created = self.active_customer("discord-expired@example.com")
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=product["id"],
+            status="expired",
+            expires_at=iso(utc_now() - timedelta(days=1)),
+            reason="expired discord extension",
+            actor_id="admin",
+            ip_address=None,
+        )
+        self.extension_release(product_id=product["id"], version="1.0.0")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="discord-expired-machine",
+            app_version="0.9.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["extension_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual([], manifest["releases"])
+
+    def test_allowlisted_extension_release_matches_customer_email_or_license_key(self) -> None:
+        product = self.discord_product()
+        by_customer = self.service.create_or_update_customer(email="discord-customer@example.com")
+        by_email = self.service.create_or_update_customer(email="discord-email@example.com")
+        by_key = self.service.create_or_update_customer(email="discord-key@example.com")
+        denied = self.service.create_or_update_customer(email="discord-denied@example.com")
+        for created in (by_customer, by_email, by_key, denied):
+            self.service.manual_set_entitlement(
+                customer_id=created.customer["id"],
+                product_id=product["id"],
+                status="active",
+                expires_at=iso(utc_now() + timedelta(days=30)),
+                reason="allowlist discord extension",
+                actor_id="admin",
+                ip_address=None,
+            )
+        self.extension_release(
+            product_id=product["id"],
+            version="1.4.0",
+            channel="beta",
+            audience_mode="allowlist",
+            allowed_customer_ids=by_customer.customer["id"],
+            allowed_emails="discord-email@example.com",
+            allowed_license_keys=by_key.license_key,
+        )
+
+        def release_versions(created, fingerprint: str) -> list[str]:
+            manifest = self.service.release_manifest(
+                license_key=created.license_key,
+                email=None,
+                customer_id=None,
+                whop_user_id=None,
+                machine_fingerprint=fingerprint,
+                app_version="1.0.0",
+                channel="stable",
+                platform="windows-x64",
+                include_types=["extension_package"],
+                ip_address=None,
+                user_agent=None,
+                check_interval_seconds=3600,
+                grace_period_seconds=86400,
+            )
+            return [release["version"] for release in manifest["releases"]]
+
+        self.assertEqual(["1.4.0"], release_versions(by_customer, "discord-allow-customer"))
+        self.assertEqual(["1.4.0"], release_versions(by_email, "discord-allow-email"))
+        self.assertEqual(["1.4.0"], release_versions(by_key, "discord-allow-key"))
+        self.assertEqual([], release_versions(denied, "discord-allow-denied"))
+
+    def test_extension_packages_are_opt_in_so_strategy_manifest_stays_compatible(self) -> None:
+        product = self.discord_product()
+        created = self.active_customer("discord-compatible@example.com")
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="discord extension",
+            actor_id="admin",
+            ip_address=None,
+        )
+        self.strategy_release(version="2.0.0", platform="windows-x64")
+        self.extension_release(product_id=product["id"], version="1.0.0", platform="windows-x64")
+
+        default_manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="discord-compatible-default",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        strategy_manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="discord-compatible-default",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual(["strategy_package"], [release["release_type"] for release in default_manifest["releases"]])
+        self.assertEqual(["DUO"], [release["strategy"] for release in default_manifest["releases"]])
+        self.assertEqual(default_manifest["releases"], strategy_manifest["releases"])
 
     def test_release_manifest_returns_trader_desktop_app_update(self) -> None:
         created = self.active_customer("app-update@example.com")

@@ -7,7 +7,7 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
 ## Features
 
 - HTTPS-ready deployment behind Caddy or another reverse proxy.
-- SQLite database with durable tables for customers, products/strategies, Whop packages, package grants, grant ledger, subscriptions, entitlements, devices, license checks, webhook events, admin users/sessions, and audit log.
+- SQLite database with durable tables for customers, products/strategies/extensions, Whop packages, package grants, grant ledger, subscriptions, entitlements, devices, license checks, webhook events, admin users/sessions, and audit log.
 - Whop server-to-server endpoint secured with Standard Webhooks HMAC headers or an explicit bearer token fallback.
 - Admin web UI:
   - search customers
@@ -18,8 +18,8 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
   - remove individual entitlement rows from a customer
   - block or unblock devices
   - enforce and override per-customer device limits
-  - manage Trader strategy products
-  - map Whop plans/products to one or more strategies with day grants
+  - manage Trader strategy and extension products
+  - map Whop plans/products to one or more licensed products with day grants
 - Trader client endpoint:
   - activate/check by license key, email, customer id, or Whop user id
   - stores machine fingerprint hash and app version
@@ -44,7 +44,7 @@ The endpoint is idempotent by `webhook-id`. Duplicate deliveries return `{"statu
 
 ### Whop Package Mappings
 
-Products are internal Trader strategies, such as DUO or DUOrc. Whop Packages describe what Whop sells.
+Products are internal licensed Trader capabilities, such as DUO, DUOrc, or optional Trader Desktop extensions. Whop Packages describe what Whop sells.
 
 Configure packages in `/admin/packages`:
 
@@ -52,7 +52,7 @@ Configure packages in `/admin/packages`:
 - Type: `plan`, `product`, or `unknown`.
 - Default days: the days granted by the package.
 - Non-license: marks a known Whop access pass as intentionally ignored.
-- Grants: select one or more Trader strategies, with optional per-strategy days.
+- Grants: select one or more licensed products, with optional per-product days.
 
 Old Vercel mappings like:
 
@@ -60,7 +60,16 @@ Old Vercel mappings like:
 plan_AsxYJxMdnQJqW=204,30:337,30:1175,30
 ```
 
-become one Whop Package for `plan_AsxYJxMdnQJqW` with separate grant rows. Each grant chooses a Trader strategy and grants the configured days.
+become one Whop Package for `plan_AsxYJxMdnQJqW` with separate grant rows. Each grant chooses a licensed product and grants the configured days.
+
+Built-in seed products include the optional Trader Desktop extension:
+
+- Display name: `Discord Notifier`
+- Product slug/package id: `discord-notifier`
+- Feature id: `trader.notifications.discord`
+- Release type: `extension_package`
+
+A customer must have an active grant for `trader.notifications.discord` to see or download Discord Notifier extension releases.
 
 Lifecycle handling:
 
@@ -132,7 +141,7 @@ Response:
 
 Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `expired`, `revoked`, `suspended`, `device_blocked`, `device_limit_exceeded`, `invalid_request`, and `rate_limited`.
 
-Trader should allow strategy access only when `status == "active"` and the required `feature_id` is present in `licensed_strategies`.
+Trader should allow strategy or extension access only when `status == "active"` and the required `feature_id` is present in `licensed_strategies`. The field name is legacy; it can contain any active Trader-enabled licensed product, including optional extensions such as `trader.notifications.discord`.
 
 Manual Lifetime grants and other no-expiry entitlements are represented as `expires_at: null` on the affected `licensed_strategies` entries. The top-level `expires_at` is `null` only when all licensed strategies in the response have no expiry.
 
@@ -226,7 +235,7 @@ Request:
   "app_version": "0.5.0",
   "channel": "stable",
   "platform": "macos-arm64",
-  "include_types": ["strategy_package", "trader_desktop"],
+  "include_types": ["strategy_package", "extension_package", "trader_desktop"],
   "installed_packages": [
     { "package_id": "duo-runtime", "version": "1.1.0" },
     { "package_id": "duorc-runtime", "version": "1.0.0" }
@@ -236,12 +245,12 @@ Request:
 
 The same license identifiers as `/api/trader/license/check` are accepted. The response includes the normal license decision plus:
 
-- `releases`: strategy package releases only for strategies the customer is licensed and targeted to use.
+- `releases`: product-bound package releases only for features the customer is licensed and targeted to use.
 - `app_update`: the Trader Desktop target release for the customer when it differs from `app_version`.
 
-If `include_types` is omitted, both `strategy_package` and `trader_desktop` are included. Use `["strategy_package"]` or `["trader_desktop"]` to request one side only.
+If `include_types` is omitted, both `strategy_package` and `trader_desktop` are included for backward compatibility. Future clients should request `extension_package` when they can install optional Trader extensions such as Discord Notifier.
 
-`installed_packages` is optional and lets the server compare each strategy package against the version installed locally. If omitted, older clients still receive the same compatible release rows.
+`installed_packages` is optional and lets the server compare each package against the version installed locally. If omitted, older clients still receive the same compatible release rows.
 
 Release targeting is fully server-side. The client only sees releases it is allowed to see. Admins can target releases by channel, customer id, email, full license key, customer tags/roles, deterministic rollout percent, or disable the release audience entirely.
 
@@ -256,17 +265,26 @@ Response:
   "releases": [
     {
       "id": "release-id",
+      "release_id": "release-id",
       "scope": "strategy",
       "release_type": "strategy_package",
+      "package_id": "duo-runtime",
+      "display_name": "DUO",
       "strategy": "DUO",
+      "product_id": "product-id",
       "feature_id": "strategy.duo.runtime",
+      "required_features": ["strategy.duo.runtime"],
       "version": "1.2.0",
       "required": false,
+      "license_status": "active",
+      "license_source": "whop",
+      "expires_at": "2026-07-03T20:00:00Z",
       "current_version": "1.1.0",
       "target_version": "1.2.0",
       "action": "update",
       "update_available": true,
       "artifact": {
+        "path": "duo-1.2.0.zip",
         "filename": "duo-1.2.0.zip",
         "size_bytes": 123456,
         "sha256": "hex-sha256",
@@ -291,6 +309,7 @@ Response:
     "min_supported_version": "0.1.0",
     "required": false,
     "artifact": {
+      "path": "trader/Trader-Setup-0.1.1-macos-arm64.zip",
       "filename": "Trader-Setup-0.1.1-macos-arm64.zip",
       "size_bytes": 123456,
       "sha256": "hex-sha256",
@@ -305,6 +324,8 @@ Response:
   }
 }
 ```
+
+Extension package releases use the same `releases` array with `release_type: "extension_package"` and `scope: "extension"`. Discord Notifier release rows use `package_id: "discord-notifier"`, `display_name: "Discord Notifier"`, and `required_features: ["trader.notifications.discord"]`.
 
 Trader should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, device-limit-exceeded, or unknown customers receive an empty release list, `app_update: null`, and the same blocking license status.
 
@@ -336,7 +357,7 @@ Request:
 }
 ```
 
-The server checks the license, device limit, platform, and release targeting again before issuing a short-lived download token. Strategy package downloads are allowed only when the license includes that strategy. Trader Desktop downloads are allowed for active licenses only when the customer is targeted for that app release. A customer cannot download a release merely by knowing its `release_id`.
+The server checks the license, device limit, platform, and release targeting again before issuing a short-lived download token. Product-bound package downloads, including `strategy_package` and `extension_package`, are allowed only when the license includes the required product feature. Trader Desktop downloads are allowed for active licenses only when the customer is targeted for that app release. A customer cannot download a release merely by knowing its `release_id`.
 
 Response:
 
@@ -473,7 +494,16 @@ Trader Desktop release fields:
 - Optional signature and signature key id
 - Release notes
 
-Strategy package releases use release type `Strategy package`, choose the strategy in the Strategy field, and keep using feature ids such as `strategy.duo.runtime`.
+Strategy package releases use release type `Strategy package`, choose the strategy in the licensed product field, and keep using feature ids such as `strategy.duo.runtime`.
+
+Extension package releases use release type `Extension package`, choose the licensed extension product, and use the product slug as the package id. For Discord Notifier:
+
+- Seed or create product: `Discord Notifier`, slug/package id `discord-notifier`, feature id `trader.notifications.discord`, Trader enabled, NT8 disabled.
+- Copy one artifact per platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, for example `extensions/discord-notifier/DiscordNotifier-1.0.0-macos-arm64.zip` and `extensions/discord-notifier/DiscordNotifier-1.0.0-windows-x64.zip`.
+- Register two release rows in `/admin/releases`, both with release type `Extension package`, licensed product `Discord Notifier`, product/package id `discord-notifier`, and platform `macos-arm64` or `windows-x64`.
+- Use the existing audience controls (`all`, `allowlist`, `roles/tags`, `percent`, or `disabled`) exactly as for strategy packages.
+
+The database `scope` column is legacy app-vs-product-bound state. Product-bound packages, including `extension_package`, are stored with the existing product-bound scope while `release_type` is the authoritative package taxonomy exposed in manifests.
 
 Customer tags are edited from the customer detail page under `Release targeting tags`. Tags are normalized to lowercase values and are included in license responses for diagnostic visibility.
 
@@ -498,7 +528,7 @@ Create the first admin:
 AUTOEDGE_DATABASE_PATH=data/autoedge.db python3 scripts/create_admin.py admin
 ```
 
-Seed initial strategy products:
+Seed initial strategy and extension products:
 
 ```bash
 AUTOEDGE_DATABASE_PATH=data/autoedge.db python3 scripts/seed_products.py

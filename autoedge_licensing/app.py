@@ -24,7 +24,17 @@ from .security import (
     verify_bearer,
     verify_standard_webhook,
 )
-from .service import DEFAULT_RELEASE_PLATFORM, SUPPORTED_RELEASE_PLATFORMS, LicensingService, parse_time, slugify
+from .service import (
+    DEFAULT_RELEASE_PLATFORM,
+    EXTENSION_PACKAGE_RELEASE_TYPE,
+    STRATEGY_RELEASE_TYPE,
+    SUPPORTED_RELEASE_PLATFORMS,
+    TRADER_DESKTOP_PRODUCT_ID,
+    TRADER_DESKTOP_RELEASE_TYPE,
+    LicensingService,
+    parse_time,
+    slugify,
+)
 from .tradovate import (
     TradovateOAuthClient,
     TradovateOAuthError,
@@ -718,8 +728,8 @@ class AutoEdgeApp:
         products = self.service.list_products(include_inactive=False)
         if request.method == "POST":
             form = request.form()
-            release_type = form.get("release_type") or ("trader_desktop" if form.get("scope") == "app" else "strategy_package")
-            scope = "app" if release_type == "trader_desktop" else "strategy"
+            release_type = form.get("release_type") or (TRADER_DESKTOP_RELEASE_TYPE if form.get("scope") == "app" else STRATEGY_RELEASE_TYPE)
+            scope = "app" if release_type == TRADER_DESKTOP_RELEASE_TYPE else "strategy"
             product_id = form.get("product_id") or None
             self.service.upsert_release(
                 release_id=form.get("release_id") or None,
@@ -1464,7 +1474,7 @@ def releases_page(
     editor_open = "open" if is_editing else ""
     button_text = "Save changes" if is_editing else "Save release"
     cancel_link = '<a class="button secondary" href="/admin/releases">Cancel</a>' if is_editing else ""
-    selected_release_type = selected.get("release_type") or ("trader_desktop" if selected.get("scope") == "app" else "strategy_package")
+    selected_release_type = selected.get("release_type") or (TRADER_DESKTOP_RELEASE_TYPE if selected.get("scope") == "app" else STRATEGY_RELEASE_TYPE)
     required_checked = "checked" if selected.get("is_required", 0) else ""
     active_checked = "checked" if selected.get("is_active", 1) else ""
     selected_audience_mode = selected.get("audience_mode") or "all"
@@ -1491,7 +1501,11 @@ def releases_page(
         product_options.append(f'<option value="{e(product["id"])}" {selected_attr}>{e(display_product_name(product.get("name")))}</option>')
     release_type_options = "\n".join(
         f'<option value="{value}" {"selected" if selected_release_type == value else ""}>{label}</option>'
-        for value, label in (("strategy_package", "Strategy package"), ("trader_desktop", "Trader Desktop"))
+        for value, label in (
+            (STRATEGY_RELEASE_TYPE, "Strategy package"),
+            (EXTENSION_PACKAGE_RELEASE_TYPE, "Extension package"),
+            (TRADER_DESKTOP_RELEASE_TYPE, "Trader Desktop"),
+        )
     )
     channel_options = "\n".join(
         f'<option value="{value}" {"selected" if selected.get("channel", "stable") == value else ""}>{label}</option>'
@@ -1513,7 +1527,7 @@ def releases_page(
         f"""
         <tr>
           <td><strong>{e(release.get('version'))}</strong><small>{e(release.get('release_notes'))}</small></td>
-          <td>{e(release.get('release_type') or ('trader_desktop' if release.get('scope') == 'app' else 'strategy_package'))}<small>{e(display_product_name(release.get('product_name')) if release.get('product_name') else release.get('product_key') or 'trader-desktop')}</small></td>
+          <td>{e(release.get('release_type') or (TRADER_DESKTOP_RELEASE_TYPE if release.get('scope') == 'app' else STRATEGY_RELEASE_TYPE))}<small>{e(display_product_name(release.get('product_name')) if release.get('product_name') else release.get('product_key') or 'trader-desktop')}</small></td>
           <td>{e(release.get('channel'))}</td>
           <td>{e(release.get('audience_mode') or 'all')}<small>{e(release.get('rollout_percent') if release.get('rollout_percent') is not None else 100)}%</small></td>
           <td>{format_bool(release.get('is_required'))}</td>
@@ -1531,7 +1545,7 @@ def releases_page(
     <header class="title-row">
       <div>
         <h1>Releases</h1>
-        <p>Register Trader installers and strategy package artifacts. Files must live under <code>{e(artifact_dir)}</code>.</p>
+        <p>Register Trader installers, strategy packages, and extension package artifacts. Files must live under <code>{e(artifact_dir)}</code>.</p>
       </div>
     </header>
     <section class="panel release-editor-panel">
@@ -1542,8 +1556,8 @@ def releases_page(
         <input type="hidden" name="release_id" value="{e(selected.get('id'))}">
         <div class="grid-form release-form">
           <label>Release type <select name="release_type">{release_type_options}</select></label>
-          <label>Strategy <select name="product_id">{"".join(product_options)}</select></label>
-          <label>Product id <input name="product_key" placeholder="trader-desktop" value="{e(selected.get('product_key') or ('trader-desktop' if selected_release_type == 'trader_desktop' else ''))}"></label>
+          <label>Licensed product <select name="product_id">{"".join(product_options)}</select></label>
+          <label>Product/package id <input name="product_key" placeholder="trader-desktop or discord-notifier" value="{e(selected.get('product_key') or (TRADER_DESKTOP_PRODUCT_ID if selected_release_type == TRADER_DESKTOP_RELEASE_TYPE else ''))}"></label>
           <label>Channel <select name="channel">{channel_options}</select></label>
           <label>Version <input name="version" required placeholder="1.0.0" value="{e(selected.get('version'))}"></label>
           <label class="checkbox"><input name="is_required" type="checkbox" {required_checked}> Required</label>

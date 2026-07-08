@@ -105,9 +105,12 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 
 STRATEGY_RELEASE_TYPE = "strategy_package"
+EXTENSION_PACKAGE_RELEASE_TYPE = "extension_package"
 TRADER_DESKTOP_RELEASE_TYPE = "trader_desktop"
 TRADER_DESKTOP_PRODUCT_ID = "trader-desktop"
-RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
+PACKAGE_RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, EXTENSION_PACKAGE_RELEASE_TYPE}
+DEFAULT_MANIFEST_RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
+RELEASE_TYPES = PACKAGE_RELEASE_TYPES | {TRADER_DESKTOP_RELEASE_TYPE}
 DEFAULT_RELEASE_PLATFORM = "macos-arm64"
 SUPPORTED_RELEASE_PLATFORMS = ("macos-arm64", "windows-x64")
 CHANNEL_PRIORITY = {"stable": 0, "beta": 1, "canary": 2, "internal": 3}
@@ -143,6 +146,8 @@ def release_type_from_scope(scope: str | None) -> str:
 
 
 def scope_from_release_type(release_type: str) -> str:
+    # The persisted scope column is legacy app-vs-product-bound state. Use
+    # release_type for the package taxonomy exposed to clients.
     return "app" if release_type == TRADER_DESKTOP_RELEASE_TYPE else "strategy"
 
 
@@ -205,11 +210,19 @@ def release_action_for_row(release: dict[str, Any], current_version: str | None)
     return action
 
 
+def manifest_scope_for_release_type(release_type: str, stored_scope: str | None) -> str:
+    if release_type == TRADER_DESKTOP_RELEASE_TYPE:
+        return "app"
+    if release_type == EXTENSION_PACKAGE_RELEASE_TYPE:
+        return "extension"
+    return stored_scope or "strategy"
+
+
 def normalize_release_types(values: list[str] | None) -> set[str]:
     if not values:
-        return {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
+        return set(DEFAULT_MANIFEST_RELEASE_TYPES)
     normalized = {str(value).strip() for value in values if str(value).strip() in RELEASE_TYPES}
-    return normalized or {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
+    return normalized or set(DEFAULT_MANIFEST_RELEASE_TYPES)
 
 
 def normalize_tag(value: str | None) -> str:
@@ -833,7 +846,7 @@ class LicensingService:
         if not normalized_path:
             raise ValueError("Artifact path is required.")
         if normalized_scope == "strategy" and not product_id:
-            raise ValueError("Strategy release requires a product.")
+            raise ValueError("Product-bound package release requires a product.")
         if normalized_scope == "app":
             product_id = None
             normalized_product_key = normalized_product_key or TRADER_DESKTOP_PRODUCT_ID
@@ -854,7 +867,7 @@ class LicensingService:
             if product_id:
                 product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
                 if product is None:
-                    raise ValueError("Strategy product not found.")
+                    raise ValueError("Licensed product not found.")
                 normalized_product_key = normalized_product_key or product["slug"]
             existing = None
             if release_id:
@@ -2286,12 +2299,13 @@ class LicensingService:
                 "license": license_response,
             }
 
-        licensed_product_ids = {grant["product_id"] for grant in license_response["licensed_strategies"]}
+        license_by_product_id = {grant["product_id"]: grant for grant in license_response["licensed_strategies"]}
+        licensed_product_ids = set(license_by_product_id)
         normalized_channel = (channel or "stable").strip().lower()
         normalized_platform = (platform or DEFAULT_RELEASE_PLATFORM).strip().lower()
         requested_types = normalize_release_types(include_types)
         installed_versions = self._installed_package_versions(installed_packages)
-        strategy_rows: list[dict[str, Any]] = []
+        package_rows: list[dict[str, Any]] = []
         app_release: dict[str, Any] | None = None
         denied_releases: list[dict[str, Any]] = []
         with self.database.session() as connection:
@@ -2308,31 +2322,40 @@ class LicensingService:
                     "license": license_response,
                 }
             customer = dict(customer_row)
-            if STRATEGY_RELEASE_TYPE in requested_types:
-                if licensed_product_ids:
-                    rows = connection.execute(
-                        """
-                        SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
-                               products.feature_id AS feature_id
-                        FROM trader_releases
-                        LEFT JOIN products ON products.id = trader_releases.product_id
-                        WHERE trader_releases.is_active = 1
-                          AND COALESCE(trader_releases.is_published, trader_releases.is_active) = 1
-                          AND trader_releases.platform = ?
-                          AND COALESCE(trader_releases.release_type, 'strategy_package') = 'strategy_package'
-                          AND trader_releases.product_id IN ({placeholders})
-                        ORDER BY trader_releases.updated_at DESC, trader_releases.created_at DESC
-                        """.format(placeholders=",".join("?" for _ in licensed_product_ids)),
-                        (normalized_platform, *licensed_product_ids),
-                    ).fetchall()
-                    selected, denied = self._select_visible_releases(
-                        [dict(row) for row in rows],
-                        customer,
-                        normalized_channel,
-                        group_by="product_id",
-                    )
-                    strategy_rows = selected
-                    denied_releases.extend(denied)
+            requested_package_types = PACKAGE_RELEASE_TYPES & requested_types
+            if requested_package_types and licensed_product_ids:
+                type_placeholders = ",".join("?" for _ in requested_package_types)
+                product_placeholders = ",".join("?" for _ in licensed_product_ids)
+                rows = connection.execute(
+                    """
+                    SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
+                           products.feature_id AS feature_id
+                    FROM trader_releases
+                    LEFT JOIN products ON products.id = trader_releases.product_id
+                    WHERE trader_releases.is_active = 1
+                      AND COALESCE(trader_releases.is_published, trader_releases.is_active) = 1
+                      AND trader_releases.platform = ?
+                      AND COALESCE(
+                            trader_releases.release_type,
+                            CASE WHEN trader_releases.scope = 'app' THEN 'trader_desktop' ELSE 'strategy_package' END
+                          ) IN ({type_placeholders})
+                      AND trader_releases.product_id IN ({product_placeholders})
+                    ORDER BY trader_releases.updated_at DESC, trader_releases.created_at DESC
+                    """.format(type_placeholders=type_placeholders, product_placeholders=product_placeholders),
+                    (normalized_platform, *sorted(requested_package_types), *licensed_product_ids),
+                ).fetchall()
+                package_candidates = [dict(row) for row in rows]
+                for release in package_candidates:
+                    release_type = release.get("release_type") or release_type_from_scope(release.get("scope"))
+                    release["_package_group_key"] = f"{release_type}:{release.get('product_id')}"
+                selected, denied = self._select_visible_releases(
+                    package_candidates,
+                    customer,
+                    normalized_channel,
+                    group_by="_package_group_key",
+                )
+                package_rows = selected
+                denied_releases.extend(denied)
             if TRADER_DESKTOP_RELEASE_TYPE in requested_types:
                 app_rows = connection.execute(
                     """
@@ -2377,10 +2400,11 @@ class LicensingService:
             self._release_manifest_item(
                 release,
                 self._current_version_for_release(release, app_version, installed_versions),
+                license_by_product_id.get(release.get("product_id")),
             )
-            for release in strategy_rows
+            for release in package_rows
         ]
-        releases.sort(key=lambda item: (item["scope"], item.get("strategy") or "", item["version"]))
+        releases.sort(key=lambda item: (item["scope"], item["release_type"], item.get("display_name") or item.get("strategy") or "", item["version"]))
         app_update = None
         if app_release:
             app_current_version = self._current_version_for_release(app_release, app_version, installed_versions)
@@ -2439,7 +2463,8 @@ class LicensingService:
                 "expires_at": None,
             }
 
-        licensed_product_ids = {grant["product_id"] for grant in license_response["licensed_strategies"]}
+        license_by_product_id = {grant["product_id"]: grant for grant in license_response["licensed_strategies"]}
+        licensed_product_ids = set(license_by_product_id)
         customer = license_response["customer"]
         device = license_response["device"]
         if not customer or not device:
@@ -2465,7 +2490,7 @@ class LicensingService:
             if release is None:
                 return {"status": "not_found", "message": "Release not found.", "release": None, "token": None, "expires_at": None}
             release_type = release["release_type"] or release_type_from_scope(release["scope"])
-            if release_type == STRATEGY_RELEASE_TYPE and release["product_id"] not in licensed_product_ids:
+            if release_type in PACKAGE_RELEASE_TYPES and release["product_id"] not in licensed_product_ids:
                 self._record_release_download(connection, dict(release), customer["id"], device["id"], None, "not_licensed", ip_address, user_agent)
                 return {"status": "not_licensed", "message": "The license does not allow this release.", "release": None, "token": None, "expires_at": None}
             full_customer = connection.execute("SELECT * FROM customers WHERE id = ?", (customer["id"],)).fetchone()
@@ -2513,6 +2538,7 @@ class LicensingService:
                 "release": self._release_manifest_item(
                     release_dict,
                     self._current_version_for_release(release_dict, app_version, installed_versions),
+                    license_by_product_id.get(release_dict.get("product_id")),
                 ),
                 "token": token,
                 "expires_at": iso(expires),
@@ -2566,26 +2592,43 @@ class LicensingService:
                 "size_bytes": artifact_file.stat().st_size,
             }
 
-    def _release_manifest_item(self, release: dict[str, Any], current_version: str | None) -> dict[str, Any]:
+    def _release_manifest_item(
+        self,
+        release: dict[str, Any],
+        current_version: str | None,
+        license_grant: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         release_type = release.get("release_type") or release_type_from_scope(release.get("scope"))
         action = release_action_for_row(release, current_version)
+        feature_id = release.get("feature_id")
+        package_id = release.get("product_key") or release.get("product_slug") or release.get("product_id")
+        product_name = release.get("product_name")
+        display_name = display_strategy_name(product_name) if release_type == STRATEGY_RELEASE_TYPE else (product_name or package_id)
         return {
             "id": release["id"],
-            "scope": release["scope"],
+            "release_id": release["id"],
+            "scope": manifest_scope_for_release_type(release_type, release.get("scope")),
             "release_type": release_type,
-            "strategy": display_strategy_name(release.get("product_name")) if release.get("product_name") else None,
+            "package_id": package_id,
+            "display_name": display_name,
+            "strategy": display_strategy_name(product_name) if release_type == STRATEGY_RELEASE_TYPE and product_name else None,
             "product_id": release.get("product_id"),
-            "feature_id": release.get("feature_id"),
+            "feature_id": feature_id,
+            "required_features": [feature_id] if feature_id else [],
             "channel": release["channel"],
             "platform": release["platform"],
             "version": release["version"],
             "min_supported_version": release.get("min_supported_version"),
             "required": bool(release["is_required"]),
+            "license_status": license_grant.get("status") if license_grant else None,
+            "license_source": license_grant.get("source") if license_grant else None,
+            "expires_at": license_grant.get("expires_at") if license_grant else None,
             "current_version": current_version,
             "target_version": release["version"],
             "action": action,
             "update_available": action != "current",
             "artifact": {
+                "path": release.get("artifact_path"),
                 "filename": release["artifact_filename"],
                 "size_bytes": release.get("size_bytes"),
                 "sha256": release.get("sha256"),
@@ -2612,6 +2655,7 @@ class LicensingService:
             "min_supported_version": release.get("min_supported_version"),
             "required": bool(release.get("is_required")),
             "artifact": {
+                "path": release.get("artifact_path"),
                 "filename": release["artifact_filename"],
                 "size_bytes": release.get("size_bytes"),
                 "sha256": release.get("sha256"),

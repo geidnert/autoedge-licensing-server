@@ -515,8 +515,11 @@ class AppEndpointTests(unittest.TestCase):
         )
 
         self.assertIn("Trader Desktop", html)
+        self.assertIn("Extension package", html)
         self.assertIn("trader_desktop", html)
         self.assertIn("trader-desktop", html)
+        self.assertIn("Licensed product", html)
+        self.assertIn("Product/package id", html)
         self.assertIn("<th>Channel</th>", html)
         self.assertNotIn("Channel / Target", html)
         self.assertNotIn("Target Windows x64", html)
