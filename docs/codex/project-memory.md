@@ -1,6 +1,6 @@
 # AutoEdge Licensing Server Codex Memory
 
-Last refreshed: 2026-07-04
+Last refreshed: 2026-07-08
 
 ## Repository Shape
 
@@ -135,6 +135,10 @@ Trader Desktop license checks:
   `machine_fingerprint`.
 - Return `licensed_strategies` with internal product id, slug, name,
   `feature_id`, status, source, and expiry.
+- Manual Lifetime grants and other no-expiry entitlements are stored as
+  `expires_at = NULL`; affected strategy entries return `expires_at: null`, and
+  the top-level expiry is `null` only when every licensed strategy has no
+  expiry.
 - Strategy access should be allowed only when `status == "active"` and the
   required `feature_id` is present.
 
@@ -145,6 +149,9 @@ NT8 license checks:
 - Products have `nt8_strategy_key`, `trader_enabled`, and `nt8_enabled`.
 - Return `licensed: true`, `strategy_keys`, and an HMAC-signed opaque lease when
   active.
+- Manual Lifetime grants and other no-expiry entitlements also return
+  `expires_at: null` on affected NT8 strategy entries, with a `null` top-level
+  expiry only when every licensed strategy has no expiry.
 - If a requested strategy is not licensed, return `unlicensed_strategy` and no
   lease.
 - NT8 leases are not public-key offline-verifiable. Do not embed server secrets
@@ -329,6 +336,13 @@ Important behavior:
 
 - Admin expiry inputs and display are ET (`America/New_York`), but database and
   API timestamps are UTC with `Z`.
+- Manual strategy access can be set to `Date/time` or `Lifetime`; `Lifetime`
+  uses the existing nullable `entitlements.expires_at` storage and should render
+  as Lifetime for active/trialing no-expiry rows.
+- Customer entitlement rows have a per-row Remove action in the visible
+  Entitlements table. It deletes the selected `entitlements` row and writes an
+  `entitlement.removed` audit event; Whop grant ledger rows keep their nullable
+  entitlement reference.
 - Product/admin pages intentionally hide internal slugs and feature ids in user
   facing tables where tests assert that behavior.
 - Customer tags are normalized to lowercase release-targeting tags.
@@ -353,6 +367,18 @@ Current deployment documented in `README.md`:
 - Database: `/var/lib/autoedge-licensing/autoedge.db`
 - Artifacts: `/var/lib/autoedge-licensing/artifacts`
 - Environment file: `/etc/autoedge-licensing.env`
+
+Operational SSH notes:
+
+- Use `root@192.168.50.141` for release/deployment server SSH.
+- Prefer plain interactive-style commands, for example
+  `ssh root@192.168.50.141` and `scp <file> root@192.168.50.141:/tmp/<file>`.
+- Do not rely on `ssh -o BatchMode=yes` or BatchMode `scp`; BatchMode can fail
+  even when normal SSH works from Codex.
+- For release registration, SSH to the server, `cd /opt/autoedge-licensing`,
+  source `/etc/autoedge-licensing.env`, then use the existing
+  `autoedge_licensing` service code and `LicensingService.upsert_release`,
+  matching the fields used by the Trader release scripts.
 
 nginx must proxy root-relative `/privacy`, `/terms`, `/admin`, `/api/trader/`,
 `/api/nt8/`, and exact `/api/whop/entitlements` paths without mounting the app

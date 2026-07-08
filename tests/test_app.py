@@ -120,6 +120,53 @@ class AppEndpointTests(unittest.TestCase):
         self.assertTrue(first.headers[0][1].startswith("/admin/customers/"))
         self.assertTrue(second.headers[0][1].startswith("/admin/customers/"))
 
+    def test_admin_manual_entitlement_can_be_lifetime(self) -> None:
+        product = self.app.service.upsert_product(
+            slug="lifetime-strategy",
+            name="Lifetime Strategy",
+            feature_id="strategy.lifetime.runtime",
+        )
+        created = self.app.service.create_or_update_customer(email="lifetime@example.com")
+
+        response = self.admin_customer_entitlement_response(
+            created.customer["id"],
+            {
+                "product_id": product["id"],
+                "status": "active",
+                "expires_mode": "lifetime",
+                "expires_at": "2026-12-31T23:59",
+                "reason": "manual lifetime grant",
+            },
+        )
+        detail = self.app.service.customer_detail(created.customer["id"])
+
+        self.assertEqual(303, response.status.value)
+        self.assertEqual("active", detail["entitlements"][0]["status"])
+        self.assertIsNone(detail["entitlements"][0]["expires_at"])
+
+    def test_admin_can_remove_entitlement_from_customer(self) -> None:
+        product = self.app.service.upsert_product(
+            slug="remove-strategy",
+            name="Remove Strategy",
+            feature_id="strategy.remove.runtime",
+        )
+        created = self.app.service.create_or_update_customer(email="remove@example.com")
+        entitlement = self.app.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=product["id"],
+            status="active",
+            expires_at=None,
+            reason="remove test",
+            actor_id="admin",
+            ip_address=None,
+        )
+
+        response = self.admin_customer_remove_entitlement_response(created.customer["id"], entitlement["id"])
+        detail = self.app.service.customer_detail(created.customer["id"])
+
+        self.assertEqual(303, response.status.value)
+        self.assertEqual([], detail["entitlements"])
+
     def test_whop_endpoint_rejects_missing_auth(self) -> None:
         status, _, body = self.call(
             "POST",
@@ -307,6 +354,7 @@ class AppEndpointTests(unittest.TestCase):
             },
                 "entitlements": [
                     {
+                        "id": "entitlement-current",
                         "product_name": "DUO Runtime",
                         "feature_id": "strategy.duo.runtime",
                         "status": "active",
@@ -318,6 +366,7 @@ class AppEndpointTests(unittest.TestCase):
                 ],
                 "effective_entitlements": [
                     {
+                        "id": "entitlement-current",
                         "product_name": "DUO Runtime",
                         "feature_id": "strategy.duo.runtime",
                         "status": "active",
@@ -352,7 +401,12 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("DUO", html)
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
+        self.assertIn('name="expires_mode" type="radio" value="date" checked', html)
+        self.assertIn('name="expires_mode" type="radio" value="lifetime"', html)
         self.assertIn('name="expires_at" type="datetime-local" step="1"', html)
+        self.assertIn("<td>Lifetime</td>", html)
+        self.assertIn("/admin/customers/customer-001/entitlements/entitlement-current/remove", html)
+        self.assertIn(">Remove</button>", html)
         self.assertIn("Expiry ET", html)
         self.assertIn("Whop membership", html)
         self.assertIn("2026-06-03 20:00:00 ET", html)
@@ -808,6 +862,36 @@ class AppEndpointTests(unittest.TestCase):
             }
         )
         return self.app.admin_customers(request, {"id": "admin-001", "username": "admin"})
+
+    def admin_customer_entitlement_response(self, customer_id: str, fields: dict[str, str]):
+        body = urlencode(fields).encode("utf-8")
+        request = Request(
+            {
+                "REQUEST_METHOD": "POST",
+                "PATH_INFO": f"/admin/customers/{customer_id}/entitlements",
+                "QUERY_STRING": "",
+                "CONTENT_LENGTH": str(len(body)),
+                "CONTENT_TYPE": "application/x-www-form-urlencoded",
+                "wsgi.input": io.BytesIO(body),
+                "REMOTE_ADDR": "127.0.0.1",
+            }
+        )
+        return self.app.admin_customer_detail(request, {"id": "admin-001", "username": "admin"})
+
+    def admin_customer_remove_entitlement_response(self, customer_id: str, entitlement_id: str):
+        body = urlencode({"csrf": "csrf-token"}).encode("utf-8")
+        request = Request(
+            {
+                "REQUEST_METHOD": "POST",
+                "PATH_INFO": f"/admin/customers/{customer_id}/entitlements/{entitlement_id}/remove",
+                "QUERY_STRING": "",
+                "CONTENT_LENGTH": str(len(body)),
+                "CONTENT_TYPE": "application/x-www-form-urlencoded",
+                "wsgi.input": io.BytesIO(body),
+                "REMOTE_ADDR": "127.0.0.1",
+            }
+        )
+        return self.app.admin_customer_detail(request, {"id": "admin-001", "username": "admin"})
 
     def call_raw(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> tuple[str, list[tuple[str, str]], str]:
         path_info, _, query_string = path.partition("?")

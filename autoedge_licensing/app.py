@@ -791,11 +791,21 @@ class AutoEdgeApp:
                 customer_id=customer_id,
                 product_id=form.get("product_id", ""),
                 status=form.get("status", ""),
-                expires_at=admin_time_input_to_utc(form.get("expires_at")),
+                expires_at=admin_entitlement_expiry_from_form(form),
                 reason=form.get("reason") or None,
                 actor_id=admin["id"],
                 ip_address=request.ip,
             )
+            return redirect(f"/admin/customers/{customer_id}")
+        if len(parts) == 6 and parts[3] == "entitlements" and parts[5] == "remove" and request.method == "POST":
+            removed = self.service.remove_entitlement(
+                customer_id=customer_id,
+                entitlement_id=parts[4],
+                actor_id=admin["id"],
+                ip_address=request.ip,
+            )
+            if not removed:
+                return text_response(HTTPStatus.NOT_FOUND, "Entitlement not found")
             return redirect(f"/admin/customers/{customer_id}")
         if len(parts) == 4 and parts[3] == "tags" and request.method == "POST":
             form = request.form()
@@ -997,6 +1007,15 @@ def format_admin_time(value: Any) -> str:
     return f"{local:%Y-%m-%d %H:%M:%S} {ADMIN_TIME_LABEL}"
 
 
+def format_entitlement_expiry(entitlement: dict[str, Any]) -> str:
+    formatted = format_admin_time(entitlement.get("expires_at"))
+    if formatted:
+        return formatted
+    if entitlement.get("status") in {"active", "trialing"}:
+        return "Lifetime"
+    return ""
+
+
 def admin_time_input_to_utc(value: str | None) -> str | None:
     if value is None or not value.strip():
         return None
@@ -1010,6 +1029,12 @@ def admin_time_input_to_utc(value: str | None) -> str | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=ADMIN_TIME_ZONE)
     return parsed.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def admin_entitlement_expiry_from_form(form: dict[str, str]) -> str | None:
+    if form.get("expires_mode") == "lifetime":
+        return None
+    return admin_time_input_to_utc(form.get("expires_at"))
 
 
 def parse_optional_int(value: str | None) -> int | None:
@@ -1574,15 +1599,18 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
     product_options = "\n".join(f'<option value="{e(product["id"])}">{e(display_product_name(product.get("name")))}</option>' for product in products)
     key_notice = f'<p class="notice">New license key: <code>{e(created_key)}</code>. Store it now; only the last four characters are retained and the previous key no longer works.</p>' if created_key else ""
     entitlements = "\n".join(
-        f"""
+        (
+            f"""
         <tr>
           <td>{e(display_product_name(entitlement.get('product_name')))}</td>
           <td><strong class="status {e(entitlement['status'])}">{e(entitlement['status'])}</strong><small>{e(entitlement['source'])}{' - ' + e(entitlement.get('whop_membership_id')) if entitlement.get('whop_membership_id') else ''}</small></td>
-          <td>{e(format_admin_time(entitlement.get('expires_at')))}</td>
+          <td>{e(format_entitlement_expiry(entitlement))}</td>
           <td>{e(entitlement.get('manual_reason'))}</td>
           <td>{e(format_admin_time(entitlement.get('updated_at')))}</td>
+          <td>{entitlement_remove_form(customer['id'], entitlement, csrf)}</td>
         </tr>
         """
+        )
         for entitlement in detail.get("effective_entitlements", detail["entitlements"])
     )
     entitlement_history = "\n".join(
@@ -1591,7 +1619,7 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
           <td>{e(display_product_name(entitlement.get('product_name')))}</td>
           <td>{e(entitlement.get('whop_membership_id'))}</td>
           <td><strong class="status {e(entitlement['status'])}">{e(entitlement['status'])}</strong><small>{e(entitlement['source'])}</small></td>
-          <td>{e(format_admin_time(entitlement.get('expires_at')))}</td>
+          <td>{e(format_entitlement_expiry(entitlement))}</td>
           <td>{e(entitlement.get('manual_reason'))}</td>
           <td>{e(format_admin_time(entitlement.get('updated_at')))}</td>
         </tr>
@@ -1716,14 +1744,19 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
             <option value="suspended">suspended</option>
           </select>
         </label>
-        <label><span class="label-row">Expiry ET {info_tip('Select the expiry date and time in US Eastern trading time. Leave empty for no expiry.')}</span><input name="expires_at" type="datetime-local" step="1"></label>
+        <div class="expiry-mode">
+          <span class="label-row">Expiry {info_tip('Choose Lifetime for no expiry, or Date/time to expire access at the selected US Eastern time.')}</span>
+          <label class="checkbox"><input name="expires_mode" type="radio" value="date" checked> Date/time</label>
+          <label class="checkbox"><input name="expires_mode" type="radio" value="lifetime"> Lifetime</label>
+        </div>
+        <label><span class="label-row">Expiry ET {info_tip('Used only when Date/time is selected. Times are US Eastern trading time.')}</span><input name="expires_at" type="datetime-local" step="1"></label>
         <label>Reason <input name="reason"></label>
         <button type="submit">Apply</button>
       </form>
     </section>
     <section class="panel">
       <h2>Entitlements</h2>
-      <table><thead><tr><th>Strategy</th><th>Status</th><th>Expiry ET</th><th>Reason</th><th>Updated ET</th></tr></thead><tbody>{entitlements or '<tr><td colspan="5">No entitlements.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Strategy</th><th>Status</th><th>Expiry ET</th><th>Reason</th><th>Updated ET</th><th></th></tr></thead><tbody>{entitlements or '<tr><td colspan="6">No entitlements.</td></tr>'}</tbody></table>
       <details class="history-details">
         <summary>Entitlement history <small>Raw Whop/manual rows, including previous memberships.</small></summary>
         <table><thead><tr><th>Strategy</th><th>Whop membership</th><th>Status</th><th>Expiry ET</th><th>Reason</th><th>Updated ET</th></tr></thead><tbody>{entitlement_history or '<tr><td colspan="6">No entitlement history.</td></tr>'}</tbody></table>
@@ -1748,6 +1781,19 @@ def customer_detail_page(detail: dict[str, Any], products: list[dict[str, Any]],
     """
 
 
+def entitlement_remove_form(customer_id: str, entitlement: dict[str, Any], csrf: str) -> str:
+    entitlement_id = entitlement.get("id")
+    if not entitlement_id:
+        return ""
+    product_name = display_product_name(entitlement.get("product_name"))
+    return f"""
+    <form class="inline-form" method="post" action="/admin/customers/{e(customer_id)}/entitlements/{e(entitlement_id)}/remove">
+      <input type="hidden" name="csrf" value="{e(csrf)}">
+      <button class="button danger small" type="submit" onclick="return confirm('Remove {e(product_name)} access from this customer?')">Remove</button>
+    </form>
+    """
+
+
 STYLE = """
 :root { color-scheme: light; --bg: #f6f7f8; --panel: #ffffff; --text: #202428; --muted: #64707d; --line: #d8dee4; --accent: #136f63; --danger: #b42318; --warn: #a15c00; }
 * { box-sizing: border-box; }
@@ -1766,6 +1812,8 @@ button, .button { min-height: 36px; padding: 0 14px; border: 1px solid #0f5d53; 
 button:hover, .button:hover { background: #0f5d53; }
 .button.secondary { background: #fff; color: #0f5d53; }
 .button.secondary:hover { background: #eef9f6; }
+.button.danger { background: #fff; color: var(--danger); border-color: #ffd2cf; }
+.button.danger:hover { background: #fff0ef; }
 .button.small { min-height: 30px; padding: 0 10px; font-size: 13px; }
 input, select, textarea { min-height: 36px; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); }
 textarea { resize: vertical; font: inherit; }
@@ -1810,6 +1858,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .history-details table { margin-top: 10px; }
 .device-limit-form { grid-template-columns: minmax(180px, 260px) auto; margin-bottom: 12px; }
 .customer-tags-form { grid-template-columns: minmax(260px, 420px) auto; }
+.expiry-mode { display: grid; gap: 6px; color: #34404c; font-weight: 600; }
+.expiry-mode .checkbox { font-weight: 500; }
 .checkbox { min-height: 36px; display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: auto; min-height: auto; }
 .grant-table { margin: 8px 0 14px; }
@@ -1817,6 +1867,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .grant-list { display: grid; gap: 6px; }
 .grant-list span { display: block; }
 .form-actions { display: flex; gap: 10px; align-items: center; }
+.inline-form { display: inline-flex; margin: 0; }
 .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .facts div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
 .facts span { display: block; color: var(--muted); margin-bottom: 6px; }

@@ -14,6 +14,8 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
   - inspect Whop IDs, email, license key suffix, subscriptions, entitlements, devices, check-ins, and audit events
   - manually grant, revoke, suspend, or expire strategy access
   - set expiry dates
+  - set manual strategy access to Lifetime with no expiry
+  - remove individual entitlement rows from a customer
   - block or unblock devices
   - enforce and override per-customer device limits
   - manage Trader strategy products
@@ -132,6 +134,8 @@ Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `expired`, `re
 
 Trader should allow strategy access only when `status == "active"` and the required `feature_id` is present in `licensed_strategies`.
 
+Manual Lifetime grants and other no-expiry entitlements are represented as `expires_at: null` on the affected `licensed_strategies` entries. The top-level `expires_at` is `null` only when all licensed strategies in the response have no expiry.
+
 `device_limit_exceeded` means the customer already has the maximum number of active licensed, non-blocked machines. Trader must block strategy access and must not offer package downloads for that machine. If an admin lowers a customer limit below the current active device count, only the earliest active device(s) up to the new limit remain allowed; later devices are denied until the admin deauthorizes/resets devices or raises the limit. Admins can deauthorize a device, reset all devices for a customer, or set a customer-specific max device override in the customer detail page.
 
 ### NinjaTrader 8 License Check
@@ -203,6 +207,8 @@ Response:
 ```
 
 Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `unlicensed_strategy`, `expired`, `revoked`, `suspended`, `device_blocked`, `device_limit_exceeded`, `invalid_request`, and `rate_limited`. NT8 should allow strategy use only when `licensed == true` and the required strategy key is present in `strategy_keys`.
+
+Manual Lifetime grants and other no-expiry entitlements are represented as `expires_at: null` on the affected `strategies` entries. The top-level NT8 `expires_at` is `null` only when all licensed strategies in the response have no expiry.
 
 The `lease.token` is HMAC-signed by the server and is useful as an opaque cache marker and for future server-side validation. It is not a public-key offline-verifiable token; do not embed the server lease secret in NT8. If true offline signature verification becomes required, add an asymmetric signing dependency and ship only a public key in NT8.
 

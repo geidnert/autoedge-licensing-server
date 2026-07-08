@@ -1283,6 +1283,48 @@ class LicensingService:
             row = connection.execute("SELECT * FROM entitlements WHERE id = ?", (entitlement_id,)).fetchone()
             return dict(row)
 
+    def remove_entitlement(
+        self,
+        *,
+        customer_id: str,
+        entitlement_id: str,
+        actor_id: str,
+        ip_address: str | None,
+    ) -> bool:
+        with self.database.session() as connection:
+            row = connection.execute(
+                """
+                SELECT entitlements.*, products.name AS product_name
+                FROM entitlements
+                JOIN products ON products.id = entitlements.product_id
+                WHERE entitlements.id = ? AND entitlements.customer_id = ?
+                """,
+                (entitlement_id, customer_id),
+            ).fetchone()
+            if row is None:
+                return False
+
+            entitlement = dict(row)
+            connection.execute("DELETE FROM entitlements WHERE id = ?", (entitlement_id,))
+            self.audit(
+                connection,
+                "admin",
+                actor_id,
+                "entitlement.removed",
+                "entitlement",
+                entitlement_id,
+                {
+                    "customer_id": customer_id,
+                    "product_id": entitlement.get("product_id"),
+                    "product_name": entitlement.get("product_name"),
+                    "source": entitlement.get("source"),
+                    "status": entitlement.get("status"),
+                    "expires_at": entitlement.get("expires_at"),
+                },
+                ip_address,
+            )
+            return True
+
     def set_device_blocked(
         self,
         *,

@@ -417,6 +417,30 @@ class LicensingServiceTests(unittest.TestCase):
                 ip_address=None,
             )
 
+    def test_remove_entitlement_deletes_row_and_audits(self) -> None:
+        created = self.service.create_or_update_customer(email="remove-service@example.com")
+        entitlement = self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at=None,
+            reason="temporary",
+            actor_id="admin",
+            ip_address=None,
+        )
+
+        removed = self.service.remove_entitlement(
+            customer_id=created.customer["id"],
+            entitlement_id=entitlement["id"],
+            actor_id="admin",
+            ip_address=None,
+        )
+        detail = self.service.customer_detail(created.customer["id"])
+
+        self.assertTrue(removed)
+        self.assertEqual([], detail["entitlements"])
+        self.assertTrue(any(audit["action"] == "entitlement.removed" for audit in detail["audit"]))
+
     def test_expired_grant_returns_expired_without_strategies(self) -> None:
         created = self.service.create_or_update_customer(email="expired@example.com")
         self.service.manual_set_entitlement(
