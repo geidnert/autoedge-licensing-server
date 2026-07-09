@@ -20,7 +20,21 @@ DEFAULT_PRODUCTS = [
     {"slug": "orboib-runtime", "name": "ORBOib Runtime", "feature_id": "strategy.orboib.runtime"},
     {"slug": "adam-runtime", "name": "ADAM Runtime", "feature_id": "strategy.adam.runtime"},
     {"slug": "eve-runtime", "name": "EVE Runtime", "feature_id": "strategy.eve.runtime"},
-    {"slug": "mich-runtime", "name": "MICH Runtime", "feature_id": "strategy.mich.runtime"},
+    {
+        "slug": "mich-runtime",
+        "name": "MICH Runtime",
+        "feature_id": "strategy.mich.runtime",
+        "metadata": {
+            "seeded": True,
+            "strategy_id": "mich",
+            "package_kind": "strategy_package",
+            "release_type": "strategy_package",
+            "runtime_package_id": "mich-runtime",
+            "entry_assembly": "Trader.Strategies.Mich.dll",
+            "initial_runtime_version": "0.1.0",
+            "supported_platforms": ["macos-arm64", "windows-x64"],
+        },
+    },
     {"slug": "hugo-runtime", "name": "HUGO Runtime", "feature_id": "strategy.hugo.runtime"},
     {
         "slug": "discord-notifier",

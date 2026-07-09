@@ -1727,7 +1727,126 @@ class LicensingServiceTests(unittest.TestCase):
 
         self.assertEqual(product["id"], updated["id"])
         self.assertEqual("prod_duorc", updated["whop_product_id"])
-        self.assertEqual(2, len(self.service.list_products()))
+        self.assertEqual(1, [product["slug"] for product in self.service.list_products()].count("duorc-runtime"))
+
+    def test_seeded_mich_product_can_be_licensed_and_manifested_after_artifact_registration(self) -> None:
+        mich = next(product for product in self.service.list_products() if product["slug"] == "mich-runtime")
+        metadata = json.loads(mich["metadata_json"])
+        with self.database.session() as connection:
+            release_count = connection.execute(
+                "SELECT COUNT(*) FROM trader_releases WHERE product_id = ?",
+                (mich["id"],),
+            ).fetchone()[0]
+
+        self.assertEqual("MICH Runtime", mich["name"])
+        self.assertEqual("strategy.mich.runtime", mich["feature_id"])
+        self.assertEqual("MICH", mich["nt8_strategy_key"])
+        self.assertEqual("mich-runtime", metadata["runtime_package_id"])
+        self.assertEqual("strategy_package", metadata["release_type"])
+        self.assertEqual("Trader.Strategies.Mich.dll", metadata["entry_assembly"])
+        self.assertEqual(["macos-arm64", "windows-x64"], metadata["supported_platforms"])
+        self.assertEqual(0, release_count)
+
+        created = self.service.create_or_update_customer(email="mich-license@example.com")
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=mich["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="mich runtime test",
+            actor_id="admin",
+            ip_address=None,
+        )
+        machine_fingerprint = "mich-runtime-machine"
+        license_response = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint=machine_fingerprint,
+            app_version="0.1.0",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        unpublished_manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint=machine_fingerprint,
+            app_version="0.1.0",
+            channel="stable",
+            platform="macos-arm64",
+            include_types=["strategy_package"],
+            installed_packages=[{"package_id": "mich-runtime", "version": "0.0.0"}],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", license_response["status"])
+        self.assertEqual(["strategy.mich.runtime"], [grant["feature_id"] for grant in license_response["licensed_strategies"]])
+        self.assertEqual([], unpublished_manifest["releases"])
+
+        artifact_dir = Path(self.tmp.name) / "mich-artifacts"
+        artifact_subdir = artifact_dir / "strategies" / "mich"
+        artifact_subdir.mkdir(parents=True)
+        for platform in ("macos-arm64", "windows-x64"):
+            artifact_path = f"strategies/mich/MICH-0.1.0-{platform}.zip"
+            (artifact_dir / artifact_path).write_bytes(f"mich runtime {platform}".encode())
+            self.service.upsert_release(
+                release_id=None,
+                scope="strategy",
+                release_type="strategy_package",
+                product_key="mich-runtime",
+                product_id=mich["id"],
+                channel="stable",
+                platform=platform,
+                version="0.1.0",
+                min_supported_version=None,
+                is_required=False,
+                is_active=True,
+                artifact_path=artifact_path,
+                artifact_filename=None,
+                size_bytes=None,
+                sha256_value=None,
+                signature=None,
+                release_notes="MICH runtime test release",
+                artifact_dir=str(artifact_dir),
+            )
+
+        for platform in ("macos-arm64", "windows-x64"):
+            manifest = self.service.release_manifest(
+                license_key=created.license_key,
+                email=None,
+                customer_id=None,
+                whop_user_id=None,
+                machine_fingerprint=machine_fingerprint,
+                app_version="0.1.0",
+                channel="stable",
+                platform=platform,
+                include_types=["strategy_package"],
+                installed_packages=[{"package_id": "mich-runtime", "version": "0.0.0"}],
+                ip_address=None,
+                user_agent=None,
+                check_interval_seconds=3600,
+                grace_period_seconds=86400,
+            )
+
+            self.assertEqual("active", manifest["status"])
+            self.assertEqual(1, len(manifest["releases"]))
+            release = manifest["releases"][0]
+            self.assertEqual("strategy_package", release["release_type"])
+            self.assertEqual("mich-runtime", release["package_id"])
+            self.assertEqual("MICH", release["display_name"])
+            self.assertEqual("MICH", release["strategy"])
+            self.assertEqual("strategy.mich.runtime", release["feature_id"])
+            self.assertEqual(["strategy.mich.runtime"], release["required_features"])
+            self.assertEqual("0.1.0", release["version"])
+            self.assertEqual(platform, release["platform"])
 
     def test_release_manifest_returns_only_licensed_strategy_releases(self) -> None:
         duorc = self.service.upsert_product(

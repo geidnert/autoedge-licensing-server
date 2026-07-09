@@ -1,6 +1,6 @@
 # AutoEdge Licensing Server Codex Memory
 
-Last refreshed: 2026-07-08
+Last refreshed: 2026-07-09
 
 ## Repository Shape
 
@@ -300,6 +300,15 @@ Download flow:
 - To publish Discord Notifier, seed/create the product, copy one artifact for
   `macos-arm64` and one for `windows-x64`, and register two `Extension package`
   releases with product/package id `discord-notifier`.
+- MICH is seeded as a strategy product only: slug/package id `mich-runtime`,
+  display name `MICH Runtime`, feature id `strategy.mich.runtime`, runtime
+  entry assembly `Trader.Strategies.Mich.dll`, initial runtime version `0.1.0`,
+  and supported package platforms `macos-arm64` and `windows-x64`. There are no
+  seeded MICH release rows. Publish MICH only after copying actual platform
+  artifacts under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register
+  `Strategy package` releases with product/package id `mich-runtime`,
+  release type `strategy_package`, version `0.1.0`, and the matching platform.
+  MICH parity remains pending; do not add parity claims.
 
 Rollback behavior is server-directed. Clients must not assume that a newer local
 version is valid when the server returns a lower `target_version` with
@@ -334,6 +343,8 @@ Current migration sequence:
 - `011_tradovate_oauth_sessions.sql`: adds separate hashed/encrypted
   `oauth_session_id` storage so Desktop refresh uses a session handle instead
   of the short-lived OAuth `state`.
+- `012_seed_mich_strategy_product.sql`: idempotently seeds/backfills the MICH
+  strategy product metadata without creating release rows.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not

@@ -71,6 +71,18 @@ Built-in seed products include the optional Trader Desktop extension:
 
 A customer must have an active grant for `trader.notifications.discord` to see or download Discord Notifier extension releases.
 
+Built-in strategy products include MICH as a product/feature seed only:
+
+- Display name: `MICH Runtime`
+- Product slug/package id: `mich-runtime`
+- Feature id: `strategy.mich.runtime`
+- Release type: `strategy_package`
+- Runtime entry assembly: `Trader.Strategies.Mich.dll`
+- Initial runtime version: `0.1.0`
+- Supported package platforms: `macos-arm64`, `windows-x64`
+
+MICH is not generally released by the seed data. Register MICH release rows only after actual package artifacts are copied under `AUTOEDGE_RELEASE_ARTIFACT_DIR`.
+
 Lifecycle handling:
 
 - Trialing events set access through `trial_ends_at` when Whop provides it.
@@ -495,6 +507,8 @@ Trader Desktop release fields:
 - Release notes
 
 Strategy package releases use release type `Strategy package`, choose the strategy in the licensed product field, and keep using feature ids such as `strategy.duo.runtime`.
+
+For MICH, use seeded product `MICH Runtime` with product/package id `mich-runtime`, release type `strategy_package`, version `0.1.0`, and feature id `strategy.mich.runtime`. Copy one real artifact per platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register separate `Strategy package` releases for `macos-arm64` and `windows-x64`. Do not register placeholder releases without artifacts, and do not add MICH parity claims while May 3, 2026 through June 16, 2026 parity is pending.
 
 Extension package releases use release type `Extension package`, choose the licensed extension product, and use the product slug as the package id. For Discord Notifier:
 
