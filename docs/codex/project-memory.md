@@ -1,6 +1,6 @@
 # AutoEdge Licensing Server Codex Memory
 
-Last refreshed: 2026-07-09
+Last refreshed: 2026-07-10
 
 ## Repository Shape
 
@@ -18,7 +18,7 @@ Last refreshed: 2026-07-09
   cookie parsing, bearer-token auth, and Standard Webhooks verification.
 - `scripts/create_admin.py` creates an admin user after applying migrations.
 - `scripts/seed_products.py` seeds default strategy products
-  DUO, DUOrc, ORBO2, ORBOib, ADAM, EVE, MICH, and HUGO, plus the Trader
+  DUO, DUOrc, ORBO2, ORBOib, ADAM, EVE, MICH, and HUGO, plus the TraderPro
   Desktop extension product Discord Notifier.
 - `deploy/` contains nginx and Caddy reverse-proxy examples.
 - `systemd/autoedge-licensing.service` runs the app with `/etc/autoedge-licensing.env`
@@ -130,7 +130,7 @@ admin timestamps in US Eastern time.
 
 ## Licensing Contracts
 
-Trader Desktop license checks:
+TraderPro Desktop license checks:
 
 - Accept license key, email, customer id, or Whop user id; require
   `machine_fingerprint`.
@@ -146,7 +146,7 @@ Trader Desktop license checks:
 NT8 license checks:
 
 - Use the same customers, entitlements, devices, device limits, and audit log as
-  Trader Desktop.
+  TraderPro Desktop.
 - Products have `nt8_strategy_key`, `trader_enabled`, and `nt8_enabled`.
 - Return `licensed: true`, `strategy_keys`, and an HMAC-signed opaque lease when
   active.
@@ -166,12 +166,12 @@ Keep blocking states explicit for clients. Important statuses include
 
 ## Tradovate OAuth
 
-Trader Desktop uses this licensing server as the Tradovate OAuth backend so the
+TraderPro Desktop uses this licensing server as the Tradovate OAuth backend so the
 Tradovate client secret never ships in the desktop app.
 
 Flow:
 
-- `POST /api/trader/tradovate/oauth/start` validates the current Trader license
+- `POST /api/trader/tradovate/oauth/start` validates the current TraderPro license
   and device with the same device-limit logic as license checks, creates a
   random one-time state, stores only `sha256(state)`, and returns a Tradovate
   authorization URL plus the raw state for the desktop to poll with.
@@ -192,7 +192,7 @@ Flow:
 Tradovate's official OAuth token response documents `access_token` and
 `expires_in`, not a refresh token. If Tradovate adds `refresh_token`, the schema
 has a nullable encrypted column for it, but current refresh behavior is based on
-renewing the existing non-expired bearer token. Trader Desktop can also renew
+renewing the existing non-expired bearer token. TraderPro Desktop can also renew
 directly with Tradovate using its current access token; that does not require
 the client secret.
 
@@ -223,11 +223,12 @@ Security:
 
 Mapping model:
 
-- Internal `products` are licensed Trader capabilities. Most are Trader/NT8
-  strategies, but the table also holds optional Trader Desktop extensions.
+- Internal `products` are licensed TraderPro capabilities. Most are TraderPro/NT8
+  strategies, but the table also holds optional TraderPro Desktop extensions.
 - Discord Notifier is the first optional extension product: display name
   `Discord Notifier`, product slug/package id `discord-notifier`, feature id
-  `trader.notifications.discord`, Trader enabled, NT8 disabled.
+  `trader.notifications.discord`, TraderPro enabled, NT8 disabled; the persisted
+  enablement field remains `trader_enabled`.
 - `whop_packages` represent what Whop sells.
 - A package can grant one or more internal products through
   `whop_package_grants`.
@@ -261,13 +262,31 @@ Grant behavior:
 
 ## Releases And Downloads
 
+The desktop product presentation name is `TraderPro Desktop` (`TraderPro` in
+short labels). This is presentation-only. Keep `/api/trader/*`, release type
+`trader_desktop`, product key/id `trader-desktop`, client type
+`trader_desktop`, the `trader-desktop` artifact directory, `trader_enabled`,
+`AUTOEDGE_TRADER_*`, package/feature ids, and all existing customer, device,
+license, and release data unchanged.
+
+New first-install presentation filenames use `TraderPro.app` and
+`TraderPro-Desktop-<version>-<platform>` artifact names documented in
+`README.md`. Artifact classification is metadata-driven, never filename-prefix
+driven. Existing `Trader-Desktop-*`, `Trader-Setup-*`, and arbitrary historical
+artifact names and URLs remain downloadable from their existing release rows.
+Do not rename stored files, rewrite old release notes, or duplicate historical
+release rows for the rebrand. New desktop releases without explicit notes use
+`TraderPro Desktop update`. Manifest and download-token release objects expose
+optional `display_name`/`product_name` values of `TraderPro Desktop` while all
+compatibility identifiers remain unchanged.
+
 Release types:
 
 - `strategy_package`
 - `extension_package`
 - `trader_desktop`
 
-`extension_package` is the generic release type for optional Trader Desktop
+`extension_package` is the generic release type for optional TraderPro Desktop
 extensions. Discord Notifier uses this type. The persisted
 `trader_releases.scope` column is legacy app-vs-product-bound state; product
 bound packages such as `strategy_package` and `extension_package` still use the
@@ -408,12 +427,12 @@ Current deployment documented in `README.md`:
 
 - Host: `solidparts.se`
 - Admin UI: `https://solidparts.se/admin/login`
-- Trader endpoint: `https://solidparts.se/api/trader/license/check`
+- TraderPro endpoint: `https://solidparts.se/api/trader/license/check`
 - NT8 endpoint: `https://solidparts.se/api/nt8/license/check`
-- Trader manifest: `https://solidparts.se/api/trader/releases/manifest`
+- TraderPro manifest: `https://solidparts.se/api/trader/releases/manifest`
 - Public legal pages: `https://solidparts.se/privacy` and
   `https://solidparts.se/terms`
-- Trader Tradovate OAuth: `https://solidparts.se/api/trader/tradovate/oauth/start`,
+- TraderPro Tradovate OAuth: `https://solidparts.se/api/trader/tradovate/oauth/start`,
   `/callback`, `/complete`, and `/refresh`
 - Whop endpoint: `https://solidparts.se/api/whop/entitlements`
 - Service unit: `autoedge-licensing.service`
@@ -446,7 +465,7 @@ Operational SSH notes:
 - For release registration, SSH to the server, `cd /opt/autoedge-licensing`,
   source `/etc/autoedge-licensing.env`, then use the existing
   `autoedge_licensing` service code and `LicensingService.upsert_release`,
-  matching the fields used by the Trader release scripts.
+  matching the fields used by the TraderPro release scripts.
 
 nginx must proxy root-relative `/privacy`, `/terms`, `/admin`, `/api/trader/`,
 `/api/nt8/`, and exact `/api/whop/entitlements` paths without mounting the app
@@ -465,7 +484,7 @@ under an extra prefix.
 - Do not reintroduce product code assumptions that every Whop product maps to
   exactly one strategy.
 - Do not treat NT8 lease tokens as public offline signatures.
-- Do not put the Tradovate OAuth client secret in Trader Desktop or return it
+- Do not put the Tradovate OAuth client secret in TraderPro Desktop or return it
   from any API.
 - Do not store Tradovate OAuth state, codes, or tokens in plaintext; state is
   hashed and token material is encrypted.

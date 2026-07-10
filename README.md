@@ -1,8 +1,8 @@
 # AutoEdge Licensing Server
 
-Secure licensing and entitlement service for AutoEdge Trader strategy access.
+Secure licensing and entitlement service for AutoEdge TraderPro strategy access.
 
-The server receives Whop AutoEdge entitlement updates, stores customer/product/subscription/device state, exposes a manual admin UI, and gives Trader clients a clear license decision without exposing Whop secrets to Trader.
+The server receives Whop AutoEdge entitlement updates, stores customer/product/subscription/device state, exposes a manual admin UI, and gives TraderPro clients a clear license decision without exposing Whop secrets to TraderPro.
 
 ## Features
 
@@ -18,13 +18,13 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
   - remove individual entitlement rows from a customer
   - block or unblock devices
   - enforce and override per-customer device limits
-  - manage Trader strategy and extension products
+  - manage TraderPro strategy and extension products
   - map Whop plans/products to one or more licensed products with day grants
-- Trader client endpoint:
+- TraderPro client endpoint:
   - activate/check by license key, email, customer id, or Whop user id
   - stores machine fingerprint hash and app version
   - returns licensed strategies, expiry, status, next check time, and grace period
-- No Whop API key or webhook secret is needed by Trader clients.
+- No Whop API key or webhook secret is needed by TraderPro clients.
 
 ## API
 
@@ -44,7 +44,7 @@ The endpoint is idempotent by `webhook-id`. Duplicate deliveries return `{"statu
 
 ### Whop Package Mappings
 
-Products are internal licensed Trader capabilities, such as DUO, DUOrc, or optional Trader Desktop extensions. Whop Packages describe what Whop sells.
+Products are internal licensed TraderPro capabilities, such as DUO, DUOrc, or optional TraderPro Desktop extensions. Whop Packages describe what Whop sells.
 
 Configure packages in `/admin/packages`:
 
@@ -62,7 +62,7 @@ plan_AsxYJxMdnQJqW=204,30:337,30:1175,30
 
 become one Whop Package for `plan_AsxYJxMdnQJqW` with separate grant rows. Each grant chooses a licensed product and grants the configured days.
 
-Built-in seed products include the optional Trader Desktop extension:
+Built-in seed products include the optional TraderPro Desktop extension:
 
 - Display name: `Discord Notifier`
 - Product slug/package id: `discord-notifier`
@@ -93,9 +93,9 @@ Lifecycle handling:
 - `refund.created`, chargebacks, disputes, and `membership.went_invalid` are explicit revocation operations for the affected source. If no other source remains, the license response is `revoked`.
 - Whop entitlement mutations use serialized SQLite write transactions so an older concurrent update cannot overwrite a later coverage date.
 - Admin `active` and `trialing` saves also ensure access through the submitted date instead of shortening a later date. Once a source is Lifetime, later dated saves keep it Lifetime; admins can still use explicit `expired`, `revoked`, or `suspended` statuses.
-- Expired, suspended, and revoked results are returned clearly to Trader so strategies can block access.
+- Expired, suspended, and revoked results are returned clearly to TraderPro so strategies can block access.
 
-### Trader License Check
+### TraderPro License Check
 
 `POST /api/trader/license/check`
 
@@ -157,20 +157,20 @@ Response:
 
 Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `expired`, `revoked`, `suspended`, `device_blocked`, `device_limit_exceeded`, `invalid_request`, and `rate_limited`.
 
-Trader should allow strategy or extension access only when `status == "active"` and the required `feature_id` is present in `licensed_strategies`. The field name is legacy; it can contain any active Trader-enabled licensed product, including optional extensions such as `trader.notifications.discord`.
+TraderPro should allow strategy or extension access only when `status == "active"` and the required `feature_id` is present in `licensed_strategies`. The field name is legacy; it can contain any active TraderPro-enabled licensed product, including optional extensions such as `trader.notifications.discord`.
 
 Manual Lifetime grants and other no-expiry entitlements are represented as `expires_at: null` on the affected `licensed_strategies` entries. The top-level `expires_at` is `null` only when all licensed strategies in the response have no expiry.
 
-`device_limit_exceeded` means the customer already has the maximum number of active licensed, non-blocked machines. Trader must block strategy access and must not offer package downloads for that machine. If an admin lowers a customer limit below the current active device count, only the earliest active device(s) up to the new limit remain allowed; later devices are denied until the admin deauthorizes/resets devices or raises the limit. Admins can deauthorize a device, reset all devices for a customer, or set a customer-specific max device override in the customer detail page.
+`device_limit_exceeded` means the customer already has the maximum number of active licensed, non-blocked machines. TraderPro must block strategy access and must not offer package downloads for that machine. If an admin lowers a customer limit below the current active device count, only the earliest active device(s) up to the new limit remain allowed; later devices are denied until the admin deauthorizes/resets devices or raises the limit. Admins can deauthorize a device, reset all devices for a customer, or set a customer-specific max device override in the customer detail page.
 
 ### NinjaTrader 8 License Check
 
 `POST /api/nt8/license/check`
 
-NT8 uses the same customers, Whop packages, manual grants, expiry dates, devices, device limits, and audit log as Trader Desktop. Products include explicit NT8 fields in the admin UI:
+NT8 uses the same customers, Whop packages, manual grants, expiry dates, devices, device limits, and audit log as TraderPro Desktop. Products include explicit NT8 fields in the admin UI:
 
 - `NT8 key`: the strategy key returned to NT8, for example `DUO` or `DUOrc`
-- `Trader`: whether Trader Desktop should receive this product in license responses
+- `TraderPro`: whether TraderPro Desktop should receive this product in license responses; the persisted field remains `trader_enabled`
 - `NT8`: whether NinjaTrader 8 should receive this product in license responses
 
 Request:
@@ -237,7 +237,7 @@ Manual Lifetime grants and other no-expiry entitlements are represented as `expi
 
 The `lease.token` is HMAC-signed by the server and is useful as an opaque cache marker and for future server-side validation. It is not a public-key offline-verifiable token; do not embed the server lease secret in NT8. If true offline signature verification becomes required, add an asymmetric signing dependency and ship only a public key in NT8.
 
-### Trader Release Manifest
+### TraderPro Release Manifest
 
 `POST /api/trader/releases/manifest`
 
@@ -262,9 +262,9 @@ Request:
 The same license identifiers as `/api/trader/license/check` are accepted. The response includes the normal license decision plus:
 
 - `releases`: product-bound package releases only for features the customer is licensed and targeted to use.
-- `app_update`: the Trader Desktop target release for the customer when it differs from `app_version`.
+- `app_update`: the TraderPro Desktop target release for the customer when it differs from `app_version`.
 
-If `include_types` is omitted, both `strategy_package` and `trader_desktop` are included for backward compatibility. Future clients should request `extension_package` when they can install optional Trader extensions such as Discord Notifier.
+If `include_types` is omitted, both `strategy_package` and `trader_desktop` are included for backward compatibility. Future clients should request `extension_package` when they can install optional TraderPro extensions such as Discord Notifier.
 
 `installed_packages` is optional and lets the server compare each package against the version installed locally. If omitted, older clients still receive the same compatible release rows.
 
@@ -286,6 +286,7 @@ Response:
       "release_type": "strategy_package",
       "package_id": "duo-runtime",
       "display_name": "DUO",
+      "product_name": "DUO",
       "strategy": "DUO",
       "product_id": "product-id",
       "feature_id": "strategy.duo.runtime",
@@ -313,6 +314,8 @@ Response:
   ],
   "app_update": {
     "product_id": "trader-desktop",
+    "display_name": "TraderPro Desktop",
+    "product_name": "TraderPro Desktop",
     "release_type": "trader_desktop",
     "current_version": "0.1.0",
     "available_version": "0.1.1",
@@ -325,14 +328,14 @@ Response:
     "min_supported_version": "0.1.0",
     "required": false,
     "artifact": {
-      "path": "trader/Trader-Setup-0.1.1-macos-arm64.zip",
-      "filename": "Trader-Setup-0.1.1-macos-arm64.zip",
+      "path": "trader-desktop/TraderPro-Desktop-0.1.1-macos-arm64.zip",
+      "filename": "TraderPro-Desktop-0.1.1-macos-arm64.zip",
       "size_bytes": 123456,
       "sha256": "hex-sha256",
       "signature": "optional-signature",
       "signature_key_id": "optional-key-id"
     },
-    "release_notes": "Optional notes",
+    "release_notes": "TraderPro Desktop update",
     "rollback_reason": null
   },
   "license": {
@@ -343,7 +346,7 @@ Response:
 
 Extension package releases use the same `releases` array with `release_type: "extension_package"` and `scope: "extension"`. Discord Notifier release rows use `package_id: "discord-notifier"`, `display_name: "Discord Notifier"`, and `required_features: ["trader.notifications.discord"]`.
 
-Trader should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, device-limit-exceeded, or unknown customers receive an empty release list, `app_update: null`, and the same blocking license status.
+TraderPro should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, device-limit-exceeded, or unknown customers receive an empty release list, `app_update: null`, and the same blocking license status.
 
 `action` is one of:
 
@@ -351,9 +354,9 @@ Trader should use the manifest only when `status == "active"`. Expired, revoked,
 - `rollback`: target version is lower and the server has explicitly directed rollback by marking the release required or setting a rollback reason.
 - `current`: target version equals the installed/current version.
 
-Rollback is server-directed. Trader Desktop and strategies must not infer that a newer local version is valid if the server returns a lower `target_version` with `action: "rollback"`.
+Rollback is server-directed. TraderPro Desktop and strategies must not infer that a newer local version is valid if the server returns a lower `target_version` with `action: "rollback"`.
 
-### Trader Release Download
+### TraderPro Release Download
 
 `POST /api/trader/releases/download-token`
 
@@ -373,7 +376,7 @@ Request:
 }
 ```
 
-The server checks the license, device limit, platform, and release targeting again before issuing a short-lived download token. Product-bound package downloads, including `strategy_package` and `extension_package`, are allowed only when the license includes the required product feature. Trader Desktop downloads are allowed for active licenses only when the customer is targeted for that app release. A customer cannot download a release merely by knowing its `release_id`.
+The server checks the license, device limit, platform, and release targeting again before issuing a short-lived download token. Product-bound package downloads, including `strategy_package` and `extension_package`, are allowed only when the license includes the required product feature. TraderPro Desktop downloads are allowed for active licenses only when the customer is targeted for that app release. A customer cannot download a release merely by knowing its `release_id`.
 
 Response:
 
@@ -387,9 +390,9 @@ Response:
 
 `GET /api/trader/releases/download/{token}` streams the artifact. Tokens are stored as hashes, expire quickly, and each download attempt is recorded in `release_downloads`.
 
-### Trader Tradovate OAuth
+### TraderPro Tradovate OAuth
 
-The server can act as Trader Desktop's Tradovate OAuth backend so the Tradovate client secret is never shipped in the desktop app. Trader starts the flow, opens the returned authorization URL in the user's browser, receives tokens only from this server, then connects directly to Tradovate with the returned access token.
+The server can act as TraderPro Desktop's Tradovate OAuth backend so the Tradovate client secret is never shipped in the desktop app. TraderPro starts the flow, opens the returned authorization URL in the user's browser, receives tokens only from this server, then connects directly to Tradovate with the returned access token.
 
 Required server environment:
 
@@ -433,7 +436,7 @@ Request:
 }
 ```
 
-The server requires an active Trader license on the same device. It stores only hashed OAuth state/session handles, hashed license/device identity, and encrypted token material.
+The server requires an active TraderPro license on the same device. It stores only hashed OAuth state/session handles, hashed license/device identity, and encrypted token material.
 
 Response:
 
@@ -469,7 +472,7 @@ Request includes the original `state` plus the same license/device identity used
 
 `POST /api/trader/tradovate/oauth/refresh`
 
-Request includes the `oauth_session_id` returned by `complete` plus the same license/device identity. The original OAuth `state` is intentionally short-lived and should not be treated as the durable refresh handle. Tradovate's official OAuth token response documents `access_token` and `expires_in`, not a refresh token. Their documented renewal path is `/auth/renewAccessToken`, which renews the current non-expired bearer token without creating a new session. This server endpoint uses the encrypted stored access token to call that renewal endpoint and returns the fresh access token to Trader. Trader Desktop may alternatively renew directly against Tradovate with its current access token; it does not need the client secret for renewal.
+Request includes the `oauth_session_id` returned by `complete` plus the same license/device identity. The original OAuth `state` is intentionally short-lived and should not be treated as the durable refresh handle. Tradovate's official OAuth token response documents `access_token` and `expires_in`, not a refresh token. Their documented renewal path is `/auth/renewAccessToken`, which renews the current non-expired bearer token without creating a new session. This server endpoint uses the encrypted stored access token to call that renewal endpoint and returns the fresh access token to TraderPro. TraderPro Desktop may alternatively renew directly against Tradovate with its current access token; it does not need the client secret for renewal.
 
 ```json
 {
@@ -491,14 +494,14 @@ Security behavior:
 
 Configure releases in `/admin/releases`. Artifact uploads are not handled by the web UI yet; copy package files under `AUTOEDGE_RELEASE_ARTIFACT_DIR` first, then register their relative path in the release form. If the file exists, the server calculates size and SHA-256 automatically.
 
-Admin pages display and accept manual expiry times in US Eastern trading time (`ET`, America/New_York). The database and Trader API responses continue to store and return UTC timestamps with a `Z` suffix.
+Admin pages display and accept manual expiry times in US Eastern trading time (`ET`, America/New_York). The database and TraderPro API responses continue to store and return UTC timestamps with a `Z` suffix.
 
-Trader Desktop release fields:
+TraderPro Desktop release fields:
 
-- Release type: `Trader Desktop`
+- Release type label: `TraderPro Desktop`; persisted release type: `trader_desktop`
 - Product id: `trader-desktop`
 - Channel: `stable`, `beta`, `canary`, or `internal`
-- Platform: `macos-arm64` for current Apple Silicon macOS Trader builds; `windows-x64` remains supported for future Windows builds.
+- Platform: `macos-arm64` for Apple Silicon macOS TraderPro builds; `windows-x64` for Windows builds.
 - Version and optional minimum supported version
 - Published checkbox
 - Audience mode: `all`, `allowlist`, `roles`, `percent`, or `disabled`
@@ -510,13 +513,23 @@ Trader Desktop release fields:
 - Optional signature and signature key id
 - Release notes
 
+New first-install presentation names are:
+
+- Installed macOS app bundle: `TraderPro.app`
+- macOS disk image: `TraderPro-Desktop-<version>-macos-arm64.dmg`
+- macOS ZIP: `TraderPro-Desktop-<version>-macos-arm64.zip`
+- Windows installer: `TraderPro-Desktop-<version>-windows-x64-Setup.exe`
+- Windows portable ZIP: `TraderPro-Desktop-<version>-windows-x64.zip`
+
+Store these artifacts under the existing `trader-desktop` artifact directory. Desktop releases are identified by `release_type = trader_desktop`, `scope = app`, and `product_key = trader-desktop`, not by a filename prefix. Previously registered `Trader-Desktop-*`, `Trader-Setup-*`, or other historical filenames and their tokenized download URLs remain valid; do not rename files or rewrite historical release rows. New desktop releases with no explicit notes use `TraderPro Desktop update`.
+
 Strategy package releases use release type `Strategy package`, choose the strategy in the licensed product field, and keep using feature ids such as `strategy.duo.runtime`.
 
 For MICH, use seeded product `MICH Runtime` with product/package id `mich-runtime`, release type `strategy_package`, version `0.1.0`, and feature id `strategy.mich.runtime`. Copy one real artifact per platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register separate `Strategy package` releases for `macos-arm64` and `windows-x64`. Do not register placeholder releases without artifacts, and do not add MICH parity claims while May 3, 2026 through June 16, 2026 parity is pending.
 
 Extension package releases use release type `Extension package`, choose the licensed extension product, and use the product slug as the package id. For Discord Notifier:
 
-- Seed or create product: `Discord Notifier`, slug/package id `discord-notifier`, feature id `trader.notifications.discord`, Trader enabled, NT8 disabled.
+- Seed or create product: `Discord Notifier`, slug/package id `discord-notifier`, feature id `trader.notifications.discord`, TraderPro enabled, NT8 disabled.
 - Copy one artifact per platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, for example `extensions/discord-notifier/DiscordNotifier-1.0.0-macos-arm64.zip` and `extensions/discord-notifier/DiscordNotifier-1.0.0-windows-x64.zip`.
 - Register two release rows in `/admin/releases`, both with release type `Extension package`, licensed product `Discord Notifier`, product/package id `discord-notifier`, and platform `macos-arm64` or `windows-x64`.
 - Use the existing audience controls (`all`, `allowlist`, `roles/tags`, `percent`, or `disabled`) exactly as for strategy packages.
@@ -684,14 +697,14 @@ The current Debian deployment runs on `solidparts.se` behind nginx:
 
 - Admin UI: `https://solidparts.se/admin/login`
 - Admin password rotation: sign in, then use `Change password` in the top navigation.
-- Trader endpoint: `https://solidparts.se/api/trader/license/check`
+- TraderPro endpoint: `https://solidparts.se/api/trader/license/check`
 - NT8 endpoint: `https://solidparts.se/api/nt8/license/check`
 - Public legal pages:
   - `https://solidparts.se/privacy`
   - `https://solidparts.se/terms`
-- Trader release manifest: `https://solidparts.se/api/trader/releases/manifest`
-- Trader release downloads: `https://solidparts.se/api/trader/releases/download/{token}`
-- Trader Tradovate OAuth:
+- TraderPro release manifest: `https://solidparts.se/api/trader/releases/manifest`
+- TraderPro release downloads: `https://solidparts.se/api/trader/releases/download/{token}`
+- TraderPro Tradovate OAuth:
   - `POST https://solidparts.se/api/trader/tradovate/oauth/start`
   - `GET https://solidparts.se/api/trader/tradovate/oauth/callback`
   - `POST https://solidparts.se/api/trader/tradovate/oauth/complete`

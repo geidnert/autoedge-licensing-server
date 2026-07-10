@@ -80,8 +80,9 @@ class AppEndpointTests(unittest.TestCase):
         self.assertTrue(privacy_status.startswith("200"), privacy_body)
         self.assertTrue(terms_status.startswith("200"), terms_body)
         self.assertIn(("Content-Type", "text/html; charset=utf-8"), privacy_headers)
-        self.assertIn("AutoEdge Trader Privacy Policy", privacy_body)
-        self.assertIn("AutoEdge Trader Terms &amp; Conditions", terms_body)
+        self.assertIn("AutoEdge TraderPro Privacy Policy", privacy_body)
+        self.assertIn("AutoEdge TraderPro Terms &amp; Conditions", terms_body)
+        self.assertIn("Last updated: July 10, 2026", privacy_body)
         self.assertIn("Tradovate", privacy_body)
         self.assertIn("Trading Risk", terms_body)
 
@@ -300,6 +301,7 @@ class AppEndpointTests(unittest.TestCase):
         self.assertNotIn("duo-runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
         self.assertIn("NT8 key", html)
+        self.assertIn("TraderPro", html)
         self.assertIn("DUO", html)
         self.assertIn("2026-06-03 20:00:00 ET", html)
 
@@ -337,6 +339,7 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("AutoEdge Bundle 30 days", html)
         self.assertIn("plan_bundle", html)
         self.assertIn("DUO 30d", html)
+        self.assertIn("TraderPro strategy access", html)
         self.assertNotIn("DUO Runtime", html)
         self.assertNotIn("strategy.duo.runtime", html)
 
@@ -497,7 +500,7 @@ class AppEndpointTests(unittest.TestCase):
                     "is_required": 0,
                     "is_active": 1,
                     "is_published": 1,
-                    "artifact_filename": "Trader-Setup-0.1.1-windows-x64.zip",
+                    "artifact_filename": "Trader-Desktop-0.1.1-windows-x64.zip",
                     "size_bytes": 123,
                     "sha256": "abcdef123456",
                     "signature": "sig",
@@ -514,7 +517,9 @@ class AppEndpointTests(unittest.TestCase):
             "/var/lib/autoedge-licensing/artifacts",
         )
 
-        self.assertIn("Trader Desktop", html)
+        self.assertIn("TraderPro Desktop", html)
+        self.assertIn("<td>TraderPro Desktop<small>trader_desktop · trader-desktop</small></td>", html)
+        self.assertIn("Trader-Desktop-0.1.1-windows-x64.zip", html)
         self.assertIn("Extension package", html)
         self.assertIn("trader_desktop", html)
         self.assertIn("trader-desktop", html)
@@ -532,6 +537,8 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("Created ET", html)
         self.assertIn("Updated ET", html)
         self.assertIn("2026-06-04 09:05:00 ET", html)
+        self.assertIn("trader-desktop/TraderPro-Desktop-1.0.0-macos-arm64.dmg", html)
+        self.assertIn('placeholder="TraderPro Desktop update"', html)
 
     def test_release_editor_is_collapsed_for_add_and_open_for_edit(self) -> None:
         add_html = releases_page([], [], "csrf-token", None, "/var/lib/autoedge-licensing/artifacts")
@@ -749,6 +756,7 @@ class AppEndpointTests(unittest.TestCase):
         self.assertTrue(start_status.startswith("200"), start_body)
         self.assertTrue(callback_status.startswith("200"), callback_body)
         self.assertIn("Tradovate Login Complete", callback_body)
+        self.assertIn("You can return to TraderPro Desktop.", callback_body)
         self.assertTrue(complete_status.startswith("200"), complete_body)
         self.assertEqual("authorized", complete_payload["status"])
         self.assertEqual("tv-access-token", complete_payload["access_token"])

@@ -106,8 +106,12 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 STRATEGY_RELEASE_TYPE = "strategy_package"
 EXTENSION_PACKAGE_RELEASE_TYPE = "extension_package"
+# Persisted compatibility identifiers. Presentation code must not derive these
+# from an artifact filename or replace them during the TraderPro rebrand.
 TRADER_DESKTOP_RELEASE_TYPE = "trader_desktop"
 TRADER_DESKTOP_PRODUCT_ID = "trader-desktop"
+TRADERPRO_DESKTOP_DISPLAY_NAME = "TraderPro Desktop"
+TRADERPRO_DESKTOP_DEFAULT_RELEASE_NOTES = "TraderPro Desktop update"
 PACKAGE_RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, EXTENSION_PACKAGE_RELEASE_TYPE}
 DEFAULT_MANIFEST_RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
 RELEASE_TYPES = PACKAGE_RELEASE_TYPES | {TRADER_DESKTOP_RELEASE_TYPE}
@@ -829,6 +833,9 @@ class LicensingService:
         normalized_platform = platform.strip().lower() or DEFAULT_RELEASE_PLATFORM
         normalized_version = version.strip()
         normalized_path = artifact_path.strip()
+        normalized_release_notes = release_notes.strip() if release_notes and release_notes.strip() else None
+        if normalized_release_type == TRADER_DESKTOP_RELEASE_TYPE and normalized_release_notes is None:
+            normalized_release_notes = TRADERPRO_DESKTOP_DEFAULT_RELEASE_NOTES
         normalized_audience_mode = (audience_mode or "all").strip().lower()
         if normalized_audience_mode not in AUDIENCE_MODES:
             raise ValueError(f"Invalid audience mode: {audience_mode}")
@@ -849,6 +856,8 @@ class LicensingService:
             raise ValueError("Product-bound package release requires a product.")
         if normalized_scope == "app":
             product_id = None
+            # Desktop classification is metadata-driven so legacy and current
+            # artifact filenames remain equally valid.
             normalized_product_key = normalized_product_key or TRADER_DESKTOP_PRODUCT_ID
 
         artifact_file = self._artifact_path(normalized_path, artifact_dir)
@@ -906,7 +915,7 @@ class LicensingService:
                         calculated_sha,
                         signature.strip() if signature else None,
                         signature_key_id.strip() if signature_key_id else None,
-                        release_notes.strip() if release_notes else None,
+                        normalized_release_notes,
                         int(is_active),
                         now if is_active else None,
                         normalized_audience_mode,
@@ -952,7 +961,7 @@ class LicensingService:
                         calculated_sha,
                         signature.strip() if signature else None,
                         signature_key_id.strip() if signature_key_id else None,
-                        release_notes.strip() if release_notes else None,
+                        normalized_release_notes,
                         int(is_active),
                         now if is_active else None,
                         normalized_audience_mode,
@@ -2756,7 +2765,12 @@ class LicensingService:
         feature_id = release.get("feature_id")
         package_id = release.get("product_key") or release.get("product_slug") or release.get("product_id")
         product_name = release.get("product_name")
-        display_name = display_strategy_name(product_name) if release_type == STRATEGY_RELEASE_TYPE else (product_name or package_id)
+        if release_type == TRADER_DESKTOP_RELEASE_TYPE:
+            display_name = TRADERPRO_DESKTOP_DISPLAY_NAME
+        elif release_type == STRATEGY_RELEASE_TYPE:
+            display_name = display_strategy_name(product_name)
+        else:
+            display_name = product_name or package_id
         return {
             "id": release["id"],
             "release_id": release["id"],
@@ -2764,6 +2778,7 @@ class LicensingService:
             "release_type": release_type,
             "package_id": package_id,
             "display_name": display_name,
+            "product_name": display_name,
             "strategy": display_strategy_name(product_name) if release_type == STRATEGY_RELEASE_TYPE and product_name else None,
             "product_id": release.get("product_id"),
             "feature_id": feature_id,
@@ -2796,6 +2811,8 @@ class LicensingService:
         action = release_action_for_row(release, current_version)
         return {
             "product_id": release.get("product_key") or TRADER_DESKTOP_PRODUCT_ID,
+            "display_name": TRADERPRO_DESKTOP_DISPLAY_NAME,
+            "product_name": TRADERPRO_DESKTOP_DISPLAY_NAME,
             "release_type": TRADER_DESKTOP_RELEASE_TYPE,
             "current_version": current_version,
             "available_version": release["version"],

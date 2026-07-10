@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from hashlib import sha256
 from pathlib import Path
 
 from autoedge_licensing.db import Database, apply_migrations
@@ -101,7 +102,7 @@ class LicensingServiceTests(unittest.TestCase):
     ):
         artifact_dir = Path(self.tmp.name) / "desktop-test-artifacts"
         artifact_dir.mkdir(exist_ok=True)
-        path = f"Trader-Setup-{version}-{platform}.zip"
+        path = f"TraderPro-Desktop-{version}-{platform}.zip"
         (artifact_dir / path).write_bytes(f"desktop {version}".encode())
         return self.service.upsert_release(
             release_id=None,
@@ -120,7 +121,7 @@ class LicensingServiceTests(unittest.TestCase):
             size_bytes=None,
             sha256_value=None,
             signature=None,
-            release_notes=None,
+            release_notes="TraderPro Desktop update",
             artifact_dir=str(artifact_dir),
             audience_mode=audience_mode,
             allowed_customer_ids=allowed_customer_ids,
@@ -2600,7 +2601,7 @@ class LicensingServiceTests(unittest.TestCase):
         created = self.active_customer("app-update@example.com")
         artifact_dir = Path(self.tmp.name) / "app-update-artifacts"
         artifact_dir.mkdir()
-        artifact = artifact_dir / "Trader-Setup-0.1.1-windows-x64.zip"
+        artifact = artifact_dir / "TraderPro-Desktop-0.1.1-windows-x64.zip"
         artifact.write_bytes(b"desktop app update")
         release = self.service.upsert_release(
             release_id=None,
@@ -2620,7 +2621,7 @@ class LicensingServiceTests(unittest.TestCase):
             sha256_value=None,
             signature="sig",
             signature_key_id="key-1",
-            release_notes="Desktop update",
+            release_notes="TraderPro Desktop update",
             artifact_dir=str(artifact_dir),
         )
 
@@ -2644,12 +2645,156 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual([], manifest["releases"])
         self.assertIsNotNone(manifest["app_update"])
         self.assertEqual("trader-desktop", manifest["app_update"]["product_id"])
+        self.assertEqual("TraderPro Desktop", manifest["app_update"]["display_name"])
+        self.assertEqual("TraderPro Desktop", manifest["app_update"]["product_name"])
         self.assertEqual("0.1.0", manifest["app_update"]["current_version"])
         self.assertEqual("0.1.1", manifest["app_update"]["available_version"])
         self.assertEqual(release["id"], manifest["app_update"]["release_id"])
         self.assertEqual(len(b"desktop app update"), manifest["app_update"]["artifact"]["size_bytes"])
         self.assertIsNotNone(manifest["app_update"]["artifact"]["sha256"])
         self.assertEqual("key-1", manifest["app_update"]["artifact"]["signature_key_id"])
+
+    def test_desktop_artifact_names_use_release_metadata_and_preserve_legacy_downloads(self) -> None:
+        created = self.active_customer("desktop-filename-compatibility@example.com")
+        machine_fingerprint = "desktop-filename-compatibility-machine"
+        license_before = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint=machine_fingerprint,
+            app_version="0.8.0",
+            ip_address=None,
+            user_agent="legacy-client",
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        artifact_dir = Path(self.tmp.name) / "artifact-name-compatibility"
+        storage_dir = artifact_dir / "trader-desktop"
+        storage_dir.mkdir(parents=True)
+        cases = [
+            ("0.9.0", "windows-x64", "Trader-Desktop-0.9.0-windows-x64.zip"),
+            ("1.0.0", "macos-arm64", "TraderPro-Desktop-1.0.0-macos-arm64.dmg"),
+            ("1.0.1", "macos-arm64", "TraderPro-Desktop-1.0.1-macos-arm64.zip"),
+            ("1.0.2", "windows-x64", "TraderPro-Desktop-1.0.2-windows-x64-Setup.exe"),
+            ("1.0.3", "windows-x64", "TraderPro-Desktop-1.0.3-windows-x64.zip"),
+        ]
+        release_ids: set[str] = set()
+
+        for index, (version, platform, download_filename) in enumerate(cases):
+            with self.subTest(download_filename=download_filename):
+                contents = f"desktop artifact {index}".encode()
+                stored_path = storage_dir / f"build-{index}.bin"
+                stored_path.write_bytes(contents)
+                release = self.service.upsert_release(
+                    release_id=None,
+                    scope="app",
+                    release_type="trader_desktop",
+                    product_key="trader-desktop",
+                    product_id=None,
+                    channel="stable",
+                    platform=platform,
+                    version=version,
+                    min_supported_version=None,
+                    is_required=False,
+                    is_active=True,
+                    artifact_path=f"trader-desktop/{stored_path.name}",
+                    artifact_filename=download_filename,
+                    size_bytes=None,
+                    sha256_value=None,
+                    signature=f"signature-{index}",
+                    signature_key_id="desktop-key-1",
+                    release_notes=None,
+                    artifact_dir=str(artifact_dir),
+                )
+                release_ids.add(release["id"])
+                self.assertEqual("trader_desktop", release["release_type"])
+                self.assertEqual("trader-desktop", release["product_key"])
+                self.assertEqual(download_filename, release["artifact_filename"])
+                self.assertEqual(sha256(contents).hexdigest(), release["sha256"])
+                self.assertEqual("TraderPro Desktop update", release["release_notes"])
+
+                token_result = self.service.create_release_download_token(
+                    release_id=release["id"],
+                    license_key=created.license_key,
+                    email=None,
+                    customer_id=None,
+                    whop_user_id=None,
+                    machine_fingerprint=machine_fingerprint,
+                    app_version="0.8.0",
+                    channel="stable",
+                    platform=platform,
+                    ip_address=None,
+                    user_agent="legacy-client",
+                    check_interval_seconds=3600,
+                    grace_period_seconds=86400,
+                    token_seconds=600,
+                )
+                self.assertEqual("ok", token_result["status"])
+                self.assertEqual("trader_desktop", token_result["release"]["release_type"])
+                self.assertEqual("trader-desktop", token_result["release"]["package_id"])
+                self.assertEqual("TraderPro Desktop", token_result["release"]["display_name"])
+                self.assertEqual("TraderPro Desktop", token_result["release"]["product_name"])
+                self.assertEqual(download_filename, token_result["release"]["artifact"]["filename"])
+                self.assertEqual(sha256(contents).hexdigest(), token_result["release"]["artifact"]["sha256"])
+                self.assertEqual(f"signature-{index}", token_result["release"]["artifact"]["signature"])
+
+                resolved = self.service.resolve_release_download(
+                    token=token_result["token"],
+                    artifact_dir=str(artifact_dir),
+                    ip_address=None,
+                    user_agent="legacy-client",
+                )
+                self.assertEqual("ok", resolved["status"])
+                self.assertEqual(stored_path.resolve(), resolved["artifact_path"])
+                self.assertEqual(download_filename, resolved["artifact_filename"])
+
+        release_history = self.service.list_releases()
+        matching_history = [release for release in release_history if release["id"] in release_ids]
+        self.assertEqual(release_ids, {release["id"] for release in matching_history})
+        self.assertEqual({filename for _, _, filename in cases}, {release["artifact_filename"] for release in matching_history})
+        self.assertTrue(all(release["product_key"] == "trader-desktop" for release in matching_history))
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint=machine_fingerprint,
+            app_version="0.8.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["trader_desktop"],
+            ip_address=None,
+            user_agent="legacy-client",
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        self.assertEqual("trader-desktop", manifest["app_update"]["product_id"])
+        self.assertEqual("trader_desktop", manifest["app_update"]["release_type"])
+        self.assertEqual("TraderPro Desktop", manifest["app_update"]["display_name"])
+        self.assertEqual("TraderPro-Desktop-1.0.3-windows-x64.zip", manifest["app_update"]["artifact"]["filename"])
+
+        license_after = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint=machine_fingerprint,
+            app_version="1.0.3",
+            ip_address=None,
+            user_agent="TraderPro Desktop",
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        self.assertEqual(license_before["customer"]["id"], license_after["customer"]["id"])
+        self.assertEqual(license_before["device"]["id"], license_after["device"]["id"])
+        with self.database.session() as connection:
+            device_count = connection.execute(
+                "SELECT COUNT(*) FROM devices WHERE customer_id = ? AND client_type = 'trader_desktop'",
+                (created.customer["id"],),
+            ).fetchone()[0]
+        self.assertEqual(1, device_count)
 
     def test_release_manifest_returns_no_app_update_when_current_is_same_or_newer(self) -> None:
         created = self.active_customer("no-app-update@example.com")
@@ -2667,7 +2812,7 @@ class LicensingServiceTests(unittest.TestCase):
             min_supported_version=None,
             is_required=False,
             is_active=True,
-            artifact_path="Trader-Setup-0.1.1-windows-x64.zip",
+            artifact_path="Trader-Desktop-0.1.1-windows-x64.zip",
             artifact_filename=None,
             size_bytes=100,
             sha256_value="abc",
@@ -2709,6 +2854,110 @@ class LicensingServiceTests(unittest.TestCase):
 
         self.assertIsNone(same["app_update"])
         self.assertIsNone(newer["app_update"])
+
+    def test_legacy_desktop_release_row_is_presented_as_traderpro_without_rewriting_history(self) -> None:
+        created = self.active_customer("legacy-desktop-row@example.com")
+        artifact_dir = Path(self.tmp.name) / "legacy-desktop-row-artifacts"
+        stored_dir = artifact_dir / "trader-desktop"
+        stored_dir.mkdir(parents=True)
+        filename = "Trader-Desktop-0.8.0-windows-x64.zip"
+        artifact = stored_dir / filename
+        contents = b"legacy desktop release"
+        artifact.write_bytes(contents)
+        release_id = "legacy-desktop-release"
+        created_at = iso()
+        with self.database.session() as connection:
+            connection.execute(
+                """
+                INSERT INTO trader_releases(
+                    id, product_id, scope, channel, platform, version,
+                    is_required, is_active, artifact_path, artifact_filename,
+                    size_bytes, sha256, signature, release_notes, created_at, updated_at
+                )
+                VALUES (?, NULL, 'app', 'stable', 'windows-x64', '0.8.0',
+                        0, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    release_id,
+                    f"trader-desktop/{filename}",
+                    filename,
+                    len(contents),
+                    sha256(contents).hexdigest(),
+                    "legacy-signature",
+                    "Original Trader Desktop release",
+                    created_at,
+                    created_at,
+                ),
+            )
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="legacy-desktop-release-machine",
+            app_version="0.7.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["trader_desktop"],
+            ip_address=None,
+            user_agent="legacy-client",
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        update = manifest["app_update"]
+        self.assertEqual(release_id, update["release_id"])
+        self.assertEqual("TraderPro Desktop", update["display_name"])
+        self.assertEqual("TraderPro Desktop", update["product_name"])
+        self.assertEqual("trader-desktop", update["product_id"])
+        self.assertEqual("trader_desktop", update["release_type"])
+        self.assertEqual(filename, update["artifact"]["filename"])
+        self.assertEqual("legacy-signature", update["artifact"]["signature"])
+        self.assertEqual("Original Trader Desktop release", update["release_notes"])
+
+        token_result = self.service.create_release_download_token(
+            release_id=release_id,
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="legacy-desktop-release-machine",
+            app_version="0.7.0",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent="legacy-client",
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
+        resolved = self.service.resolve_release_download(
+            token=token_result["token"],
+            artifact_dir=str(artifact_dir),
+            ip_address=None,
+            user_agent="legacy-client",
+        )
+        self.assertEqual("ok", token_result["status"])
+        self.assertEqual("TraderPro Desktop", token_result["release"]["display_name"])
+        self.assertEqual("ok", resolved["status"])
+        self.assertEqual(artifact.resolve(), resolved["artifact_path"])
+        self.assertEqual(filename, resolved["artifact_filename"])
+
+        with self.database.session() as connection:
+            row = connection.execute(
+                "SELECT release_type, product_key, artifact_filename, release_notes FROM trader_releases WHERE id = ?",
+                (release_id,),
+            ).fetchone()
+            matching_rows = connection.execute(
+                "SELECT COUNT(*) FROM trader_releases WHERE id = ?",
+                (release_id,),
+            ).fetchone()[0]
+        self.assertIsNone(row["release_type"])
+        self.assertIsNone(row["product_key"])
+        self.assertEqual(filename, row["artifact_filename"])
+        self.assertEqual("Original Trader Desktop release", row["release_notes"])
+        self.assertEqual(1, matching_rows)
 
     def test_release_manifest_supports_macos_arm64_desktop_and_strategy_releases(self) -> None:
         created = self.active_customer("macos-release@example.com")

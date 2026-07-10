@@ -31,6 +31,8 @@ from .service import (
     SUPPORTED_RELEASE_PLATFORMS,
     TRADER_DESKTOP_PRODUCT_ID,
     TRADER_DESKTOP_RELEASE_TYPE,
+    TRADERPRO_DESKTOP_DEFAULT_RELEASE_NOTES,
+    TRADERPRO_DESKTOP_DISPLAY_NAME,
     LicensingService,
     parse_time,
     slugify,
@@ -976,6 +978,14 @@ def display_product_name(value: str | None) -> str:
     return value
 
 
+def release_type_display_name(value: str | None) -> str:
+    return {
+        STRATEGY_RELEASE_TYPE: "Strategy package",
+        EXTENSION_PACKAGE_RELEASE_TYPE: "Extension package",
+        TRADER_DESKTOP_RELEASE_TYPE: TRADERPRO_DESKTOP_DISPLAY_NAME,
+    }.get(value or "", value or "Release")
+
+
 def format_bool(value: Any) -> str:
     return "yes" if value else "no"
 
@@ -1068,7 +1078,7 @@ def html_response(html_body: str, status: HTTPStatus = HTTPStatus.OK) -> Respons
 
 def tradovate_oauth_result_page(status: str, message: str) -> str:
     title = "Tradovate Login Complete" if status == "authorized" else "Tradovate Login Failed"
-    body_message = "You can return to Trader Desktop." if status == "authorized" else message
+    body_message = f"You can return to {TRADERPRO_DESKTOP_DISPLAY_NAME}." if status == "authorized" else message
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1097,7 +1107,7 @@ def public_legal_page(title: str, body: str) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{e(title)} · AutoEdge Trader</title>
+  <title>{e(title)} · AutoEdge TraderPro</title>
   <style>
     :root {{ color-scheme: light; }}
     body {{
@@ -1127,7 +1137,7 @@ def public_legal_page(title: str, body: str) -> str:
 <body>
   <main>
     <h1>{e(title)}</h1>
-    <p class="updated">Last updated: July 4, 2026</p>
+    <p class="updated">Last updated: July 10, 2026</p>
     {body}
   </main>
 </body>
@@ -1136,20 +1146,20 @@ def public_legal_page(title: str, body: str) -> str:
 
 def public_privacy_page() -> str:
     body = """
-    <p>AutoEdge Trader uses this service to provide licensing, release delivery, and Tradovate OAuth sign-in for the Trader Desktop application.</p>
+    <p>AutoEdge TraderPro uses this service to provide licensing, release delivery, and Tradovate OAuth sign-in for the TraderPro Desktop application.</p>
 
     <h2>Information We Process</h2>
     <ul>
       <li>License and customer identifiers such as license key hashes, email address, customer id, and Whop user id when provided.</li>
       <li>Device information used for licensing, including a hashed machine fingerprint, app version, platform, channel, IP address, and user agent.</li>
-      <li>Tradovate OAuth metadata needed to connect Trader Desktop, including OAuth state/session records, Tradovate user id, token expiry, and encrypted access-token material.</li>
+      <li>Tradovate OAuth metadata needed to connect TraderPro Desktop, including OAuth state/session records, Tradovate user id, token expiry, and encrypted access-token material.</li>
       <li>Operational records such as license checks, release downloads, webhook events, and security audit entries.</li>
     </ul>
 
     <h2>How We Use Information</h2>
     <ul>
       <li>To verify licenses and enforce device limits.</li>
-      <li>To complete Tradovate OAuth sign-in without putting the Tradovate client secret in Trader Desktop.</li>
+      <li>To complete Tradovate OAuth sign-in without putting the Tradovate client secret in TraderPro Desktop.</li>
       <li>To provide software releases, support, abuse prevention, and service diagnostics.</li>
     </ul>
 
@@ -1157,7 +1167,7 @@ def public_privacy_page() -> str:
     <p>License keys and machine fingerprints are stored as hashes. Tradovate token material is encrypted on the server. We do not intentionally log OAuth authorization codes, access tokens, refresh tokens, or client secrets.</p>
 
     <h2>Sharing</h2>
-    <p>We do not sell personal information. We share data only as needed to operate AutoEdge Trader, integrate with licensing/payment providers, comply with law, or protect the service.</p>
+    <p>We do not sell personal information. We share data only as needed to operate AutoEdge TraderPro, integrate with licensing/payment providers, comply with law, or protect the service.</p>
 
     <h2>Retention</h2>
     <p>Licensing, entitlement, device, audit, and OAuth records are kept as long as needed for the service, security, accounting, support, and legal obligations. Unfinished OAuth state records expire automatically.</p>
@@ -1165,21 +1175,21 @@ def public_privacy_page() -> str:
     <h2>Contact</h2>
     <p>For privacy questions or requests, contact AutoEdge support at <a href="mailto:geidnert@gmail.com">geidnert@gmail.com</a>.</p>
     """
-    return public_legal_page("AutoEdge Trader Privacy Policy", body)
+    return public_legal_page("AutoEdge TraderPro Privacy Policy", body)
 
 
 def public_terms_page() -> str:
     body = """
-    <p>These Terms apply to AutoEdge Trader, the AutoEdge licensing service, and related Tradovate OAuth connectivity.</p>
+    <p>These Terms apply to AutoEdge TraderPro, the AutoEdge licensing service, and related Tradovate OAuth connectivity.</p>
 
     <h2>Trading Risk</h2>
-    <p>AutoEdge Trader is software for market analysis, automation, and order routing. Trading futures and other financial instruments involves substantial risk. You are responsible for all trading decisions, account configuration, broker permissions, exchange fees, and losses. AutoEdge does not provide financial, investment, tax, or legal advice.</p>
+    <p>AutoEdge TraderPro is software for market analysis, automation, and order routing. Trading futures and other financial instruments involves substantial risk. You are responsible for all trading decisions, account configuration, broker permissions, exchange fees, and losses. AutoEdge does not provide financial, investment, tax, or legal advice.</p>
 
     <h2>Account Access</h2>
-    <p>When you connect Tradovate through OAuth, you authorize AutoEdge to help Trader Desktop obtain and renew access tokens for the permissions you grant. You can revoke access through Tradovate/NinjaTrader account controls. Do not share your license, OAuth session, or access tokens with others.</p>
+    <p>When you connect Tradovate through OAuth, you authorize AutoEdge to help TraderPro Desktop obtain and renew access tokens for the permissions you grant. You can revoke access through Tradovate/NinjaTrader account controls. Do not share your license, OAuth session, or access tokens with others.</p>
 
     <h2>License and Availability</h2>
-    <p>Access to AutoEdge Trader may require an active license or subscription. We may suspend or revoke access for expired payment, abuse, security concerns, or violation of these Terms. The service is provided on an as-available basis and may be interrupted for maintenance, provider outages, market conditions, or technical issues.</p>
+    <p>Access to AutoEdge TraderPro may require an active license or subscription. We may suspend or revoke access for expired payment, abuse, security concerns, or violation of these Terms. The service is provided on an as-available basis and may be interrupted for maintenance, provider outages, market conditions, or technical issues.</p>
 
     <h2>User Responsibilities</h2>
     <ul>
@@ -1190,7 +1200,7 @@ def public_terms_page() -> str:
     </ul>
 
     <h2>No Warranty</h2>
-    <p>To the maximum extent permitted by law, AutoEdge Trader and the licensing service are provided without warranties of profitability, uninterrupted operation, data accuracy, or fitness for a particular purpose.</p>
+    <p>To the maximum extent permitted by law, AutoEdge TraderPro and the licensing service are provided without warranties of profitability, uninterrupted operation, data accuracy, or fitness for a particular purpose.</p>
 
     <h2>Limitation of Liability</h2>
     <p>To the maximum extent permitted by law, AutoEdge is not liable for trading losses, missed trades, rejected orders, market data issues, broker/API outages, lost profits, or indirect damages.</p>
@@ -1198,7 +1208,7 @@ def public_terms_page() -> str:
     <h2>Contact</h2>
     <p>For questions about these Terms, contact AutoEdge support at <a href="mailto:geidnert@gmail.com">geidnert@gmail.com</a>.</p>
     """
-    return public_legal_page("AutoEdge Trader Terms & Conditions", body)
+    return public_legal_page("AutoEdge TraderPro Terms & Conditions", body)
 
 
 def file_response(path: Path, filename: str, size_bytes: int) -> FileResponse:
@@ -1335,7 +1345,7 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     <header class="title-row">
       <div>
         <h1>Products</h1>
-        <p>Products define Trader strategies. Whop plan mappings are managed on the Whop Packages page.</p>
+        <p>Products define TraderPro strategies. Whop plan mappings are managed on the Whop Packages page.</p>
       </div>
     </header>
     <section class="panel">
@@ -1347,7 +1357,7 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
         <input type="hidden" name="feature_id" value="{e(selected.get('feature_id'))}">
         <label>Strategy <input name="name" required placeholder="DUO" value="{e(selected_name)}"></label>
         <label>NT8 key <input name="nt8_strategy_key" required placeholder="DUO" value="{e(selected.get('nt8_strategy_key') or selected_name)}"></label>
-        <label class="checkbox"><input name="trader_enabled" type="checkbox" {trader_checked}> Trader</label>
+        <label class="checkbox"><input name="trader_enabled" type="checkbox" {trader_checked}> TraderPro</label>
         <label class="checkbox"><input name="nt8_enabled" type="checkbox" {nt8_checked}> NT8</label>
         <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
         <button type="submit">{button_text}</button>
@@ -1356,7 +1366,7 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Strategy</th><th>NT8 key</th><th>Trader</th><th>NT8</th><th>Active</th><th>Updated ET</th><th></th></tr></thead>
+        <thead><tr><th>Strategy</th><th>NT8 key</th><th>TraderPro</th><th>NT8</th><th>Active</th><th>Updated ET</th><th></th></tr></thead>
         <tbody>{rows or '<tr><td colspan="7">No products configured.</td></tr>'}</tbody>
       </table>
     </section>
@@ -1426,7 +1436,7 @@ def packages_page(
     <header class="title-row">
       <div>
         <h1>Whop Packages</h1>
-        <p>Map Whop plans or products to Trader strategy access and day grants.</p>
+        <p>Map Whop plans or products to TraderPro strategy access and day grants.</p>
       </div>
     </header>
     <section class="panel">
@@ -1504,7 +1514,7 @@ def releases_page(
         for value, label in (
             (STRATEGY_RELEASE_TYPE, "Strategy package"),
             (EXTENSION_PACKAGE_RELEASE_TYPE, "Extension package"),
-            (TRADER_DESKTOP_RELEASE_TYPE, "Trader Desktop"),
+            (TRADER_DESKTOP_RELEASE_TYPE, TRADERPRO_DESKTOP_DISPLAY_NAME),
         )
     )
     channel_options = "\n".join(
@@ -1527,7 +1537,7 @@ def releases_page(
         f"""
         <tr>
           <td><strong>{e(release.get('version'))}</strong><small>{e(release.get('release_notes'))}</small></td>
-          <td>{e(release.get('release_type') or (TRADER_DESKTOP_RELEASE_TYPE if release.get('scope') == 'app' else STRATEGY_RELEASE_TYPE))}<small>{e(display_product_name(release.get('product_name')) if release.get('product_name') else release.get('product_key') or 'trader-desktop')}</small></td>
+          <td>{e(release_type_display_name(release.get('release_type') or (TRADER_DESKTOP_RELEASE_TYPE if release.get('scope') == 'app' else STRATEGY_RELEASE_TYPE)))}<small>{e(release.get('release_type') or (TRADER_DESKTOP_RELEASE_TYPE if release.get('scope') == 'app' else STRATEGY_RELEASE_TYPE))} · {e(display_product_name(release.get('product_name')) if release.get('product_name') else release.get('product_key') or 'trader-desktop')}</small></td>
           <td>{e(release.get('channel'))}</td>
           <td>{e(release.get('audience_mode') or 'all')}<small>{e(release.get('rollout_percent') if release.get('rollout_percent') is not None else 100)}%</small></td>
           <td>{format_bool(release.get('is_required'))}</td>
@@ -1545,7 +1555,7 @@ def releases_page(
     <header class="title-row">
       <div>
         <h1>Releases</h1>
-        <p>Register Trader installers, strategy packages, and extension package artifacts. Files must live under <code>{e(artifact_dir)}</code>.</p>
+        <p>Register TraderPro installers, strategy packages, and extension package artifacts. Files must live under <code>{e(artifact_dir)}</code>.</p>
       </div>
     </header>
     <section class="panel release-editor-panel">
@@ -1564,15 +1574,15 @@ def releases_page(
           <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Published</label>
         </div>
         <div class="grid-form release-artifact-form">
-          <label>Artifact path <input name="artifact_path" required placeholder="trader/AutoEdgeTrader-1.0.0.zip" value="{e(selected.get('artifact_path'))}"></label>
-          <label>Download filename <input name="artifact_filename" placeholder="AutoEdgeTrader-1.0.0.zip" value="{e(selected.get('artifact_filename'))}"></label>
+          <label>Artifact path <input name="artifact_path" required placeholder="trader-desktop/TraderPro-Desktop-1.0.0-macos-arm64.dmg" value="{e(selected.get('artifact_path'))}"></label>
+          <label>Download filename <input name="artifact_filename" placeholder="TraderPro-Desktop-1.0.0-macos-arm64.dmg" value="{e(selected.get('artifact_filename'))}"></label>
           <label>Size bytes <input name="size_bytes" type="number" min="0" placeholder="auto if file exists" value="{e(selected.get('size_bytes'))}"></label>
           <label>SHA-256 <input name="sha256" placeholder="auto if file exists" value="{e(selected.get('sha256'))}"></label>
         </div>
         <details class="advanced-release" {advanced_open}>
           <summary>Advanced options <small>Targeting, rollback, signatures, and compatibility gates.</small></summary>
           <div class="grid-form release-advanced-form">
-            <label><span class="label-row">Platform {info_tip('Internal manifest selector. Current macOS Apple Silicon Trader builds use macos-arm64. Future Windows builds should use windows-x64.')}</span><select name="platform">{platform_options}</select></label>
+            <label><span class="label-row">Platform {info_tip('Internal manifest selector. Current macOS Apple Silicon TraderPro builds use macos-arm64. Windows builds use windows-x64.')}</span><select name="platform">{platform_options}</select></label>
             <label>Minimum supported <input name="min_supported_version" placeholder="optional" value="{e(selected.get('min_supported_version'))}"></label>
             <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
             <label>Signature key id <input name="signature_key_id" value="{e(selected.get('signature_key_id'))}"></label>
@@ -1585,9 +1595,9 @@ def releases_page(
             <label><span class="label-row">Allowed emails {info_tip('Email addresses that may receive this release when audience is allowlist. One per line or comma-separated.')}</span><textarea name="allowed_emails" rows="3">{e(format_list_field(selected.get('allowed_emails_json')))}</textarea></label>
             <label><span class="label-row">Allowed license keys {info_tip('Paste full license keys only when needed. The server stores hashes, so existing keys cannot be shown again here.')}</span><textarea name="allowed_license_keys" rows="3"></textarea></label>
           </div>
-          <label><span class="label-row">Rollback reason {info_tip('Set this when the target version is lower than the installed version and Trader should roll back.')}</span><input name="rollback_reason" value="{e(selected.get('rollback_reason'))}"></label>
+          <label><span class="label-row">Rollback reason {info_tip('Set this when the target version is lower than the installed version and TraderPro should roll back.')}</span><input name="rollback_reason" value="{e(selected.get('rollback_reason'))}"></label>
         </details>
-        <label>Release notes <input name="release_notes" value="{e(selected.get('release_notes'))}"></label>
+        <label>Release notes <input name="release_notes" placeholder="{e(TRADERPRO_DESKTOP_DEFAULT_RELEASE_NOTES)}" value="{e(selected.get('release_notes'))}"></label>
         <div class="form-actions">
           <button type="submit">{button_text}</button>
           {cancel_link}
