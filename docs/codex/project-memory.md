@@ -429,6 +429,20 @@ Operational SSH notes:
   `ssh root@192.168.50.141` and `scp <file> root@192.168.50.141:/tmp/<file>`.
 - Do not rely on `ssh -o BatchMode=yes` or BatchMode `scp`; BatchMode can fail
   even when normal SSH works from Codex.
+- The current `/opt/autoedge-licensing` production directory is a deployed file
+  tree, not a Git working tree. Do not plan on running `git pull` there.
+- For a production release, create an exact `git archive` of the committed
+  revision locally, verify its SHA-256 before and after upload, extract it to a
+  temporary server directory, and run `python3 -m unittest discover -s tests`
+  from staging. Before copying it over `/opt/autoedge-licensing`, create a code
+  archive and an online SQLite `.backup` under `/var/backups`; verify the backup
+  with `PRAGMA quick_check`. Restart `autoedge-licensing`, confirm the new
+  migration in `schema_migrations`, run `PRAGMA quick_check` on the live DB,
+  and check both local app health and publicly proxied routes.
+- nginx does not currently expose `/healthz` on `solidparts.se`; the local
+  `http://127.0.0.1:8788/healthz` endpoint is authoritative for service health.
+  Use public routes such as `/privacy` and `/admin/login` to verify external
+  proxy reachability.
 - For release registration, SSH to the server, `cd /opt/autoedge-licensing`,
   source `/etc/autoedge-licensing.env`, then use the existing
   `autoedge_licensing` service code and `LicensingService.upsert_release`,
