@@ -137,5 +137,54 @@ class EntitlementSourceMigrationTests(unittest.TestCase):
             self.assertEqual(iso(trial_end), rows[1]["expires_at"])
 
 
+class StrategyReleaseIdentityMigrationTests(unittest.TestCase):
+    def test_existing_release_gains_nullable_identity_columns_without_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(f"{directory}/legacy-release.db")
+            migrations = sorted(migration_dir().glob("*.sql"))
+            apply_migrations(database, [migration for migration in migrations if migration.name < "014_strategy_release_identity.sql"])
+            now = iso(utc_now().replace(microsecond=0))
+            with database.session() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO products(id, slug, name, feature_id, created_at, updated_at)
+                    VALUES ('product-legacy-release', 'legacy-runtime', 'Legacy Runtime',
+                            'strategy.legacy.runtime', ?, ?)
+                    """,
+                    (now, now),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO trader_releases(
+                        id, product_id, scope, release_type, product_key, channel,
+                        platform, version, is_required, is_active, artifact_path,
+                        artifact_filename, created_at, updated_at
+                    )
+                    VALUES ('release-legacy', 'product-legacy-release', 'strategy',
+                            'strategy_package', 'legacy-runtime', 'stable',
+                            'windows-x64', '1.0.0', 0, 1, 'legacy.zip',
+                            'legacy.zip', ?, ?)
+                    """,
+                    (now, now),
+                )
+
+            apply_migrations(database)
+
+            with database.session() as connection:
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(trader_releases)")}
+                release = connection.execute(
+                    "SELECT nt8_version, trader_revision FROM trader_releases WHERE id = 'release-legacy'"
+                ).fetchone()
+                migration = connection.execute(
+                    "SELECT name FROM schema_migrations WHERE name = '014_strategy_release_identity.sql'"
+                ).fetchone()
+
+            self.assertIn("nt8_version", columns)
+            self.assertIn("trader_revision", columns)
+            self.assertIsNone(release["nt8_version"])
+            self.assertIsNone(release["trader_revision"])
+            self.assertIsNotNone(migration)
+
+
 if __name__ == "__main__":
     unittest.main()

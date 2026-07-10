@@ -534,6 +534,8 @@ class AppEndpointTests(unittest.TestCase):
         self.assertIn("Audience", html)
         self.assertIn("Allowed emails", html)
         self.assertIn("Rollback reason", html)
+        self.assertIn("NT8 version", html)
+        self.assertIn("TraderPro revision", html)
         self.assertIn("Created ET", html)
         self.assertIn("Updated ET", html)
         self.assertIn("2026-06-04 09:05:00 ET", html)
@@ -606,6 +608,8 @@ class AppEndpointTests(unittest.TestCase):
             signature=None,
             release_notes=None,
             artifact_dir=str(artifact_dir),
+            nt8_version="2.1.0.8",
+            trader_revision=1,
         )
 
         status, _, manifest_body = self.call(
@@ -644,7 +648,11 @@ class AppEndpointTests(unittest.TestCase):
         manifest = json.loads(manifest_body)
         self.assertEqual("active", manifest["status"])
         self.assertEqual("2.0.0", manifest["releases"][0]["version"])
+        self.assertEqual("2.1.0.8", manifest["releases"][0]["nt8_version"])
+        self.assertEqual(1, manifest["releases"][0]["trader_revision"])
         self.assertTrue(token_status.startswith("200"), token_body)
+        self.assertEqual("2.1.0.8", token_payload["release"]["nt8_version"])
+        self.assertEqual(1, token_payload["release"]["trader_revision"])
         self.assertTrue(download_status.startswith("200"), download_status)
         self.assertIn(("Content-Disposition", 'attachment; filename="duo-http.zip"'), download_headers)
         self.assertEqual("http artifact", download_body)

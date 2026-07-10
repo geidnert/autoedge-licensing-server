@@ -57,6 +57,8 @@ class LicensingServiceTests(unittest.TestCase):
         platform: str = "windows-x64",
         is_active: bool = True,
         rollback_reason: str | None = None,
+        nt8_version: str | None = None,
+        trader_revision: int | None = None,
     ):
         artifact_dir = Path(self.tmp.name) / "release-test-artifacts"
         artifact_dir.mkdir(exist_ok=True)
@@ -85,6 +87,8 @@ class LicensingServiceTests(unittest.TestCase):
             required_tags=required_tags,
             rollout_percent=rollout_percent,
             rollback_reason=rollback_reason,
+            nt8_version=nt8_version,
+            trader_revision=trader_revision,
         )
 
     def desktop_release(
@@ -2371,6 +2375,95 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertTrue(manifest["releases"][0]["update_available"])
         self.assertEqual(len(b"duo package"), manifest["releases"][0]["artifact"]["size_bytes"])
 
+    def test_strategy_release_identity_is_created_updated_and_platform_specific(self) -> None:
+        windows = self.strategy_release(
+            version="3.0.0",
+            platform="windows-x64",
+            nt8_version="12.3.0.45",
+            trader_revision=0,
+        )
+        macos = self.strategy_release(
+            version="3.0.0",
+            platform="macos-arm64",
+            nt8_version="12.3.0.45",
+            trader_revision=0,
+        )
+
+        updated = self.service.upsert_release(
+            release_id=windows["id"],
+            scope="strategy",
+            release_type="strategy_package",
+            product_key="duo-runtime",
+            product_id=self.product["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="3.0.1",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path=windows["artifact_path"],
+            artifact_filename=windows["artifact_filename"],
+            size_bytes=windows["size_bytes"],
+            sha256_value=windows["sha256"],
+            signature=None,
+            release_notes="TraderPro-only strategy update",
+            artifact_dir=str(Path(self.tmp.name) / "release-test-artifacts"),
+            nt8_version="12.3.0.45",
+            trader_revision=1,
+        )
+
+        self.assertEqual("12.3.0.45", windows["nt8_version"])
+        self.assertEqual(0, windows["trader_revision"])
+        self.assertEqual("12.3.0.45", macos["nt8_version"])
+        self.assertEqual(0, macos["trader_revision"])
+        self.assertEqual("3.0.1", updated["version"])
+        self.assertEqual("12.3.0.45", updated["nt8_version"])
+        self.assertEqual(1, updated["trader_revision"])
+
+    def test_strategy_release_manifest_serializes_legacy_null_identity(self) -> None:
+        created = self.active_customer("legacy-release-identity@example.com")
+        self.strategy_release(version="1.0.0")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="legacy-release-identity-machine",
+            app_version="9.9.9",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            installed_packages=[{"package_id": "duo-runtime", "version": "0.9.0"}],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        release = manifest["releases"][0]
+        self.assertIn("nt8_version", release)
+        self.assertIn("trader_revision", release)
+        self.assertIsNone(release["nt8_version"])
+        self.assertIsNone(release["trader_revision"])
+
+    def test_strategy_release_identity_validation(self) -> None:
+        for invalid_version in ("2.1.0", "2.1.0.8.1", "2.1.a.8", "2..0.8", "v2.1.0.8"):
+            with self.subTest(nt8_version=invalid_version):
+                with self.assertRaisesRegex(ValueError, "exactly four numeric components"):
+                    self.strategy_release(
+                        version=f"invalid-{invalid_version}",
+                        nt8_version=invalid_version,
+                        trader_revision=0,
+                    )
+
+        with self.assertRaisesRegex(ValueError, "both be supplied or both be blank"):
+            self.strategy_release(version="missing-revision", nt8_version="2.1.0.8")
+        with self.assertRaisesRegex(ValueError, "both be supplied or both be blank"):
+            self.strategy_release(version="missing-nt8-version", trader_revision=0)
+        with self.assertRaisesRegex(ValueError, "non-negative integer"):
+            self.strategy_release(version="negative-revision", nt8_version="2.1.0.8", trader_revision=-1)
+
     def test_extension_package_hidden_and_not_downloadable_without_feature_grant(self) -> None:
         created = self.active_customer("discord-hidden@example.com")
         release = self.extension_release(version="1.0.0")
@@ -2465,6 +2558,8 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(expires_at, item["expires_at"])
         self.assertEqual("1.1.0", item["current_version"])
         self.assertEqual("update", item["action"])
+        self.assertNotIn("nt8_version", item)
+        self.assertNotIn("trader_revision", item)
 
     def test_expired_discord_feature_grant_does_not_expose_extension_package(self) -> None:
         product = self.discord_product()
@@ -3241,10 +3336,17 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("rollback", manifest["app_update"]["action"])
         self.assertEqual("0.1.0", manifest["app_update"]["target_version"])
         self.assertEqual("Rollback bad installer", manifest["app_update"]["rollback_reason"])
+        self.assertNotIn("nt8_version", manifest["app_update"])
+        self.assertNotIn("trader_revision", manifest["app_update"])
 
     def test_strategy_package_rollback_uses_installed_packages(self) -> None:
         created = self.active_customer("strategy-rollback@example.com")
-        self.strategy_release(version="0.1.0", rollback_reason="Rollback strategy package")
+        self.strategy_release(
+            version="0.1.0",
+            rollback_reason="Rollback strategy package",
+            nt8_version="2.1.0.8",
+            trader_revision=1,
+        )
 
         manifest = self.service.release_manifest(
             license_key=created.license_key,
@@ -3266,6 +3368,8 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("rollback", manifest["releases"][0]["action"])
         self.assertEqual("0.1.0", manifest["releases"][0]["target_version"])
         self.assertEqual("0.1.1", manifest["releases"][0]["current_version"])
+        self.assertEqual("2.1.0.8", manifest["releases"][0]["nt8_version"])
+        self.assertEqual(1, manifest["releases"][0]["trader_revision"])
 
     def test_download_token_denied_when_audience_denies_release(self) -> None:
         created = self.active_customer("token-audience@example.com")

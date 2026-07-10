@@ -760,6 +760,8 @@ class AutoEdgeApp:
                 required_tags=form.get("required_tags") or None,
                 rollout_percent=parse_optional_int(form.get("rollout_percent")),
                 rollback_reason=form.get("rollback_reason") or None,
+                nt8_version=form.get("nt8_version") or None,
+                trader_revision=parse_optional_int(form.get("trader_revision")),
                 actor_id=admin["id"],
                 ip_address=request.ip,
             )
@@ -1536,7 +1538,7 @@ def releases_page(
     rows = "\n".join(
         f"""
         <tr>
-          <td><strong>{e(release.get('version'))}</strong><small>{e(release.get('release_notes'))}</small></td>
+          <td><strong>{e(release.get('version'))}</strong><small>{e(f"NT8 {release.get('nt8_version')} · TP r{release.get('trader_revision')}") if release.get('nt8_version') is not None and release.get('trader_revision') is not None else ''}</small><small>{e(release.get('release_notes'))}</small></td>
           <td>{e(release_type_display_name(release.get('release_type') or (TRADER_DESKTOP_RELEASE_TYPE if release.get('scope') == 'app' else STRATEGY_RELEASE_TYPE)))}<small>{e(release.get('release_type') or (TRADER_DESKTOP_RELEASE_TYPE if release.get('scope') == 'app' else STRATEGY_RELEASE_TYPE))} · {e(display_product_name(release.get('product_name')) if release.get('product_name') else release.get('product_key') or 'trader-desktop')}</small></td>
           <td>{e(release.get('channel'))}</td>
           <td>{e(release.get('audience_mode') or 'all')}<small>{e(release.get('rollout_percent') if release.get('rollout_percent') is not None else 100)}%</small></td>
@@ -1570,6 +1572,8 @@ def releases_page(
           <label>Product/package id <input name="product_key" placeholder="trader-desktop or discord-notifier" value="{e(selected.get('product_key') or (TRADER_DESKTOP_PRODUCT_ID if selected_release_type == TRADER_DESKTOP_RELEASE_TYPE else ''))}"></label>
           <label>Channel <select name="channel">{channel_options}</select></label>
           <label>Version <input name="version" required placeholder="1.0.0" value="{e(selected.get('version'))}"></label>
+          <label><span class="label-row">NT8 version {info_tip('Optional for strategy packages. Supply together with TraderPro revision using exactly four numeric components, for example 2.1.0.8.')}</span><input name="nt8_version" placeholder="2.1.0.8" value="{e(selected.get('nt8_version'))}"></label>
+          <label><span class="label-row">TraderPro revision {info_tip('Optional for strategy packages. Supply together with NT8 version; starts at 0 and increments for TraderPro-only strategy releases.')}</span><input name="trader_revision" type="number" min="0" placeholder="0" value="{e(selected.get('trader_revision'))}"></label>
           <label class="checkbox"><input name="is_required" type="checkbox" {required_checked}> Required</label>
           <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Published</label>
         </div>

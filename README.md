@@ -292,6 +292,8 @@ Response:
       "feature_id": "strategy.duo.runtime",
       "required_features": ["strategy.duo.runtime"],
       "version": "1.2.0",
+      "nt8_version": "2.1.0.8",
+      "trader_revision": 1,
       "required": false,
       "license_status": "active",
       "license_source": "whop",
@@ -345,6 +347,12 @@ Response:
 ```
 
 Extension package releases use the same `releases` array with `release_type: "extension_package"` and `scope: "extension"`. Discord Notifier release rows use `package_id: "discord-notifier"`, `display_name: "Discord Notifier"`, and `required_features: ["trader.notifications.discord"]`.
+
+Strategy-package release objects also include nullable `nt8_version` and
+`trader_revision` fields. Existing releases keep both fields `null`; no NT8
+version is inferred or backfilled. `nt8_version` must have exactly four numeric
+components (multi-digit components are allowed), and `trader_revision` must be a
+non-negative integer. Supply both values or leave both blank.
 
 TraderPro should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, device-limit-exceeded, or unknown customers receive an empty release list, `app_update: null`, and the same blocking license status.
 
@@ -524,6 +532,21 @@ New first-install presentation names are:
 Store these artifacts under the existing `trader-desktop` artifact directory. Desktop releases are identified by `release_type = trader_desktop`, `scope = app`, and `product_key = trader-desktop`, not by a filename prefix. Previously registered `Trader-Desktop-*`, `Trader-Setup-*`, or other historical filenames and their tokenized download URLs remain valid; do not rename files or rewrite historical release rows. New desktop releases with no explicit notes use `TraderPro Desktop update`.
 
 Strategy package releases use release type `Strategy package`, choose the strategy in the licensed product field, and keep using feature ids such as `strategy.duo.runtime`.
+
+Strategy release identity and ordering are maintained separately:
+
+- A new NT8 release changes `nt8_version` and normally resets
+  `trader_revision` to `0`.
+- A TraderPro-only strategy release keeps the same `nt8_version` and increments
+  `trader_revision`.
+- The existing technical `version` remains independently monotonic. Continue
+  using it for update ordering, installed/current/target comparisons, artifact
+  matching, rollback, and release uniqueness; do not replace it with the
+  customer-facing NT8/TraderPro identity.
+
+Register separate `macos-arm64` and `windows-x64` rows for a cross-platform
+strategy release. Both rows may carry the same `nt8_version` and
+`trader_revision` values.
 
 For MICH, use seeded product `MICH Runtime` with product/package id `mich-runtime`, release type `strategy_package`, version `0.1.0`, and feature id `strategy.mich.runtime`. Copy one real artifact per platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register separate `Strategy package` releases for `macos-arm64` and `windows-x64`. Do not register placeholder releases without artifacts, and do not add MICH parity claims while May 3, 2026 through June 16, 2026 parity is pending.
 

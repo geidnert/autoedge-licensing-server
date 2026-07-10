@@ -293,6 +293,23 @@ bound packages such as `strategy_package` and `extension_package` still use the
 existing product-bound scope internally, while `release_type` is authoritative
 in manifests.
 
+Strategy-package releases have two nullable customer-facing identity fields:
+`nt8_version` is an exact four-component numeric NT8 version such as `2.1.0.8`,
+and `trader_revision` is a non-negative integer. Both values must be supplied
+together or both left `NULL`; legacy releases remain `NULL` without an invented
+backfill. Multi-digit NT8 version components are valid. Manifest, download-token,
+resolved-download, audience-selected, and rollback strategy release objects
+preserve both fields. Desktop and extension response shapes do not expose them.
+
+Release workflow keeps display identity independent from technical package
+ordering. A new NT8 release changes `nt8_version` and normally resets
+`trader_revision` to `0`. A TraderPro-only strategy release retains
+`nt8_version` and increments `trader_revision`. The existing technical
+`version` remains independently monotonic and continues to control update
+ordering, installed/current/target comparisons, artifact matching, rollback,
+and release uniqueness. Platform-specific `macos-arm64` and `windows-x64` rows
+may carry identical NT8/TraderPro identity metadata.
+
 Supported platforms:
 
 - `macos-arm64`
@@ -379,6 +396,9 @@ Current migration sequence:
 - `013_entitlement_sources.sql`: adds the internal package source key to
   entitlements, changes external-id uniqueness to include that source, and
   splits legacy multi-package entitlement rows from grant-ledger history.
+- `014_strategy_release_identity.sql`: adds nullable `nt8_version` and
+  non-negative nullable `trader_revision` columns to strategy release storage;
+  existing rows remain `NULL`.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not

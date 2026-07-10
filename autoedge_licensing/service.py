@@ -822,6 +822,8 @@ class LicensingService:
         required_tags: list[str] | str | None = None,
         rollout_percent: int | None = None,
         rollback_reason: str | None = None,
+        nt8_version: str | None = None,
+        trader_revision: int | None = None,
         actor_id: str | None = None,
         ip_address: str | None = None,
     ) -> dict[str, Any]:
@@ -832,6 +834,7 @@ class LicensingService:
         normalized_channel = channel.strip().lower() or "stable"
         normalized_platform = platform.strip().lower() or DEFAULT_RELEASE_PLATFORM
         normalized_version = version.strip()
+        normalized_nt8_version = normalize_optional_text(nt8_version)
         normalized_path = artifact_path.strip()
         normalized_release_notes = release_notes.strip() if release_notes and release_notes.strip() else None
         if normalized_release_type == TRADER_DESKTOP_RELEASE_TYPE and normalized_release_notes is None:
@@ -850,6 +853,18 @@ class LicensingService:
         normalized_rollout_percent = clamp_rollout_percent(rollout_percent)
         if not normalized_version:
             raise ValueError("Version is required.")
+        if normalized_release_type == STRATEGY_RELEASE_TYPE:
+            if (normalized_nt8_version is None) != (trader_revision is None):
+                raise ValueError("NT8 version and TraderPro revision must both be supplied or both be blank.")
+            if normalized_nt8_version is not None and re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", normalized_nt8_version) is None:
+                raise ValueError("NT8 version must contain exactly four numeric components, for example 2.1.0.8.")
+            if trader_revision is not None:
+                if isinstance(trader_revision, bool) or not isinstance(trader_revision, int):
+                    raise ValueError("TraderPro revision must be a non-negative integer.")
+                if trader_revision < 0:
+                    raise ValueError("TraderPro revision must be a non-negative integer.")
+        elif normalized_nt8_version is not None or trader_revision is not None:
+            raise ValueError("NT8 version and TraderPro revision are only valid for strategy package releases.")
         if not normalized_path:
             raise ValueError("Artifact path is required.")
         if normalized_scope == "strategy" and not product_id:
@@ -888,14 +903,15 @@ class LicensingService:
                 connection.execute(
                     """
                     INSERT INTO trader_releases(
-                        id, product_id, scope, release_type, product_key, channel, platform, version, min_supported_version,
+                        id, product_id, scope, release_type, product_key, channel, platform, version,
+                        nt8_version, trader_revision, min_supported_version,
                         is_required, is_active, artifact_path, artifact_filename, size_bytes,
                         sha256, signature, signature_key_id, release_notes, is_published, published_at,
                         audience_mode, allowed_customer_ids_json, allowed_emails_json,
                         allowed_license_key_hashes_json, required_tags_json, rollout_percent, rollback_reason,
                         created_by_admin_id, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         saved_release_id,
@@ -906,6 +922,8 @@ class LicensingService:
                         normalized_channel,
                         normalized_platform,
                         normalized_version,
+                        normalized_nt8_version,
+                        trader_revision,
                         min_supported_version.strip() if min_supported_version else None,
                         int(is_required),
                         int(is_active),
@@ -936,7 +954,7 @@ class LicensingService:
                     """
                     UPDATE trader_releases
                     SET product_id = ?, scope = ?, release_type = ?, product_key = ?, channel = ?, platform = ?, version = ?,
-                        min_supported_version = ?, is_required = ?, is_active = ?,
+                        nt8_version = ?, trader_revision = ?, min_supported_version = ?, is_required = ?, is_active = ?,
                         artifact_path = ?, artifact_filename = ?, size_bytes = ?, sha256 = ?,
                         signature = ?, signature_key_id = ?, release_notes = ?, is_published = ?,
                         published_at = ?, audience_mode = ?, allowed_customer_ids_json = ?,
@@ -952,6 +970,8 @@ class LicensingService:
                         normalized_channel,
                         normalized_platform,
                         normalized_version,
+                        normalized_nt8_version,
+                        trader_revision,
                         min_supported_version.strip() if min_supported_version else None,
                         int(is_required),
                         int(is_active),
@@ -991,6 +1011,8 @@ class LicensingService:
                     "channel": normalized_channel,
                     "platform": normalized_platform,
                     "version": normalized_version,
+                    "nt8_version": normalized_nt8_version,
+                    "trader_revision": trader_revision,
                     "published": is_active,
                     "audience_mode": normalized_audience_mode,
                     "rollout_percent": normalized_rollout_percent,
@@ -2771,7 +2793,7 @@ class LicensingService:
             display_name = display_strategy_name(product_name)
         else:
             display_name = product_name or package_id
-        return {
+        item = {
             "id": release["id"],
             "release_id": release["id"],
             "scope": manifest_scope_for_release_type(release_type, release.get("scope")),
@@ -2806,6 +2828,10 @@ class LicensingService:
             "release_notes": release.get("release_notes"),
             "rollback_reason": release.get("rollback_reason"),
         }
+        if release_type == STRATEGY_RELEASE_TYPE:
+            item["nt8_version"] = release.get("nt8_version")
+            item["trader_revision"] = release.get("trader_revision")
+        return item
 
     def _trader_desktop_update_item(self, release: dict[str, Any], current_version: str | None) -> dict[str, Any]:
         action = release_action_for_row(release, current_version)
