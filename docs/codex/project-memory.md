@@ -240,12 +240,24 @@ Mapping model:
 Grant behavior:
 
 - Trial events use `trial_ends_at` when Whop provides it.
-- Paid, valid, and renewed events add package days onto
-  `max(existing expiry, now)`.
-- Duplicate paid events for the same payment, membership period, or trial are
-  suppressed by `license_grant_ledger`.
-- Refunds, chargebacks, disputes, and invalid membership events revoke package
-  entitlements.
+- Paid, valid, and renewed events are monotonic ensure-through updates. The
+  target is the later of the explicit Whop period end and the configured
+  package period; only the compatibility case with no period start or end adds
+  configured days once after current coverage.
+- Duplicate paid and renewal events for the same payment or membership period
+  are suppressed across event types by `license_grant_ledger`. Trial updates
+  with a genuinely later `trial_ends_at` may extend coverage, while delivery of
+  the same trial date remains idempotent.
+- Whop package entitlements are separate sources per membership, package, and
+  licensed product. Effective access uses the active source with Lifetime or
+  the latest expiry, so one source ending cannot mask another active source.
+- Normal expiration is not revocation: it cannot shorten later access, block a
+  future paid expiry, or convert no-expiry Lifetime access into dated access.
+  Refunds, chargebacks, disputes, and invalid membership events remain explicit
+  source revocations.
+- Whop and manual entitlement mutations use `BEGIN IMMEDIATE` transactions to
+  serialize concurrent SQLite writers. Coverage dates and subscription period
+  dates are updated monotonically.
 
 ## Releases And Downloads
 
@@ -345,6 +357,9 @@ Current migration sequence:
   of the short-lived OAuth `state`.
 - `012_seed_mich_strategy_product.sql`: idempotently seeds/backfills the MICH
   strategy product metadata without creating release rows.
+- `013_entitlement_sources.sql`: adds the internal package source key to
+  entitlements, changes external-id uniqueness to include that source, and
+  splits legacy multi-package entitlement rows from grant-ledger history.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not
@@ -374,6 +389,10 @@ Important behavior:
 - Manual strategy access can be set to `Date/time` or `Lifetime`; `Lifetime`
   uses the existing nullable `entitlements.expires_at` storage and should render
   as Lifetime for active/trialing no-expiry rows.
+- Manual `active`/`trialing` saves are monotonic ensure-through operations. They
+  do not shorten an existing later expiry, and a Lifetime source cannot be
+  changed back to dated access. Explicit expired/revoked/suspended statuses
+  remain available for deliberate blocking actions.
 - Customer entitlement rows have a per-row Remove action in the visible
   Entitlements table. It deletes the selected `entitlements` row and writes an
   `entitlement.removed` audit event; Whop grant ledger rows keep their nullable

@@ -19,11 +19,16 @@ class Database:
         return connection
 
     @contextmanager
-    def session(self) -> Iterator[sqlite3.Connection]:
+    def session(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
         connection = self.connect()
         try:
+            if immediate:
+                connection.execute("BEGIN IMMEDIATE")
             yield connection
             connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 

@@ -86,9 +86,13 @@ MICH is not generally released by the seed data. Register MICH release rows only
 Lifecycle handling:
 
 - Trialing events set access through `trial_ends_at` when Whop provides it.
-- Paid/valid/renewed events add the package days onto `max(existing expiry, now)`, so paid days can start after the trial expiry.
-- Duplicate paid events for the same payment id or membership period are suppressed by the grant ledger.
-- `refund.created`, chargebacks, disputes, and `membership.went_invalid` revoke package entitlements.
+- Paid/valid/renewed events ensure access through the later of the event's period end and the configured package period. They never shorten later existing access. When Whop provides neither a period start nor end, configured days are applied once after current coverage as a compatibility fallback.
+- Duplicate paid or renewal events for the same payment id or membership period are suppressed across event types by the grant ledger, so a payment and its matching membership update cannot add the same period twice.
+- Package entitlements are tracked independently per membership, package, and licensed product. A standalone trial ending cannot expire the same product granted by an active bundle or another source.
+- Normal expiration events do not revoke access or replace a later paid expiry. Future-dated access remains active until its stored expiry, and no-expiry Lifetime access remains Lifetime.
+- `refund.created`, chargebacks, disputes, and `membership.went_invalid` are explicit revocation operations for the affected source. If no other source remains, the license response is `revoked`.
+- Whop entitlement mutations use serialized SQLite write transactions so an older concurrent update cannot overwrite a later coverage date.
+- Admin `active` and `trialing` saves also ensure access through the submitted date instead of shortening a later date. Once a source is Lifetime, later dated saves keep it Lifetime; admins can still use explicit `expired`, `revoked`, or `suspended` statuses.
 - Expired, suspended, and revoked results are returned clearly to Trader so strategies can block access.
 
 ### Trader License Check

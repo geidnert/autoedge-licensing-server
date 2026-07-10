@@ -1254,11 +1254,17 @@ class LicensingService:
         now = iso()
         external_id = f"manual:{customer_id}:{product_id}"
         revoked_at = now if status == "revoked" else None
-        with self.database.session() as connection:
+        with self.database.session(immediate=True) as connection:
             existing = connection.execute(
                 "SELECT * FROM entitlements WHERE source = 'manual' AND external_id = ?",
                 (external_id,),
             ).fetchone()
+            if existing is not None:
+                existing_expiry = parse_time(existing["expires_at"])
+                if existing_expiry is None:
+                    saved_expiry = None
+                elif status in ACTIVE_ENTITLEMENT_STATUSES and parsed_expiry is not None:
+                    saved_expiry = iso(later_time(existing_expiry, parsed_expiry))
             if existing is None:
                 entitlement_id = uuid.uuid4().hex
                 connection.execute(
@@ -1534,7 +1540,7 @@ class LicensingService:
         )
         status = normalize_entitlement_status(subscription_info["status"], event_type)
         sub_status = normalize_subscription_status(subscription_info["status"], event_type)
-        with self.database.session() as connection:
+        with self.database.session(immediate=True) as connection:
             subscription_id = self._upsert_whop_subscription(
                 connection,
                 customer_result.customer["id"],
@@ -1616,12 +1622,17 @@ class LicensingService:
                 )
                 for grant in grants
             ]
+            applied_statuses = {
+                application["status"]
+                for application in applications
+                if application["status"] in {"active", "trialing", "expired", "revoked", "suspended", "pending"}
+            }
         return {
             "status": "processed",
             "customer_id": customer_result.customer["id"],
             "package_id": package["id"],
             "whop_id": package["whop_id"],
-            "entitlement_status": status,
+            "entitlement_status": next(iter(applied_statuses)) if len(applied_statuses) == 1 else status,
             "mapping_mode": "whop_package",
             "applied_grants": applications,
         }
@@ -1666,21 +1677,43 @@ class LicensingService:
             )
             return subscription_id
 
+        existing_start = parse_time(existing_sub["current_period_start"])
+        existing_end = parse_time(existing_sub["current_period_end"])
+        incoming_start = subscription_info["period_start"]
+        incoming_end = subscription_info["expires_at"]
+        saved_start = later_time(existing_start, incoming_start)
+        saved_end = later_time(existing_end, incoming_end)
+        stale_terminal_update = sub_status == "expired" and (
+            (existing_end is not None and incoming_end is None and existing_end > utc_now())
+            or (existing_end is not None and incoming_end is not None and incoming_end < existing_end)
+        )
+        saved_status = existing_sub["status"] if stale_terminal_update else sub_status
+        saved_raw_status = existing_sub["raw_status"] if stale_terminal_update else subscription_info["status"]
+        saved_plan_id = (
+            existing_sub["whop_plan_id"]
+            if stale_terminal_update
+            else (subscription_info["plan_id"] or existing_sub["whop_plan_id"])
+        )
+        saved_cancel_at_period_end = (
+            existing_sub["cancel_at_period_end"]
+            if stale_terminal_update
+            else int(subscription_info["cancel_at_period_end"])
+        )
         connection.execute(
             """
             UPDATE subscriptions
-            SET customer_id = ?, whop_plan_id = COALESCE(?, whop_plan_id), status = ?, raw_status = ?,
+            SET customer_id = ?, whop_plan_id = ?, status = ?, raw_status = ?,
                 current_period_start = ?, current_period_end = ?, cancel_at_period_end = ?, updated_at = ?
             WHERE id = ?
             """,
             (
                 customer_id,
-                subscription_info["plan_id"],
-                sub_status,
-                subscription_info["status"],
-                iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
-                iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else None,
-                int(subscription_info["cancel_at_period_end"]),
+                saved_plan_id,
+                saved_status,
+                saved_raw_status,
+                iso(saved_start) if saved_start else None,
+                iso(saved_end) if saved_end else None,
+                saved_cancel_at_period_end,
                 now,
                 existing_sub["id"],
             ),
@@ -1700,14 +1733,64 @@ class LicensingService:
         webhook_id: str,
         ip_address: str | None,
     ) -> dict[str, Any]:
-        now = iso()
-        external_id = subscription_info["entitlement_id"] or subscription_info["membership_id"] or webhook_id
+        now_dt = utc_now()
+        now = iso(now_dt)
+        product_id = product["id"]
+        external_id = subscription_info["membership_id"] or subscription_info["entitlement_id"] or webhook_id
         existing_entitlement = connection.execute(
-            "SELECT * FROM entitlements WHERE source = 'whop' AND external_id = ?",
+            "SELECT * FROM entitlements WHERE source = 'whop' AND external_id = ? AND package_id IS NULL",
             (external_id,),
         ).fetchone()
-        revoked_at = now if status == "revoked" else None
-        expires_at = iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else None
+        before_expiry = parse_time(existing_entitlement["expires_at"]) if existing_entitlement else None
+        starts_after = earlier_time(
+            parse_time(existing_entitlement["starts_at"]) if existing_entitlement else None,
+            subscription_info["period_start"],
+        ) or now_dt
+        grant_kind = self._grant_kind(status, event_type)
+        if grant_kind in {"paid", "renewal"}:
+            starts_after = earlier_time(starts_after, now_dt) or now_dt
+        expires_after = entitlement_expiry_target(grant_kind, subscription_info, None, now_dt)
+        target_status = status
+        revoked_at = None
+
+        if existing_entitlement is not None:
+            if before_expiry is None:
+                expires_after = None
+            else:
+                expires_after = later_time(before_expiry, expires_after)
+
+        if grant_kind in {"trial", "paid", "renewal"} and existing_entitlement is not None:
+            if existing_entitlement["status"] == "active" and grant_kind == "trial":
+                target_status = "active"
+            if existing_entitlement["status"] in {"revoked", "suspended"} and (
+                expires_after is None
+                or before_expiry is None
+                or expires_after <= before_expiry
+            ):
+                target_status = existing_entitlement["status"]
+                revoked_at = existing_entitlement["revoked_at"]
+        elif grant_kind == "revoke":
+            target_status = "revoked"
+            revoked_at = now
+        elif grant_kind == "expire":
+            if existing_entitlement is not None and (
+                before_expiry is None or before_expiry > now_dt
+            ):
+                target_status = (
+                    "active"
+                    if existing_entitlement["status"] == "expired" and existing_entitlement["revoked_at"] is None
+                    else existing_entitlement["status"]
+                )
+                revoked_at = existing_entitlement["revoked_at"]
+            else:
+                target_status = "expired"
+                expires_after = before_expiry or expires_after or now_dt
+        elif grant_kind == "suspend":
+            target_status = "suspended"
+            expires_after = before_expiry or expires_after
+        elif grant_kind == "ignored":
+            return dict(existing_entitlement) if existing_entitlement is not None else {"status": "ignored"}
+
         if existing_entitlement is None:
             entitlement_id = uuid.uuid4().hex
             connection.execute(
@@ -1721,12 +1804,12 @@ class LicensingService:
                 (
                     entitlement_id,
                     customer_id,
-                    product["id"],
+                    product_id,
                     subscription_id,
                     external_id,
-                    status,
-                    iso(subscription_info["period_start"]) if subscription_info["period_start"] else now,
-                    expires_at,
+                    target_status,
+                    iso(starts_after),
+                    iso(expires_after) if expires_after else None,
                     revoked_at,
                     webhook_id,
                     now,
@@ -1745,11 +1828,11 @@ class LicensingService:
                 """,
                 (
                     customer_id,
-                    product["id"],
+                    product_id,
                     subscription_id,
-                    status,
-                    iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
-                    expires_at,
+                    target_status,
+                    iso(starts_after),
+                    iso(expires_after) if expires_after else None,
                     revoked_at,
                     webhook_id,
                     now,
@@ -1764,7 +1847,14 @@ class LicensingService:
             action,
             "entitlement",
             entitlement_id,
-            {"customer_id": customer_id, "product_id": product["id"], "status": status, "event_type": event_type, "webhook_id": webhook_id},
+            {
+                "customer_id": customer_id,
+                "product_id": product_id,
+                "status": target_status,
+                "grant_kind": grant_kind,
+                "event_type": event_type,
+                "webhook_id": webhook_id,
+            },
             ip_address,
         )
         row = connection.execute("SELECT * FROM entitlements WHERE id = ?", (entitlement_id,)).fetchone()
@@ -1787,16 +1877,35 @@ class LicensingService:
         now_dt = utc_now()
         now = iso(now_dt)
         product_id = grant["product_id"]
-        external_root = subscription_info["membership_id"] or subscription_info["entitlement_id"] or f"{package['whop_id']}:{customer_id}"
+        external_root = (
+            subscription_info["membership_id"]
+            or subscription_info["entitlement_id"]
+            or f"{package['whop_id']}:{customer_id}"
+        )
         external_id = f"{external_root}:{product_id}"
         existing = connection.execute(
-            "SELECT * FROM entitlements WHERE source = 'whop' AND external_id = ?",
-            (external_id,),
+            "SELECT * FROM entitlements WHERE source = 'whop' AND external_id = ? AND package_id = ?",
+            (external_id, package["id"]),
         ).fetchone()
         before_expiry = parse_time(existing["expires_at"]) if existing else None
+        starts_after = earlier_time(
+            parse_time(existing["starts_at"]) if existing else None,
+            subscription_info["period_start"],
+        ) or now_dt
         grant_days = grant["days"] if grant["days"] is not None else package["default_days"]
         grant_days = int(grant_days) if grant_days is not None else None
         grant_kind = self._grant_kind(status, event_type)
+        if grant_kind in {"paid", "renewal"}:
+            starts_after = earlier_time(starts_after, now_dt) or now_dt
+        grant_target = entitlement_expiry_target(grant_kind, subscription_info, grant_days, now_dt)
+        relative_days_target = (
+            grant_kind in {"paid", "renewal"}
+            and grant_days is not None
+            and subscription_info["period_start"] is None
+            and subscription_info["expires_at"] is None
+        )
+        if relative_days_target:
+            grant_target = (later_time(before_expiry, now_dt) or now_dt) + timedelta(days=grant_days)
         fingerprint = self._grant_fingerprint(
             grant_kind,
             customer_id=customer_id,
@@ -1806,6 +1915,8 @@ class LicensingService:
             webhook_id=webhook_id,
         )
 
+        duplicate = None
+        duplicate_period = False
         if grant_kind in {"trial", "paid", "renewal"}:
             duplicate = connection.execute(
                 "SELECT * FROM license_grant_ledger WHERE event_fingerprint = ?",
@@ -1820,7 +1931,15 @@ class LicensingService:
                 grant_kind=grant_kind,
                 period_start=subscription_info["period_start"],
             )
-            if duplicate is not None or duplicate_period:
+            coverage_improved = (
+                existing is not None
+                and before_expiry is not None
+                and grant_target is not None
+                and grant_target > before_expiry
+            )
+            if (duplicate is not None or duplicate_period) and (
+                relative_days_target or not coverage_improved
+            ):
                 return {
                     "product_id": product_id,
                     "strategy": grant["product_name"],
@@ -1829,55 +1948,87 @@ class LicensingService:
                     "days_applied": 0,
                 }
 
-        expires_after = before_expiry
+        expires_after = before_expiry if existing is not None else grant_target
         days_applied = 0
         revoked_at = None
         target_status = status
 
-        if grant_kind == "trial":
-            trial_end = subscription_info["trial_ends_at"] or subscription_info["expires_at"]
-            if trial_end and trial_end > now_dt:
-                expires_after = later_time(before_expiry, trial_end)
-                days_applied = ceil_days(trial_end - now_dt)
-            elif grant_days is not None:
-                base = later_time(before_expiry, now_dt) or now_dt
-                expires_after = base + timedelta(days=grant_days)
-                days_applied = grant_days
-        elif grant_kind in {"paid", "renewal"}:
-            if grant_days is not None:
-                base = later_time(before_expiry, now_dt) or now_dt
-                expires_after = base + timedelta(days=grant_days)
-                days_applied = grant_days
-            elif subscription_info["expires_at"]:
-                expires_after = later_time(before_expiry, subscription_info["expires_at"])
+        if grant_kind in {"trial", "paid", "renewal"}:
+            if existing is not None and before_expiry is None:
+                expires_after = None
+            else:
+                expires_after = later_time(before_expiry, grant_target)
+            coverage_improved = existing is None or (
+                before_expiry is not None
+                and expires_after is not None
+                and expires_after > before_expiry
+            )
+            if duplicate is None and not duplicate_period and coverage_improved:
+                if grant_kind == "trial" and expires_after is not None:
+                    days_applied = ceil_days(expires_after - now_dt)
+                elif grant_days is not None:
+                    days_applied = grant_days
+            if existing is not None and existing["status"] == "active" and grant_kind == "trial":
+                target_status = "active"
+            if existing is not None and existing["status"] in {"revoked", "suspended"} and not coverage_improved:
+                target_status = existing["status"]
+                revoked_at = existing["revoked_at"]
         elif grant_kind == "revoke":
             target_status = "revoked"
             revoked_at = now
         elif grant_kind == "expire":
-            target_status = "expired"
-            expires_after = before_expiry or now_dt
+            if existing is not None and (before_expiry is None or before_expiry > now_dt):
+                target_status = (
+                    "active"
+                    if existing["status"] == "expired" and existing["revoked_at"] is None
+                    else existing["status"]
+                )
+                expires_after = before_expiry
+                revoked_at = existing["revoked_at"]
+            else:
+                target_status = "expired"
+                expires_after = before_expiry or grant_target or now_dt
         elif grant_kind == "suspend":
             target_status = "suspended"
-            expires_after = before_expiry or subscription_info["expires_at"]
+            expires_after = before_expiry or grant_target
+        elif grant_kind == "ignored":
+            if existing is not None:
+                return {
+                    "product_id": product_id,
+                    "strategy": grant["product_name"],
+                    "status": existing["status"],
+                    "grant_kind": grant_kind,
+                    "days_applied": 0,
+                    "expires_at": existing["expires_at"],
+                }
+            return {
+                "product_id": product_id,
+                "strategy": grant["product_name"],
+                "status": "ignored",
+                "grant_kind": grant_kind,
+                "days_applied": 0,
+                "expires_at": None,
+            }
 
         if existing is None:
             entitlement_id = uuid.uuid4().hex
             connection.execute(
                 """
                 INSERT INTO entitlements(
-                    id, customer_id, product_id, subscription_id, external_id, source, status,
+                    id, customer_id, product_id, subscription_id, package_id, external_id, source, status,
                     starts_at, expires_at, revoked_at, whop_event_id, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, 'whop', ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'whop', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entitlement_id,
                     customer_id,
                     product_id,
                     subscription_id,
+                    package["id"],
                     external_id,
                     target_status,
-                    iso(subscription_info["period_start"]) if subscription_info["period_start"] else now,
+                    iso(starts_after),
                     iso(expires_after) if expires_after else None,
                     revoked_at,
                     webhook_id,
@@ -1891,7 +2042,7 @@ class LicensingService:
             connection.execute(
                 """
                 UPDATE entitlements
-                SET customer_id = ?, product_id = ?, subscription_id = ?, status = ?,
+                SET customer_id = ?, product_id = ?, subscription_id = ?, package_id = ?, status = ?,
                     starts_at = COALESCE(?, starts_at), expires_at = ?, revoked_at = ?,
                     whop_event_id = ?, updated_at = ?
                 WHERE id = ?
@@ -1900,8 +2051,9 @@ class LicensingService:
                     customer_id,
                     product_id,
                     subscription_id,
+                    package["id"],
                     target_status,
-                    iso(subscription_info["period_start"]) if subscription_info["period_start"] else None,
+                    iso(starts_after),
                     iso(expires_after) if expires_after else None,
                     revoked_at,
                     webhook_id,
@@ -1980,12 +2132,12 @@ class LicensingService:
               AND package_id = ?
               AND product_id = ?
               AND subscription_id = ?
-              AND grant_kind = ?
+              AND grant_kind IN ('paid', 'renewal')
               AND days_applied > 0
               AND period_start = ?
             LIMIT 1
             """,
-            (customer_id, package_id, product_id, subscription_id, grant_kind, iso(period_start)),
+            (customer_id, package_id, product_id, subscription_id, iso(period_start)),
         ).fetchone()
         return row is not None
 
@@ -2059,14 +2211,15 @@ class LicensingService:
         payment_id = subscription_info["payment_id"]
         period_start = iso(subscription_info["period_start"]) if subscription_info["period_start"] else ""
         period_end = iso(subscription_info["expires_at"]) if subscription_info["expires_at"] else ""
+        trial_end = iso(subscription_info["trial_ends_at"]) if subscription_info["trial_ends_at"] else period_end
         if grant_kind == "trial":
-            source = f"trial:{membership_id}:{package_id}:{product_id}"
-        elif grant_kind in {"paid", "renewal"} and membership_id and period_start:
-            source = f"{grant_kind}:period-start:{membership_id}:{package_id}:{product_id}:{period_start}"
+            source = f"trial:{membership_id}:{package_id}:{product_id}:{trial_end}"
         elif grant_kind in {"paid", "renewal"} and payment_id:
-            source = f"{grant_kind}:payment:{payment_id}:{product_id}"
+            source = f"paid:payment:{payment_id}:{product_id}"
+        elif grant_kind in {"paid", "renewal"} and membership_id and period_start:
+            source = f"paid:period-start:{membership_id}:{package_id}:{product_id}:{period_start}"
         elif grant_kind in {"paid", "renewal"}:
-            source = f"{grant_kind}:period:{membership_id}:{package_id}:{product_id}:{period_start}:{period_end}"
+            source = f"paid:period:{membership_id}:{package_id}:{product_id}:{period_start}:{period_end}"
         else:
             source = f"{grant_kind}:event:{webhook_id}:{product_id}"
         return sha256_hex(source)
@@ -3781,6 +3934,15 @@ class LicensingService:
             starts_at = parse_time(grant.get("starts_at"))
             expires_at = parse_time(grant.get("expires_at"))
             revoked_at = parse_time(grant.get("revoked_at"))
+            grant["stored_status"] = grant["status"]
+            if (
+                grant["source"] == "whop"
+                and grant["status"] == "expired"
+                and revoked_at is None
+                and expires_at is not None
+                and expires_at > now
+            ):
+                grant["status"] = "active"
             grant["is_licensed"] = (
                 bool(grant["is_active"])
                 and grant["status"] in ACTIVE_ENTITLEMENT_STATUSES
@@ -3794,6 +3956,14 @@ class LicensingService:
             existing = best_by_product.get(grant["product_id"])
             if existing is None or (grant["is_licensed"] and not existing["is_licensed"]):
                 best_by_product[grant["product_id"]] = grant
+                continue
+            if grant["is_licensed"] and existing["is_licensed"]:
+                grant_expiry = parse_time(grant.get("expires_at"))
+                existing_expiry = parse_time(existing.get("expires_at"))
+                if (grant_expiry is None and existing_expiry is not None) or (
+                    existing_expiry is not None and grant_expiry > existing_expiry
+                ):
+                    best_by_product[grant["product_id"]] = grant
         return list(best_by_product.values())
 
     def _blocking_status(self, grants: list[dict[str, Any]]) -> tuple[str, str]:
@@ -3952,6 +4122,35 @@ def first_time(data: dict[str, Any], *keys: str) -> datetime | None:
         if parsed:
             return parsed
     return None
+
+
+def entitlement_expiry_target(
+    grant_kind: str,
+    subscription_info: dict[str, Any],
+    grant_days: int | None,
+    now: datetime,
+) -> datetime | None:
+    if grant_kind == "trial":
+        explicit_trial_end = subscription_info["trial_ends_at"] or subscription_info["expires_at"]
+        if explicit_trial_end is not None:
+            return explicit_trial_end
+        if grant_days is None:
+            return None
+        return (subscription_info["period_start"] or now) + timedelta(days=grant_days)
+
+    explicit_end = subscription_info["expires_at"]
+    if grant_kind not in {"paid", "renewal"} or grant_days is None:
+        return explicit_end
+    configured_end = (subscription_info["period_start"] or now) + timedelta(days=grant_days)
+    return later_time(explicit_end, configured_end)
+
+
+def earlier_time(left: datetime | None, right: datetime | None) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return left if left <= right else right
 
 
 def later_time(left: datetime | None, right: datetime | None) -> datetime | None:

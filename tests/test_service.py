@@ -4,6 +4,7 @@ import base64
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 
@@ -1106,6 +1107,259 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("paid", paid["applied_grants"][0]["grant_kind"])
         self.assertGreaterEqual(expires_at, trial_end + timedelta(days=29))
 
+        response = self.service.check_license(
+            license_key=None,
+            email="trial@example.com",
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-trial-paid",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        self.assertEqual("active", response["status"])
+        self.assertGreaterEqual(parse_time(response["expires_at"]), trial_end + timedelta(days=29))
+
+    def test_manually_extended_trial_remains_effective_after_payment(self) -> None:
+        package = self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_manual_trial_paid",
+            whop_id_type="plan",
+            name="DUO 30 days",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30}],
+        )
+        customer = self.service.create_or_update_customer(email="manual-trial-paid@example.com")
+        initial_trial_end = utc_now() + timedelta(days=7)
+        extended_trial_end = utc_now() + timedelta(days=60)
+        self.service.manual_set_entitlement(
+            customer_id=customer.customer["id"],
+            product_id=self.product["id"],
+            status="trialing",
+            expires_at=iso(initial_trial_end),
+            reason="initial trial",
+            actor_id="admin",
+            ip_address=None,
+        )
+        self.service.manual_set_entitlement(
+            customer_id=customer.customer["id"],
+            product_id=self.product["id"],
+            status="trialing",
+            expires_at=iso(extended_trial_end),
+            reason="extended trial",
+            actor_id="admin",
+            ip_address=None,
+        )
+        paid_end = utc_now() + timedelta(days=30)
+        paid = self.service.process_whop_event(
+            {
+                "type": "payment.succeeded",
+                "data": {
+                    "id": "pay_manual_trial_paid",
+                    "status": "paid",
+                    "email": "manual-trial-paid@example.com",
+                    "user_id": "user_manual_trial_paid",
+                    "plan_id": "plan_manual_trial_paid",
+                    "membership_id": "mem_manual_trial_paid",
+                    "current_period_start": iso(utc_now()),
+                    "current_period_end": iso(paid_end),
+                },
+            },
+            "evt_manual_trial_paid",
+            signature_valid=True,
+            ip_address=None,
+        )
+
+        detail = self.service.customer_detail(customer.customer["id"])
+        response = self.service.check_license(
+            license_key=customer.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-manual-trial-paid",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual(package["id"], paid["package_id"])
+        self.assertEqual(2, len(detail["entitlements"]))
+        self.assertEqual("active", response["status"])
+        self.assertGreaterEqual(parse_time(response["expires_at"]), extended_trial_end - timedelta(seconds=1))
+
+    def test_standalone_trial_and_bundle_are_independent_sources(self) -> None:
+        standalone = self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_standalone_trial",
+            whop_id_type="plan",
+            name="DUO standalone trial",
+            default_days=7,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 7}],
+        )
+        bundle = self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_bundle_paid",
+            whop_id_type="plan",
+            name="Strategy bundle",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30}],
+        )
+        now = utc_now().replace(microsecond=0)
+        trial_end = now + timedelta(days=7)
+        paid_end = trial_end + timedelta(days=30)
+        shared_membership_id = "mem_standalone_to_bundle"
+        self.service.process_whop_event(
+            {
+                "action": "membership.activated",
+                "data": {
+                    "id": shared_membership_id,
+                    "status": "trialing",
+                    "email": "standalone-bundle@example.com",
+                    "user_id": "user_standalone_bundle",
+                    "plan_id": "plan_standalone_trial",
+                    "trial_ends_at": iso(trial_end),
+                },
+            },
+            "evt_standalone_trial",
+            signature_valid=True,
+            ip_address=None,
+        )
+        paid = self.service.process_whop_event(
+            {
+                "type": "payment.succeeded",
+                "data": {
+                    "id": "pay_standalone_bundle",
+                    "status": "paid",
+                    "membership_id": shared_membership_id,
+                    "email": "standalone-bundle@example.com",
+                    "user_id": "user_standalone_bundle",
+                    "plan_id": "plan_bundle_paid",
+                    "current_period_start": iso(trial_end),
+                    "current_period_end": iso(paid_end),
+                },
+            },
+            "evt_bundle_paid",
+            signature_valid=True,
+            ip_address=None,
+        )
+        self.service.process_whop_event(
+            {
+                "action": "membership.expired",
+                "data": {
+                    "id": shared_membership_id,
+                    "status": "expired",
+                    "email": "standalone-bundle@example.com",
+                    "user_id": "user_standalone_bundle",
+                    "plan_id": "plan_standalone_trial",
+                    "current_period_end": iso(trial_end),
+                },
+            },
+            "evt_standalone_expired",
+            signature_valid=True,
+            ip_address=None,
+        )
+
+        detail = self.service.customer_detail(paid["customer_id"])
+        response = self.service.check_license(
+            license_key=None,
+            email="standalone-bundle@example.com",
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-standalone-bundle",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual(2, len(detail["entitlements"]))
+        self.assertEqual({standalone["id"], bundle["id"]}, {row["package_id"] for row in detail["entitlements"]})
+        self.assertEqual("active", response["status"])
+        self.assertGreaterEqual(parse_time(response["expires_at"]), paid_end)
+
+    def test_old_expiration_after_paid_grant_does_not_override_paid_expiry(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_old_trial_expiry",
+            whop_id_type="plan",
+            name="DUO trial then paid",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30}],
+        )
+        now = utc_now().replace(microsecond=0)
+        trial_end = now + timedelta(days=7)
+        paid_end = trial_end + timedelta(days=30)
+        common = {
+            "id": "mem_old_trial_expiry",
+            "email": "old-trial-expiry@example.com",
+            "user_id": "user_old_trial_expiry",
+            "plan_id": "plan_old_trial_expiry",
+        }
+        self.service.process_whop_event(
+            {"action": "membership.activated", "data": {**common, "status": "trialing", "trial_ends_at": iso(trial_end)}},
+            "evt_old_trial_started",
+            signature_valid=True,
+            ip_address=None,
+        )
+        paid = self.service.process_whop_event(
+            {
+                "action": "membership.renewed",
+                "data": {
+                    **common,
+                    "status": "active",
+                    "payment_id": "pay_old_trial_expiry",
+                    "current_period_start": iso(trial_end),
+                    "current_period_end": iso(paid_end),
+                },
+            },
+            "evt_old_trial_paid",
+            signature_valid=True,
+            ip_address=None,
+        )
+        expired = self.service.process_whop_event(
+            {
+                "action": "membership.expired",
+                "data": {**common, "status": "expired", "trial_ends_at": iso(trial_end), "current_period_end": iso(trial_end)},
+            },
+            "evt_old_trial_expired_late",
+            signature_valid=True,
+            ip_address=None,
+        )
+
+        detail = self.service.customer_detail(paid["customer_id"])
+        entitlement = detail["entitlements"][0]
+        response = self.service.check_license(
+            license_key=None,
+            email="old-trial-expiry@example.com",
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-old-trial-expiry",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("renewal", paid["applied_grants"][0]["grant_kind"])
+        self.assertEqual("active", expired["applied_grants"][0]["status"])
+        self.assertEqual("active", entitlement["status"])
+        self.assertGreaterEqual(parse_time(entitlement["expires_at"]), paid_end)
+        self.assertEqual("active", response["status"])
+
     def test_paid_duplicate_for_same_period_does_not_add_days_twice(self) -> None:
         self.service.upsert_whop_package(
             package_id=None,
@@ -1137,6 +1391,197 @@ class LicensingServiceTests(unittest.TestCase):
 
         self.assertEqual("duplicate_grant", second["applied_grants"][0]["status"])
         self.assertLess(expires_at, utc_now() + timedelta(days=32))
+
+    def test_duplicate_payment_and_renewal_event_apply_period_once(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_duplicate_payment_renewal",
+            whop_id_type="plan",
+            name="DUO duplicate payment renewal",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30}],
+        )
+        period_start = utc_now().replace(microsecond=0)
+        period_end = period_start + timedelta(days=30)
+        common = {
+            "status": "active",
+            "email": "duplicate-payment-renewal@example.com",
+            "user_id": "user_duplicate_payment_renewal",
+            "membership_id": "mem_duplicate_payment_renewal",
+            "plan_id": "plan_duplicate_payment_renewal",
+            "payment_id": "pay_duplicate_payment_renewal",
+            "current_period_start": iso(period_start),
+            "current_period_end": iso(period_end),
+        }
+        first = self.service.process_whop_event(
+            {"type": "payment.succeeded", "data": {"id": "pay_duplicate_payment_renewal", **common}},
+            "evt_duplicate_payment",
+            signature_valid=True,
+            ip_address=None,
+        )
+        first_expiry = first["applied_grants"][0]["expires_at"]
+        second = self.service.process_whop_event(
+            {"action": "membership.renewed", "data": {"id": "mem_duplicate_payment_renewal", **common}},
+            "evt_duplicate_renewal",
+            signature_valid=True,
+            ip_address=None,
+        )
+
+        with self.database.session() as connection:
+            grant_count = connection.execute(
+                "SELECT COUNT(*) FROM license_grant_ledger WHERE grant_kind IN ('paid', 'renewal')"
+            ).fetchone()[0]
+            entitlement = connection.execute(
+                "SELECT * FROM entitlements WHERE customer_id = ?",
+                (first["customer_id"],),
+            ).fetchone()
+
+        self.assertEqual("duplicate_grant", second["applied_grants"][0]["status"])
+        self.assertEqual(1, grant_count)
+        self.assertEqual(parse_time(first_expiry), parse_time(entitlement["expires_at"]))
+
+    def test_final_explicit_revocation_blocks_when_no_source_remains(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_final_revocation",
+            whop_id_type="plan",
+            name="DUO revocation",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30}],
+        )
+        common = {
+            "id": "mem_final_revocation",
+            "email": "final-revocation@example.com",
+            "user_id": "user_final_revocation",
+            "plan_id": "plan_final_revocation",
+        }
+        active = self.service.process_whop_event(
+            {
+                "action": "membership.went_valid",
+                "data": {**common, "status": "active", "current_period_end": iso(utc_now() + timedelta(days=30))},
+            },
+            "evt_final_revocation_active",
+            signature_valid=True,
+            ip_address=None,
+        )
+        revoked = self.service.process_whop_event(
+            {"action": "membership.went_invalid", "data": {**common, "status": "invalid"}},
+            "evt_final_revocation",
+            signature_valid=True,
+            ip_address=None,
+        )
+        response = self.service.check_license(
+            license_key=None,
+            email="final-revocation@example.com",
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-final-revocation",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        detail = self.service.customer_detail(active["customer_id"])
+
+        self.assertEqual("revoke", revoked["applied_grants"][0]["grant_kind"])
+        self.assertEqual("revoked", detail["entitlements"][0]["status"])
+        self.assertEqual("revoked", response["status"])
+
+    def test_lifetime_grant_ignores_expiration_update(self) -> None:
+        common = {
+            "id": "mem_lifetime",
+            "email": "lifetime@example.com",
+            "user_id": "user_lifetime",
+            "product_id": "prod_duo",
+        }
+        active = self.service.process_whop_event(
+            {"action": "membership.went_valid", "data": {**common, "status": "active"}},
+            "evt_lifetime_active",
+            signature_valid=True,
+            ip_address=None,
+        )
+        expired = self.service.process_whop_event(
+            {
+                "action": "membership.expired",
+                "data": {**common, "status": "expired", "current_period_end": iso(utc_now() - timedelta(days=1))},
+            },
+            "evt_lifetime_expiration",
+            signature_valid=True,
+            ip_address=None,
+        )
+        detail = self.service.customer_detail(active["customer_id"])
+        response = self.service.check_license(
+            license_key=None,
+            email="lifetime@example.com",
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-lifetime",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", expired["entitlement_status"])
+        self.assertEqual("active", detail["entitlements"][0]["status"])
+        self.assertIsNone(detail["entitlements"][0]["expires_at"])
+        self.assertEqual("active", response["status"])
+        self.assertIsNone(response["expires_at"])
+
+    def test_concurrent_out_of_order_grants_keep_later_expiration(self) -> None:
+        self.service.upsert_whop_package(
+            package_id=None,
+            whop_id="plan_concurrent_grants",
+            whop_id_type="plan",
+            name="DUO concurrent grants",
+            default_days=30,
+            is_active=True,
+            is_ignored=False,
+            grants=[{"product_id": self.product["id"], "days": 30}],
+        )
+        self.service.create_or_update_customer(
+            email="concurrent-grants@example.com",
+            whop_user_id="user_concurrent_grants",
+            whop_member_id="mem_concurrent_grants",
+        )
+        period_start = utc_now().replace(microsecond=0)
+        later_end = period_start + timedelta(days=60)
+
+        def apply_event(name: str, start_offset: int, end_offset: int) -> dict:
+            return self.service.process_whop_event(
+                {
+                    "action": "membership.renewed",
+                    "data": {
+                        "id": "mem_concurrent_grants",
+                        "status": "active",
+                        "email": "concurrent-grants@example.com",
+                        "user_id": "user_concurrent_grants",
+                        "plan_id": "plan_concurrent_grants",
+                        "current_period_start": iso(period_start + timedelta(days=start_offset)),
+                        "current_period_end": iso(period_start + timedelta(days=end_offset)),
+                    },
+                },
+                f"evt_concurrent_{name}",
+                signature_valid=True,
+                ip_address=None,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda args: apply_event(*args), [("older", 0, 30), ("newer", 30, 60)]))
+
+        detail = self.service.customer_detail(results[0]["customer_id"])
+        entitlement = detail["entitlements"][0]
+        subscription = detail["subscriptions"][0]
+
+        self.assertEqual(2, len(results))
+        self.assertGreaterEqual(parse_time(entitlement["expires_at"]), later_end)
+        self.assertGreaterEqual(parse_time(subscription["current_period_end"]), later_end)
 
     def test_payment_succeeded_and_membership_activated_do_not_add_days_twice(self) -> None:
         self.service.upsert_whop_package(
