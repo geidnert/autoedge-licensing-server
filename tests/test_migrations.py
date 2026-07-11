@@ -186,5 +186,36 @@ class StrategyReleaseIdentityMigrationTests(unittest.TestCase):
             self.assertIsNotNone(migration)
 
 
+class LinuxReleasePlatformMigrationTests(unittest.TestCase):
+    def test_existing_mich_metadata_adds_linux_without_creating_release_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(f"{directory}/pre-linux.db")
+            migrations = sorted(migration_dir().glob("*.sql"))
+            apply_migrations(
+                database,
+                [migration for migration in migrations if migration.name < "015_linux_x64_release_platform.sql"],
+            )
+
+            apply_migrations(database)
+
+            with database.session() as connection:
+                product = connection.execute(
+                    "SELECT metadata_json FROM products WHERE slug = 'mich-runtime'"
+                ).fetchone()
+                release_count = connection.execute(
+                    "SELECT COUNT(*) FROM trader_releases WHERE platform = 'linux-x64'"
+                ).fetchone()[0]
+                migration = connection.execute(
+                    "SELECT name FROM schema_migrations WHERE name = '015_linux_x64_release_platform.sql'"
+                ).fetchone()
+
+            self.assertIn(
+                '"supported_platforms":["macos-arm64","windows-x64","linux-x64"]',
+                product["metadata_json"],
+            )
+            self.assertEqual(0, release_count)
+            self.assertIsNotNone(migration)
+
+
 if __name__ == "__main__":
     unittest.main()

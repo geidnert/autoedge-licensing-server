@@ -2194,7 +2194,7 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("mich-runtime", metadata["runtime_package_id"])
         self.assertEqual("strategy_package", metadata["release_type"])
         self.assertEqual("Trader.Strategies.Mich.dll", metadata["entry_assembly"])
-        self.assertEqual(["macos-arm64", "windows-x64"], metadata["supported_platforms"])
+        self.assertEqual(["macos-arm64", "windows-x64", "linux-x64"], metadata["supported_platforms"])
         self.assertEqual(0, release_count)
 
         created = self.service.create_or_update_customer(email="mich-license@example.com")
@@ -2244,7 +2244,7 @@ class LicensingServiceTests(unittest.TestCase):
         artifact_dir = Path(self.tmp.name) / "mich-artifacts"
         artifact_subdir = artifact_dir / "strategies" / "mich"
         artifact_subdir.mkdir(parents=True)
-        for platform in ("macos-arm64", "windows-x64"):
+        for platform in ("macos-arm64", "windows-x64", "linux-x64"):
             artifact_path = f"strategies/mich/MICH-0.1.0-{platform}.zip"
             (artifact_dir / artifact_path).write_bytes(f"mich runtime {platform}".encode())
             self.service.upsert_release(
@@ -2268,7 +2268,7 @@ class LicensingServiceTests(unittest.TestCase):
                 artifact_dir=str(artifact_dir),
             )
 
-        for platform in ("macos-arm64", "windows-x64"):
+        for platform in ("macos-arm64", "windows-x64", "linux-x64"):
             manifest = self.service.release_manifest(
                 license_key=created.license_key,
                 email=None,
@@ -3109,6 +3109,106 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("windows-x64", manifest["releases"][0]["platform"])
         self.assertEqual(desktop["id"], manifest["app_update"]["release_id"])
         self.assertEqual("windows-x64", manifest["app_update"]["platform"])
+
+    def test_linux_x64_manifest_and_download_tokens_are_exact_platform_for_all_release_types(self) -> None:
+        created = self.active_customer("linux-release@example.com")
+        extension_product = self.discord_product()
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=extension_product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="linux extension test",
+            actor_id="admin",
+            ip_address=None,
+        )
+        linux_strategy = self.strategy_release(version="2.0.0", platform="linux-x64")
+        linux_extension = self.extension_release(
+            product_id=extension_product["id"], version="1.0.0", platform="linux-x64"
+        )
+        linux_desktop = self.desktop_release(version="0.2.0", platform="linux-x64")
+        macos_strategy = self.strategy_release(version="9.0.0", platform="macos-arm64")
+        windows_extension = self.extension_release(
+            product_id=extension_product["id"], version="9.0.0", platform="windows-x64"
+        )
+        windows_desktop = self.desktop_release(version="9.0.0", platform="windows-x64")
+
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="linux-release-machine",
+            app_version="0.1.0",
+            channel="stable",
+            platform="linux-x64",
+            include_types=["strategy_package", "extension_package", "trader_desktop"],
+            installed_packages=[
+                {"package_id": "duo-runtime", "version": "1.0.0"},
+                {"package_id": "discord-notifier", "version": "0.9.0"},
+            ],
+            ip_address=None,
+            user_agent="TraderPro Desktop Linux",
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual("linux-x64", manifest["platform"])
+        self.assertEqual(
+            {"strategy_package", "extension_package"},
+            {release["release_type"] for release in manifest["releases"]},
+        )
+        self.assertEqual(
+            {linux_strategy["id"], linux_extension["id"]},
+            {release["release_id"] for release in manifest["releases"]},
+        )
+        self.assertTrue(all(release["platform"] == "linux-x64" for release in manifest["releases"]))
+        self.assertEqual(linux_desktop["id"], manifest["app_update"]["release_id"])
+        self.assertEqual("linux-x64", manifest["app_update"]["platform"])
+
+        for release in (linux_strategy, linux_extension, linux_desktop):
+            with self.subTest(release_type=release["release_type"]):
+                token = self.service.create_release_download_token(
+                    release_id=release["id"],
+                    license_key=created.license_key,
+                    email=None,
+                    customer_id=None,
+                    whop_user_id=None,
+                    machine_fingerprint="linux-release-machine",
+                    app_version="0.1.0",
+                    channel="stable",
+                    platform="linux-x64",
+                    ip_address=None,
+                    user_agent="TraderPro Desktop Linux",
+                    check_interval_seconds=3600,
+                    grace_period_seconds=86400,
+                    token_seconds=600,
+                )
+                self.assertEqual("ok", token["status"])
+                self.assertEqual("linux-x64", token["release"]["platform"])
+                self.assertEqual(release["release_type"], token["release"]["release_type"])
+
+        for release in (macos_strategy, windows_extension, windows_desktop):
+            with self.subTest(rejected_release=release["id"]):
+                token = self.service.create_release_download_token(
+                    release_id=release["id"],
+                    license_key=created.license_key,
+                    email=None,
+                    customer_id=None,
+                    whop_user_id=None,
+                    machine_fingerprint="linux-release-machine",
+                    app_version="0.1.0",
+                    channel="stable",
+                    platform="linux-x64",
+                    ip_address=None,
+                    user_agent="TraderPro Desktop Linux",
+                    check_interval_seconds=3600,
+                    grace_period_seconds=86400,
+                    token_seconds=600,
+                )
+                self.assertEqual("not_found", token["status"])
+                self.assertIsNone(token["token"])
 
     def test_release_manifest_platform_mismatch_returns_no_releases_or_update(self) -> None:
         created = self.active_customer("platform-mismatch@example.com")

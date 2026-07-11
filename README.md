@@ -79,7 +79,7 @@ Built-in strategy products include MICH as a product/feature seed only:
 - Release type: `strategy_package`
 - Runtime entry assembly: `Trader.Strategies.Mich.dll`
 - Initial runtime version: `0.1.0`
-- Supported package platforms: `macos-arm64`, `windows-x64`
+- Supported package platforms: `macos-arm64`, `windows-x64`, `linux-x64`
 
 MICH is not generally released by the seed data. Register MICH release rows only after actual package artifacts are copied under `AUTOEDGE_RELEASE_ARTIFACT_DIR`.
 
@@ -269,6 +269,10 @@ If `include_types` is omitted, both `strategy_package` and `trader_desktop` are 
 `installed_packages` is optional and lets the server compare each package against the version installed locally. If omitted, older clients still receive the same compatible release rows.
 
 Release targeting is fully server-side. The client only sees releases it is allowed to see. Admins can target releases by channel, customer id, email, full license key, customer tags/roles, deterministic rollout percent, or disable the release audience entirely.
+
+Platforms are exact selectors. The canonical values are `macos-arm64`,
+`windows-x64`, and `linux-x64`; a Linux manifest selects only `linux-x64`
+rows and never falls back to a macOS or Windows artifact.
 
 Response:
 
@@ -509,7 +513,7 @@ TraderPro Desktop release fields:
 - Release type label: `TraderPro Desktop`; persisted release type: `trader_desktop`
 - Product id: `trader-desktop`
 - Channel: `stable`, `beta`, `canary`, or `internal`
-- Platform: `macos-arm64` for Apple Silicon macOS TraderPro builds; `windows-x64` for Windows builds.
+- Platform: `macos-arm64` for Apple Silicon macOS builds, `windows-x64` for Windows builds, or `linux-x64` for Linux x64 builds.
 - Version and optional minimum supported version
 - Published checkbox
 - Audience mode: `all`, `allowlist`, `roles`, `percent`, or `disabled`
@@ -528,6 +532,7 @@ New first-install presentation names are:
 - macOS ZIP: `TraderPro-Desktop-<version>-macos-arm64.zip`
 - Windows installer: `TraderPro-Desktop-<version>-windows-x64-Setup.exe`
 - Windows portable ZIP: `TraderPro-Desktop-<version>-windows-x64.zip`
+- Linux x64 artifact: `TraderPro-Desktop-<version>-linux-x64.<format>` using the actual format produced by the client release workflow.
 
 Store these artifacts under the existing `trader-desktop` artifact directory. Desktop releases are identified by `release_type = trader_desktop`, `scope = app`, and `product_key = trader-desktop`, not by a filename prefix. Previously registered `Trader-Desktop-*`, `Trader-Setup-*`, or other historical filenames and their tokenized download URLs remain valid; do not rename files or rewrite historical release rows. New desktop releases with no explicit notes use `TraderPro Desktop update`.
 
@@ -544,17 +549,19 @@ Strategy release identity and ordering are maintained separately:
   matching, rollback, and release uniqueness; do not replace it with the
   customer-facing NT8/TraderPro identity.
 
-Register separate `macos-arm64` and `windows-x64` rows for a cross-platform
-strategy release. Both rows may carry the same `nt8_version` and
-`trader_revision` values.
+Register a separate row and real artifact for every published platform:
+`macos-arm64`, `windows-x64`, and/or `linux-x64`. Platform rows may carry the
+same `nt8_version` and `trader_revision` values. Never copy another platform's
+row or register a placeholder artifact; manifests and download tokens match the
+requested platform exactly.
 
-For MICH, use seeded product `MICH Runtime` with product/package id `mich-runtime`, release type `strategy_package`, version `0.1.0`, and feature id `strategy.mich.runtime`. Copy one real artifact per platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register separate `Strategy package` releases for `macos-arm64` and `windows-x64`. Do not register placeholder releases without artifacts, and do not add MICH parity claims while May 3, 2026 through June 16, 2026 parity is pending.
+For MICH, use seeded product `MICH Runtime` with product/package id `mich-runtime`, release type `strategy_package`, version `0.1.0`, and feature id `strategy.mich.runtime`. Copy one real artifact per published platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register a separate `Strategy package` release with the matching `macos-arm64`, `windows-x64`, or `linux-x64` platform. Do not register placeholder releases without artifacts, and do not add MICH parity claims while May 3, 2026 through June 16, 2026 parity is pending.
 
 Extension package releases use release type `Extension package`, choose the licensed extension product, and use the product slug as the package id. For Discord Notifier:
 
 - Seed or create product: `Discord Notifier`, slug/package id `discord-notifier`, feature id `trader.notifications.discord`, TraderPro enabled, NT8 disabled.
-- Copy one artifact per platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, for example `extensions/discord-notifier/DiscordNotifier-1.0.0-macos-arm64.zip` and `extensions/discord-notifier/DiscordNotifier-1.0.0-windows-x64.zip`.
-- Register two release rows in `/admin/releases`, both with release type `Extension package`, licensed product `Discord Notifier`, product/package id `discord-notifier`, and platform `macos-arm64` or `windows-x64`.
+- Copy one real artifact per published platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, for example `extensions/discord-notifier/DiscordNotifier-1.0.0-linux-x64.zip` for Linux.
+- Register one release row per artifact in `/admin/releases`, each with release type `Extension package`, licensed product `Discord Notifier`, product/package id `discord-notifier`, and the exact matching platform (`macos-arm64`, `windows-x64`, or `linux-x64`).
 - Use the existing audience controls (`all`, `allowlist`, `roles/tags`, `percent`, or `disabled`) exactly as for strategy packages.
 
 The database `scope` column is legacy app-vs-product-bound state. Product-bound packages, including `extension_package`, are stored with the existing product-bound scope while `release_type` is the authoritative package taxonomy exposed in manifests.

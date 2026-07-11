@@ -1586,7 +1586,7 @@ def releases_page(
         <details class="advanced-release" {advanced_open}>
           <summary>Advanced options <small>Targeting, rollback, signatures, and compatibility gates.</small></summary>
           <div class="grid-form release-advanced-form">
-            <label><span class="label-row">Platform {info_tip('Internal manifest selector. Current macOS Apple Silicon TraderPro builds use macos-arm64. Windows builds use windows-x64.')}</span><select name="platform">{platform_options}</select></label>
+            <label><span class="label-row">Platform {info_tip('Exact manifest selector. TraderPro builds use macos-arm64, windows-x64, or linux-x64; register a separate real artifact for each platform.')}</span><select name="platform">{platform_options}</select></label>
             <label>Minimum supported <input name="min_supported_version" placeholder="optional" value="{e(selected.get('min_supported_version'))}"></label>
             <label>Signature <input name="signature" value="{e(selected.get('signature'))}"></label>
             <label>Signature key id <input name="signature_key_id" value="{e(selected.get('signature_key_id'))}"></label>

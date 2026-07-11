@@ -32,7 +32,7 @@ DEFAULT_PRODUCTS = [
             "runtime_package_id": "mich-runtime",
             "entry_assembly": "Trader.Strategies.Mich.dll",
             "initial_runtime_version": "0.1.0",
-            "supported_platforms": ["macos-arm64", "windows-x64"],
+            "supported_platforms": ["macos-arm64", "windows-x64", "linux-x64"],
         },
     },
     {"slug": "hugo-runtime", "name": "HUGO Runtime", "feature_id": "strategy.hugo.runtime"},

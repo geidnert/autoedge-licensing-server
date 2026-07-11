@@ -1,6 +1,6 @@
 # AutoEdge Licensing Server Codex Memory
 
-Last refreshed: 2026-07-10
+Last refreshed: 2026-07-12
 
 ## Repository Shape
 
@@ -307,13 +307,21 @@ ordering. A new NT8 release changes `nt8_version` and normally resets
 `nt8_version` and increments `trader_revision`. The existing technical
 `version` remains independently monotonic and continues to control update
 ordering, installed/current/target comparisons, artifact matching, rollback,
-and release uniqueness. Platform-specific `macos-arm64` and `windows-x64` rows
-may carry identical NT8/TraderPro identity metadata.
+and release uniqueness. Platform-specific `macos-arm64`, `windows-x64`, and
+`linux-x64` rows may carry identical NT8/TraderPro identity metadata.
 
 Supported platforms:
 
 - `macos-arm64`
 - `windows-x64`
+- `linux-x64`
+
+Platform selection is exact in both manifest and download-token queries. A
+`linux-x64` request can select only a `linux-x64` row; there is no fallback to
+Windows or macOS. Release registration accepts all three release types on Linux:
+`strategy_package`, `extension_package`, and `trader_desktop`. Do not seed Linux
+release rows or publish customer download metadata until a real Linux artifact
+has been copied under `AUTOEDGE_RELEASE_ARTIFACT_DIR`.
 
 Channels, in increasing exposure:
 
@@ -345,14 +353,14 @@ Download flow:
 - Artifact uploads are not in the admin UI. Copy files under
   `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register relative paths in
   `/admin/releases`.
-- To publish Discord Notifier, seed/create the product, copy one artifact for
-  `macos-arm64` and one for `windows-x64`, and register two `Extension package`
-  releases with product/package id `discord-notifier`.
+- To publish Discord Notifier, seed/create the product, copy one real artifact
+  for each published platform, and register one `Extension package` release per
+  artifact with product/package id `discord-notifier` and its exact platform.
 - MICH is seeded as a strategy product only: slug/package id `mich-runtime`,
   display name `MICH Runtime`, feature id `strategy.mich.runtime`, runtime
   entry assembly `Trader.Strategies.Mich.dll`, initial runtime version `0.1.0`,
-  and supported package platforms `macos-arm64` and `windows-x64`. There are no
-  seeded MICH release rows. Publish MICH only after copying actual platform
+  and supported package platforms `macos-arm64`, `windows-x64`, and `linux-x64`.
+  There are no seeded MICH release rows. Publish MICH only after copying actual platform
   artifacts under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register
   `Strategy package` releases with product/package id `mich-runtime`,
   release type `strategy_package`, version `0.1.0`, and the matching platform.
@@ -399,6 +407,8 @@ Current migration sequence:
 - `014_strategy_release_identity.sql`: adds nullable `nt8_version` and
   non-negative nullable `trader_revision` columns to strategy release storage;
   existing rows remain `NULL`.
+- `015_linux_x64_release_platform.sql`: adds `linux-x64` to existing seeded MICH
+  product metadata without creating or copying release rows.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not

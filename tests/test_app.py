@@ -568,10 +568,11 @@ class AppEndpointTests(unittest.TestCase):
         self.assertNotIn('<details class="release-editor" open>', add_html)
         self.assertIn('<option value="macos-arm64" selected>macos-arm64</option>', add_html)
         self.assertIn('<option value="windows-x64" >windows-x64</option>', add_html)
+        self.assertIn('<option value="linux-x64" >linux-x64</option>', add_html)
         self.assertIn('<details class="release-editor" open>', edit_html)
         self.assertIn('<option value="custom-os" selected>custom-os</option>', edit_html)
 
-    def test_release_manifest_and_download_endpoint(self) -> None:
+    def test_linux_release_manifest_and_download_endpoint(self) -> None:
         product = self.app.service.upsert_product(
             slug="duo-runtime",
             name="DUO Runtime",
@@ -596,7 +597,7 @@ class AppEndpointTests(unittest.TestCase):
             scope="strategy",
             product_id=product["id"],
             channel="stable",
-            platform="windows-x64",
+            platform="linux-x64",
             version="2.0.0",
             min_supported_version=None,
             is_required=True,
@@ -620,7 +621,7 @@ class AppEndpointTests(unittest.TestCase):
                 "machine_fingerprint": "http-release-machine",
                 "app_version": "1.0.0",
                 "channel": "stable",
-                "platform": "windows-x64",
+                "platform": "linux-x64",
             },
             {},
         )
@@ -631,7 +632,7 @@ class AppEndpointTests(unittest.TestCase):
                 "license_key": created.license_key,
                 "machine_fingerprint": "http-release-machine",
                 "app_version": "1.0.0",
-                "platform": "windows-x64",
+                "platform": "linux-x64",
                 "release_id": release["id"],
             },
             {},
@@ -648,6 +649,7 @@ class AppEndpointTests(unittest.TestCase):
         manifest = json.loads(manifest_body)
         self.assertEqual("active", manifest["status"])
         self.assertEqual("2.0.0", manifest["releases"][0]["version"])
+        self.assertEqual("linux-x64", manifest["releases"][0]["platform"])
         self.assertEqual("2.1.0.8", manifest["releases"][0]["nt8_version"])
         self.assertEqual(1, manifest["releases"][0]["trader_revision"])
         self.assertTrue(token_status.startswith("200"), token_body)
@@ -698,7 +700,7 @@ class AppEndpointTests(unittest.TestCase):
         self.assertTrue(status.startswith("400"), body)
         self.assertEqual("unknown_customer", json.loads(body)["status"])
 
-    def test_tradovate_oauth_start_returns_authorization_url_without_secret(self) -> None:
+    def test_linux_tradovate_oauth_start_returns_authorization_url_without_secret(self) -> None:
         created = self.active_http_customer("tradovate-start@example.com")
 
         status, _, body = self.call(
@@ -708,7 +710,7 @@ class AppEndpointTests(unittest.TestCase):
                 "license_key": created.license_key,
                 "machine_fingerprint": "tradovate-start-machine",
                 "app_version": "1.2.3",
-                "platform": "windows-x64",
+                "platform": "linux-x64",
                 "channel": "stable",
                 "environment": "demo",
             },
@@ -727,6 +729,18 @@ class AppEndpointTests(unittest.TestCase):
         self.assertEqual([payload["state"]], query["state"])
         self.assertEqual(["trading"], query["scope"])
         self.assertNotIn("tradovate-secret", payload["authorization_url"])
+        with self.app.service.database.session() as connection:
+            oauth_state = connection.execute(
+                "SELECT platform, channel FROM tradovate_oauth_states ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual("linux-x64", oauth_state["platform"])
+        self.assertEqual("stable", oauth_state["channel"])
+        with self.app.service.database.session() as connection:
+            devices = connection.execute(
+                "SELECT client_type FROM devices WHERE customer_id = ?",
+                (created.customer["id"],),
+            ).fetchall()
+        self.assertEqual(["trader_desktop"], [device["client_type"] for device in devices])
 
     def test_tradovate_oauth_callback_complete_and_refresh(self) -> None:
         fake = FakeTradovateOAuth()
