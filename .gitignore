@@ -1,4 +1,5 @@
 .env
+.venv/
 *.db
 *.db-shm
 *.db-wal

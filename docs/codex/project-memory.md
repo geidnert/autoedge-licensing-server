@@ -16,10 +16,17 @@ Last refreshed: 2026-07-12
   secrets.
 - `autoedge_licensing/security.py` contains hashing, signing, password hashing,
   cookie parsing, bearer-token auth, and Standard Webhooks verification.
+- `autoedge_licensing/signing.py` owns strict compact ES256 signing and
+  verification, P-256 PEM loading/fingerprinting, JWS raw `R || S` conversion,
+  and the immutable release-envelope contract.
 - `scripts/create_admin.py` creates an admin user after applying migrations.
 - `scripts/seed_products.py` seeds default strategy products
   DUO, DUOrc, ORBO2, ORBOib, ADAM, EVE, MICH, and HUGO, plus the TraderPro
   Desktop extension product Discord Notifier.
+- `scripts/es256_keys.py`, `scripts/sign_release_envelope.py`,
+  `scripts/verify_release_envelope.py`, and `scripts/audit_release_artifacts.py`
+  provide key, offline release-signing, verification, and active-artifact audit
+  workflows without accepting private PEM contents on the command line.
 - `deploy/` contains nginx and Caddy reverse-proxy examples.
 - `systemd/autoedge-licensing.service` runs the app with `/etc/autoedge-licensing.env`
   and writes only to `/var/lib/autoedge-licensing`.
@@ -41,20 +48,24 @@ asks.
 
 ## Runtime And Local Workflow
 
-The app is designed to run without external Python runtime dependencies.
-`pyproject.toml` declares Python `>=3.11` and an empty dependency list.
+The app remains stdlib WSGI/SQLite, with one approved cryptographic dependency:
+`cryptography==49.0.0`. `requirements.txt` also pins its runtime transitive set.
+Use the repository-local `.venv`; production uses
+`/opt/autoedge-licensing/.venv` and the systemd unit starts that interpreter.
 
 Local start, following `README.md`:
 
 ```bash
 cd /Users/andreas.geidnert/Dev/autoedge-licensing-server
 cp .env.example .env
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 mkdir -p data/artifacts
 AUTOEDGE_ADMIN_COOKIE_SECRET="$(openssl rand -base64 48)" \
 AUTOEDGE_WHOP_BEARER_TOKEN="local-test-token" \
 AUTOEDGE_COOKIE_SECURE=false \
 AUTOEDGE_SKIP_RUNTIME_VALIDATION=1 \
-python3 -m autoedge_licensing.app
+.venv/bin/python -m autoedge_licensing.app
 ```
 
 Open `http://127.0.0.1:8788/admin/login`.
@@ -64,7 +75,7 @@ Common commands:
 ```bash
 AUTOEDGE_DATABASE_PATH=data/autoedge.db python3 scripts/create_admin.py admin
 AUTOEDGE_DATABASE_PATH=data/autoedge.db python3 scripts/seed_products.py
-python3 -m unittest discover -s tests
+.venv/bin/python -m unittest discover -s tests
 ```
 
 ## Environment And Secrets
@@ -80,6 +91,18 @@ Key environment variables:
 - `AUTOEDGE_WHOP_BEARER_TOKEN`, fallback for local or non-Whop server testing
 - `AUTOEDGE_LICENSE_LEASE_SECRET`, optional NT8 lease secret; defaults to admin
   cookie secret and must also be at least 32 chars
+- `AUTOEDGE_TRADER_LICENSE_SIGNING_PRIVATE_KEY_PATH` and
+  `AUTOEDGE_TRADER_LICENSE_SIGNING_KEY_ID`, configured together for the online
+  TraderPro ES256 signer
+- `AUTOEDGE_TRADER_LICENSE_VERIFICATION_KEYS`, JSON mapping of license key IDs
+  to public PEM paths; must include the active signing key and retain rotation
+  keys while outstanding leases/clients require them
+- `AUTOEDGE_TRADER_LICENSE_ISSUER`, default `solidparts.se`, and
+  `AUTOEDGE_TRADER_LICENSE_AUDIENCE`, default `traderpro`
+- `AUTOEDGE_RELEASE_VERIFICATION_KEYS`, JSON mapping of offline release key IDs
+  to public PEM paths; release private keys must never exist on this server
+- `AUTOEDGE_REQUIRE_RELEASE_SIGNATURES`, default `false` during migration;
+  invalid supplied signatures are rejected even while optional
 - `AUTOEDGE_TRADER_MAX_DEVICES`, default `1`
 - `AUTOEDGE_RELEASE_ARTIFACT_DIR`, default `data/artifacts`
 - `TRADOVATE_OAUTH_CLIENT_ID`, `TRADOVATE_OAUTH_CLIENT_SECRET`, and
@@ -142,6 +165,15 @@ TraderPro Desktop license checks:
   expiry.
 - Strategy access should be allowed only when `status == "active"` and the
   required `feature_id` is present.
+- Active responses include additive `license_lease` metadata when the online
+  ES256 signer is configured; blocking/unsigned-transition responses use
+  `license_lease: null`, and manifests preserve it under `license`.
+- Lease payload kind is `autoedge.trader-license`, header type is
+  `autoedge-license+jws`, and claims bind issuer/audience, resolved customer,
+  resolved device, full stored fingerprint SHA-256, sorted feature IDs and
+  per-feature expiries. Token expiry is finite and is the earlier of offline
+  grace or any finite feature expiry. Lifetime features remain `exp: null`
+  inside a finite lease.
 
 NT8 license checks:
 
@@ -261,6 +293,23 @@ Grant behavior:
   dates are updated monotonically.
 
 ## Releases And Downloads
+
+Release artifact signatures are compact ES256 tokens with header type
+`autoedge-release+jws`, payload kind `autoedge.release`, and explicit `kid`.
+The 64-byte external signature is JWS/IEEE-P1363 `R || S`, never DER. Signed
+claims bind release type, package/feature, channel, exact platform, technical
+version, minimum TraderPro version, download filename, real size, and lowercase
+SHA-256; database release IDs and mutable targeting metadata are excluded.
+
+Registration always computes real size/SHA when the artifact exists and rejects
+supplied overrides that disagree. Any supplied signature must validate against
+`AUTOEDGE_RELEASE_VERIFICATION_KEYS`; its header key ID, separate
+`signature_key_id`, and every envelope claim must match. With
+`AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=false`, unsigned old/new rows remain
+supported. With it `true`, new/updated published rows require signatures;
+untouched historical rows remain readable/downloadable. See
+`docs/es256-protection.md` for exact contracts, rotation, client pinning,
+recovery, revocation, signing, and audit commands.
 
 The desktop product presentation name is `TraderPro Desktop` (`TraderPro` in
 short labels). This is presentation-only. Keep `/api/trader/*`, release type
@@ -464,6 +513,32 @@ Important behavior:
 
 ## Deployment Memory
 
+ES256 production rollout on 2026-07-12:
+
+- Production uses `/opt/autoedge-licensing/.venv` with the pinned
+  `cryptography==49.0.0` runtime; `python3.13-venv` is installed on the host.
+- Online TraderPro license key ID is `license-2026-01`. Its private PEM is
+  `/etc/autoedge-licensing/keys/license-2026-01-private.pem`, owned
+  `root:autoedge` mode `0640`. Its public-key DER-SPKI SHA-256 fingerprint is
+  `f1020035a5aef1d27c46f4a541b6c65b970ccdc89fe10c37ef05d86bcafe6ad6`.
+- No release private key exists on the server, the release public-key mapping
+  is empty, and `AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=false` remains the
+  production transition setting.
+- A synthetic post-deploy probe verified the active signed lease, public-key
+  verification, customer/device/full-fingerprint binding, blocking null lease,
+  nested manifest lease, and an existing unsigned release download-token and
+  resolution path. Probe customer/check/download rows were deleted afterward.
+- The first full artifact audit checked 366 active unsigned-transition rows:
+  361 matched their real files and five historical rows had pre-existing
+  metadata drift. Do not auto-correct these hashes because the rows are
+  client-visible history and some artifact paths are shared by duplicate rows.
+  Reconcile them deliberately before enabling mandatory release signatures:
+  `1445c583b6b94193a7b96c7c35aef33d` (DUO 0.1.21 macOS SHA),
+  `27488f598002480f92dbc4a9fc4d00a4` (DUO 0.1.33 macOS size/SHA),
+  `7bf086b8215f4fa584001f3474d4be9c` (DUO 0.1.16 macOS size/SHA),
+  `bd278cf24c4442118d8e9084159a71dc` (DUOrc 0.1.10 macOS size/SHA), and
+  `cabc16baf6c247919b79d17bbe2bfedd` (DUO 0.1.33 Windows size/SHA).
+
 Current deployment documented in `README.md`:
 
 - Host: `solidparts.se`
@@ -481,6 +556,8 @@ Current deployment documented in `README.md`:
 - Database: `/var/lib/autoedge-licensing/autoedge.db`
 - Artifacts: `/var/lib/autoedge-licensing/artifacts`
 - Environment file: `/etc/autoedge-licensing.env`
+- Online license private key: `/etc/autoedge-licensing/keys/<key-id>-private.pem`,
+  owned `root:autoedge`, mode `0640`; no release private key is provisioned
 
 Operational SSH notes:
 
@@ -491,6 +568,8 @@ Operational SSH notes:
   even when normal SSH works from Codex.
 - The current `/opt/autoedge-licensing` production directory is a deployed file
   tree, not a Git working tree. Do not plan on running `git pull` there.
+- Create `/opt/autoedge-licensing/.venv`, install `requirements.txt`, and run
+  both staging tests and systemd with that venv interpreter.
 - For a production release, create an exact `git archive` of the committed
   revision locally, verify its SHA-256 before and after upload, extract it to a
   temporary server directory, and run `python3 -m unittest discover -s tests`

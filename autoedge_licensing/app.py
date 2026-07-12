@@ -24,6 +24,7 @@ from .security import (
     verify_bearer,
     verify_standard_webhook,
 )
+from .signing import CompactES256Signer, load_public_key_mapping, public_key_fingerprint
 from .service import (
     DEFAULT_RELEASE_PLATFORM,
     EXTENSION_PACKAGE_RELEASE_TYPE,
@@ -177,7 +178,27 @@ class AutoEdgeApp:
         self.settings = settings
         self.database = Database(settings.database_path)
         apply_migrations(self.database)
-        self.service = LicensingService(self.database)
+        license_public_keys = load_public_key_mapping(settings.trader_license_verification_key_paths)
+        release_public_keys = load_public_key_mapping(settings.release_verification_key_paths)
+        license_signer = None
+        if settings.trader_license_signing_private_key_path and settings.trader_license_signing_key_id:
+            license_signer = CompactES256Signer.from_pem_path(
+                settings.trader_license_signing_private_key_path,
+                settings.trader_license_signing_key_id,
+            )
+            configured_public_key = license_public_keys.get(settings.trader_license_signing_key_id)
+            if configured_public_key is None:
+                raise ValueError("The active TraderPro license-signing key ID has no configured public key.")
+            if public_key_fingerprint(configured_public_key) != public_key_fingerprint(license_signer.public_key()):
+                raise ValueError("The active TraderPro license private and public keys do not match.")
+        self.service = LicensingService(
+            self.database,
+            license_signer=license_signer,
+            release_public_keys=release_public_keys,
+            require_release_signatures=settings.require_release_signatures,
+            license_issuer=settings.trader_license_issuer,
+            license_audience=settings.trader_license_audience,
+        )
         self.rate_limiter = RateLimiter(settings.rate_limit_per_minute)
         self.tradovate_oauth = TradovateOAuthClient()
 

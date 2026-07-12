@@ -2914,8 +2914,8 @@ class LicensingServiceTests(unittest.TestCase):
             artifact_filename=None,
             size_bytes=None,
             sha256_value=None,
-            signature="sig",
-            signature_key_id="key-1",
+            signature=None,
+            signature_key_id=None,
             release_notes="TraderPro Desktop update",
             artifact_dir=str(artifact_dir),
         )
@@ -2947,7 +2947,7 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(release["id"], manifest["app_update"]["release_id"])
         self.assertEqual(len(b"desktop app update"), manifest["app_update"]["artifact"]["size_bytes"])
         self.assertIsNotNone(manifest["app_update"]["artifact"]["sha256"])
-        self.assertEqual("key-1", manifest["app_update"]["artifact"]["signature_key_id"])
+        self.assertIsNone(manifest["app_update"]["artifact"]["signature_key_id"])
 
     def test_desktop_artifact_names_use_release_metadata_and_preserve_legacy_downloads(self) -> None:
         created = self.active_customer("desktop-filename-compatibility@example.com")
@@ -2997,8 +2997,8 @@ class LicensingServiceTests(unittest.TestCase):
                     artifact_filename=download_filename,
                     size_bytes=None,
                     sha256_value=None,
-                    signature=f"signature-{index}",
-                    signature_key_id="desktop-key-1",
+                    signature=None,
+                    signature_key_id=None,
                     release_notes=None,
                     artifact_dir=str(artifact_dir),
                 )
@@ -3032,7 +3032,7 @@ class LicensingServiceTests(unittest.TestCase):
                 self.assertEqual("TraderPro Desktop", token_result["release"]["product_name"])
                 self.assertEqual(download_filename, token_result["release"]["artifact"]["filename"])
                 self.assertEqual(sha256(contents).hexdigest(), token_result["release"]["artifact"]["sha256"])
-                self.assertEqual(f"signature-{index}", token_result["release"]["artifact"]["signature"])
+                self.assertIsNone(token_result["release"]["artifact"]["signature"])
 
                 resolved = self.service.resolve_release_download(
                     token=token_result["token"],
@@ -3751,7 +3751,7 @@ class LicensingServiceTests(unittest.TestCase):
             artifact_filename=None,
             size_bytes=None,
             sha256_value=None,
-            signature="sig",
+            signature=None,
             release_notes=None,
             artifact_dir=str(artifact_dir),
         )

@@ -9,7 +9,7 @@ User=autoedge
 Group=autoedge
 WorkingDirectory=/opt/autoedge-licensing
 EnvironmentFile=/etc/autoedge-licensing.env
-ExecStart=/usr/bin/python3 -m autoedge_licensing.app
+ExecStart=/opt/autoedge-licensing/.venv/bin/python -m autoedge_licensing.app
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -17,6 +17,7 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/autoedge-licensing
+ReadOnlyPaths=/etc/autoedge-licensing/keys
 RestrictSUIDSGID=true
 
 [Install]

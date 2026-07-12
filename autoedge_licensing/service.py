@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import re
 import sqlite3
 import uuid
@@ -10,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from .db import Database
 from .security import (
@@ -23,6 +26,14 @@ from .security import (
     sha256_hex,
     sign_value,
     verify_password,
+)
+from .signing import (
+    LICENSE_PAYLOAD_KIND,
+    LICENSE_TOKEN_TYPE,
+    CompactES256Signer,
+    SigningError,
+    release_envelope_payload,
+    verify_release_envelope,
 )
 
 
@@ -305,8 +316,22 @@ class CreatedCustomer:
 
 
 class LicensingService:
-    def __init__(self, database: Database):
+    def __init__(
+        self,
+        database: Database,
+        *,
+        license_signer: CompactES256Signer | None = None,
+        release_public_keys: dict[str, ec.EllipticCurvePublicKey] | None = None,
+        require_release_signatures: bool = False,
+        license_issuer: str = "solidparts.se",
+        license_audience: str = "traderpro",
+    ):
         self.database = database
+        self.license_signer = license_signer
+        self.release_public_keys = dict(release_public_keys or {})
+        self.require_release_signatures = bool(require_release_signatures)
+        self.license_issuer = license_issuer
+        self.license_audience = license_audience
 
     def create_admin_user(self, username: str, password: str) -> str:
         admin_id = uuid.uuid4().hex
@@ -834,6 +859,7 @@ class LicensingService:
         normalized_channel = channel.strip().lower() or "stable"
         normalized_platform = platform.strip().lower() or DEFAULT_RELEASE_PLATFORM
         normalized_version = version.strip()
+        normalized_min_supported_version = normalize_optional_text(min_supported_version)
         normalized_nt8_version = normalize_optional_text(nt8_version)
         normalized_path = artifact_path.strip()
         normalized_release_notes = release_notes.strip() if release_notes and release_notes.strip() else None
@@ -878,21 +904,64 @@ class LicensingService:
         artifact_file = self._artifact_path(normalized_path, artifact_dir)
         if not artifact_filename:
             artifact_filename = artifact_file.name
+        normalized_artifact_filename = artifact_filename.strip()
+        normalized_signature = signature.strip() if signature and signature.strip() else None
+        normalized_signature_key_id = (
+            signature_key_id.strip() if signature_key_id and signature_key_id.strip() else None
+        )
         calculated_size = size_bytes
         calculated_sha = sha256_value.strip().lower() if sha256_value else None
         if artifact_file.exists() and artifact_file.is_file():
-            calculated_size = artifact_file.stat().st_size if calculated_size is None else calculated_size
-            calculated_sha = file_sha256(artifact_file) if not calculated_sha else calculated_sha
+            actual_size = artifact_file.stat().st_size
+            actual_sha = file_sha256(artifact_file)
+            if calculated_size is not None and calculated_size != actual_size:
+                raise ValueError("Supplied artifact size does not match the artifact file.")
+            if calculated_sha is not None and not hmac.compare_digest(calculated_sha, actual_sha):
+                raise ValueError("Supplied artifact SHA-256 does not match the artifact file.")
+            calculated_size = actual_size
+            calculated_sha = actual_sha
         if calculated_size is not None and calculated_size < 0:
             raise ValueError("Artifact size cannot be negative.")
+        if bool(normalized_signature) != bool(normalized_signature_key_id):
+            raise ValueError("Release signature and signature key ID must be supplied together.")
 
         now = iso()
         with self.database.session() as connection:
+            feature_id = None
             if product_id:
                 product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
                 if product is None:
                     raise ValueError("Licensed product not found.")
                 normalized_product_key = normalized_product_key or product["slug"]
+                feature_id = product["feature_id"]
+            if normalized_signature:
+                if calculated_size is None or calculated_sha is None:
+                    raise ValueError("Signed releases require artifact size and SHA-256 metadata.")
+                try:
+                    expected_envelope = release_envelope_payload(
+                        release_type=normalized_release_type,
+                        package_id=normalized_product_key or TRADER_DESKTOP_PRODUCT_ID,
+                        feature_id=feature_id,
+                        channel=normalized_channel,
+                        platform=normalized_platform,
+                        version=normalized_version,
+                        minimum_trader_version=normalized_min_supported_version,
+                        filename=normalized_artifact_filename,
+                        size_bytes=calculated_size,
+                        sha256=calculated_sha,
+                    )
+                    verified = verify_release_envelope(
+                        normalized_signature,
+                        self.release_public_keys,
+                        expected_envelope,
+                    )
+                except SigningError as exc:
+                    raise ValueError(f"Invalid release signature: {exc}") from exc
+                header_key_id = verified.header["kid"]
+                if not hmac.compare_digest(header_key_id, normalized_signature_key_id):
+                    raise ValueError("Release signature key ID does not match the compact-token header.")
+            elif is_active and self.require_release_signatures:
+                raise ValueError("Published releases require a valid ES256 signature.")
             existing = None
             if release_id:
                 existing = connection.execute("SELECT * FROM trader_releases WHERE id = ?", (release_id,)).fetchone()
@@ -924,15 +993,15 @@ class LicensingService:
                         normalized_version,
                         normalized_nt8_version,
                         trader_revision,
-                        min_supported_version.strip() if min_supported_version else None,
+                        normalized_min_supported_version,
                         int(is_required),
                         int(is_active),
                         normalized_path,
-                        artifact_filename.strip(),
+                        normalized_artifact_filename,
                         calculated_size,
                         calculated_sha,
-                        signature.strip() if signature else None,
-                        signature_key_id.strip() if signature_key_id else None,
+                        normalized_signature,
+                        normalized_signature_key_id,
                         normalized_release_notes,
                         int(is_active),
                         now if is_active else None,
@@ -972,15 +1041,15 @@ class LicensingService:
                         normalized_version,
                         normalized_nt8_version,
                         trader_revision,
-                        min_supported_version.strip() if min_supported_version else None,
+                        normalized_min_supported_version,
                         int(is_required),
                         int(is_active),
                         normalized_path,
-                        artifact_filename.strip(),
+                        normalized_artifact_filename,
                         calculated_size,
                         calculated_sha,
-                        signature.strip() if signature else None,
-                        signature_key_id.strip() if signature_key_id else None,
+                        normalized_signature,
+                        normalized_signature_key_id,
                         normalized_release_notes,
                         int(is_active),
                         now if is_active else None,
@@ -3556,6 +3625,14 @@ class LicensingService:
             else:
                 status, message = self._blocking_status(grants)
             response = self._license_response(status, message, licensed, check_interval_seconds, grace_period_seconds, customer, device, device_limit)
+            if status == "active" and normalized_client_type == CLIENT_TYPE_TRADER:
+                response["license_lease"] = self._issue_trader_license_lease(
+                    customer=customer,
+                    device=device,
+                    machine_fingerprint=machine_fingerprint,
+                    grants=licensed,
+                    grace_period_seconds=grace_period_seconds,
+                )
             self._record_check(connection, customer["id"], device["id"], customer["email"] or customer["id"], app_version, normalized_client_type, ip_address, user_agent, response)
             return response
 
@@ -3824,6 +3901,65 @@ class LicensingService:
             "next_check_seconds": check_interval_seconds,
             "grace_period_seconds": grace_period_seconds,
             "device_limit": device_limit,
+            "license_lease": None,
+        }
+
+    def _issue_trader_license_lease(
+        self,
+        *,
+        customer: sqlite3.Row | dict[str, Any],
+        device: sqlite3.Row | dict[str, Any],
+        machine_fingerprint: str,
+        grants: list[dict[str, Any]],
+        grace_period_seconds: int,
+    ) -> dict[str, Any] | None:
+        if self.license_signer is None:
+            return None
+        if grace_period_seconds <= 0:
+            return None
+        now = utc_now().replace(microsecond=0)
+        issued_at = int(now.timestamp())
+        lease_deadline = now + timedelta(seconds=grace_period_seconds)
+        finite_expiries = [
+            parsed
+            for parsed in (parse_time(grant.get("expires_at")) for grant in grants)
+            if parsed is not None
+        ]
+        if finite_expiries:
+            lease_deadline = min(lease_deadline, min(finite_expiries))
+        expires_at = int(lease_deadline.timestamp())
+        if expires_at <= issued_at:
+            return None
+        feature_claims = sorted(
+            (
+                {
+                    "id": grant["feature_id"],
+                    "exp": iso(parse_time(grant.get("expires_at"))) if grant.get("expires_at") else None,
+                }
+                for grant in grants
+            ),
+            key=lambda feature: feature["id"],
+        )
+        payload = {
+            "v": 1,
+            "kind": LICENSE_PAYLOAD_KIND,
+            "iss": self.license_issuer,
+            "aud": self.license_audience,
+            "sub": customer["id"],
+            "device_id": device["id"],
+            "device_fingerprint_sha256": hash_fingerprint(machine_fingerprint),
+            "features": feature_claims,
+            "iat": issued_at,
+            "nbf": issued_at,
+            "exp": expires_at,
+            "jti": random_token(18),
+        }
+        token = self.license_signer.sign(payload, token_type=LICENSE_TOKEN_TYPE)
+        return {
+            "token": token,
+            "key_id": self.license_signer.key_id,
+            "issued_at": iso(datetime.fromtimestamp(issued_at, tz=timezone.utc)),
+            "expires_at": iso(datetime.fromtimestamp(expires_at, tz=timezone.utc)),
         }
 
     def _record_check(

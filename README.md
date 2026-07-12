@@ -24,6 +24,11 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
   - activate/check by license key, email, customer id, or Whop user id
   - stores machine fingerprint hash and app version
   - returns licensed strategies, expiry, status, next check time, and grace period
+- ES256 protection:
+  - short-lived, customer/device/fingerprint-bound TraderPro license leases
+  - offline-signed release envelopes verified during registration
+  - independent license and release key families with explicit key IDs
+  - transition controls for existing clients and unsigned historical releases
 - No Whop API key or webhook secret is needed by TraderPro clients.
 
 ## API
@@ -580,17 +585,39 @@ The database `scope` column is legacy app-vs-product-bound state. Product-bound 
 
 Customer tags are edited from the customer detail page under `Release targeting tags`. Tags are normalized to lowercase values and are included in license responses for diagnostic visibility.
 
+## ES256 TraderPro Protection
+
+Active TraderPro license responses now include the additive
+`license_lease` object when the server's online ES256 key is configured.
+Blocking responses and unsigned local-transition configurations return
+`license_lease: null`. Release manifests expose the same signed lease under
+`license.license_lease`. Existing response fields and the NT8 HMAC lease are
+unchanged.
+
+Release `artifact.signature` values can contain compact ES256 release envelopes.
+Every supplied signature is verified during release registration, including
+when signature enforcement is disabled. Existing unsigned rows remain readable
+and downloadable. Keep `AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=false` until the
+TraderPro release pipeline and client verifier support the new contract.
+
+The exact compact-token bytes, 64-byte `R || S` signature representation,
+license and release JSON contracts, key provisioning and rotation, client
+pinning, disaster recovery, revocation, signing commands, and audit procedure
+are documented in [docs/es256-protection.md](docs/es256-protection.md).
+
 ## Local Development
 
 ```bash
 cd /Users/andreas.geidnert/Dev/autoedge-licensing-server
 cp .env.example .env
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 mkdir -p data/artifacts
 AUTOEDGE_ADMIN_COOKIE_SECRET="$(openssl rand -base64 48)" \
 AUTOEDGE_WHOP_BEARER_TOKEN="local-test-token" \
 AUTOEDGE_COOKIE_SECURE=false \
 AUTOEDGE_SKIP_RUNTIME_VALIDATION=1 \
-python3 -m autoedge_licensing.app
+.venv/bin/python -m autoedge_licensing.app
 ```
 
 Open `http://127.0.0.1:8788/admin/login`.
@@ -612,7 +639,7 @@ Then sign in to the admin UI and configure Whop Packages for the plan ids and da
 Run tests:
 
 ```bash
-python3 -m unittest discover -s tests
+.venv/bin/python -m unittest discover -s tests
 ```
 
 ## Debian Deployment
@@ -627,7 +654,7 @@ Install packages:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 git nginx certbot python3-certbot-nginx
+sudo apt install -y python3 python3-venv git nginx certbot python3-certbot-nginx
 ```
 
 Create service user and directories:
@@ -643,6 +670,14 @@ Deploy code:
 ```bash
 sudo git clone <repo-url> /opt/autoedge-licensing
 sudo chown -R root:root /opt/autoedge-licensing
+```
+
+Create the service virtual environment and install the pinned runtime set:
+
+```bash
+sudo python3 -m venv /opt/autoedge-licensing/.venv
+sudo /opt/autoedge-licensing/.venv/bin/python -m pip install \
+  -r /opt/autoedge-licensing/requirements.txt
 ```
 
 Create `/etc/autoedge-licensing.env`:
@@ -661,6 +696,13 @@ AUTOEDGE_TRADER_MAX_DEVICES=1
 AUTOEDGE_RATE_LIMIT_PER_MINUTE=60
 AUTOEDGE_RELEASE_ARTIFACT_DIR=/var/lib/autoedge-licensing/artifacts
 AUTOEDGE_RELEASE_DOWNLOAD_TOKEN_SECONDS=600
+AUTOEDGE_TRADER_LICENSE_SIGNING_PRIVATE_KEY_PATH=/etc/autoedge-licensing/keys/license-2026-01-private.pem
+AUTOEDGE_TRADER_LICENSE_SIGNING_KEY_ID=license-2026-01
+AUTOEDGE_TRADER_LICENSE_VERIFICATION_KEYS='{"license-2026-01":"/etc/autoedge-licensing/keys/license-2026-01-public.pem"}'
+AUTOEDGE_TRADER_LICENSE_ISSUER=solidparts.se
+AUTOEDGE_TRADER_LICENSE_AUDIENCE=traderpro
+AUTOEDGE_RELEASE_VERIFICATION_KEYS={}
+AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=false
 TRADOVATE_OAUTH_CLIENT_ID=replace-with-tradovate-client-id
 TRADOVATE_OAUTH_CLIENT_SECRET=replace-with-tradovate-client-secret
 TRADOVATE_OAUTH_REDIRECT_URI=https://licenses.example.com/api/trader/tradovate/oauth/callback
@@ -676,6 +718,17 @@ Protect the environment file:
 ```bash
 sudo chown root:autoedge /etc/autoedge-licensing.env
 sudo chmod 0640 /etc/autoedge-licensing.env
+```
+
+Provision the online license-signing key outside the repository. The release
+private key must never be generated or stored on this server:
+
+```bash
+sudo install -d -o root -g autoedge -m 0750 /etc/autoedge-licensing/keys
+sudo install -o root -g autoedge -m 0640 license-2026-01-private.pem \
+  /etc/autoedge-licensing/keys/license-2026-01-private.pem
+sudo install -o root -g autoedge -m 0644 license-2026-01-public.pem \
+  /etc/autoedge-licensing/keys/license-2026-01-public.pem
 ```
 
 Install systemd unit:
