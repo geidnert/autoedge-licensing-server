@@ -298,6 +298,8 @@ Response:
       "version": "1.2.0",
       "nt8_version": "2.1.0.8",
       "trader_revision": 1,
+      "installed_nt8_version": "2.1.0.7",
+      "installed_trader_revision": 0,
       "required": false,
       "license_status": "active",
       "license_source": "whop",
@@ -353,9 +355,19 @@ Response:
 Extension package releases use the same `releases` array with `release_type: "extension_package"` and `scope: "extension"`. Discord Notifier release rows use `package_id: "discord-notifier"`, `display_name: "Discord Notifier"`, and `required_features: ["trader.notifications.discord"]`.
 
 Strategy-package release objects also include nullable `nt8_version` and
-`trader_revision` fields. Existing releases keep both fields `null`; no NT8
-version is inferred or backfilled. `nt8_version` must have exactly four numeric
-components (multi-digit components are allowed), and `trader_revision` must be a
+`trader_revision` fields for the selected target release. When
+`installed_packages` supplies that package's technical version, strategy-package
+objects also include nullable `installed_nt8_version` and
+`installed_trader_revision` fields resolved from the exact matching historical
+release row. Unknown legacy versions and historical rows without a complete
+identity pair return both installed fields as `null`. Requests without an
+installed package version retain the previous response shape and omit the
+installed identity fields. Desktop and extension releases omit all strategy
+identity fields.
+
+Existing releases keep their target identity fields `null`; no NT8 version is
+inferred or backfilled. `nt8_version` must have exactly four numeric components
+(multi-digit components are allowed), and `trader_revision` must be a
 non-negative integer. Supply both values or leave both blank.
 
 TraderPro should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, device-limit-exceeded, or unknown customers receive an empty release list, `app_update: null`, and the same blocking license status.

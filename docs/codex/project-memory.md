@@ -301,6 +301,17 @@ backfill. Multi-digit NT8 version components are valid. Manifest, download-token
 resolved-download, audience-selected, and rollback strategy release objects
 preserve both fields. Desktop and extension response shapes do not expose them.
 
+When a manifest request includes a strategy package in `installed_packages`, its
+release object also includes `installed_nt8_version` and
+`installed_trader_revision`. These describe the historical installed technical
+version, while `nt8_version` and `trader_revision` continue to describe the
+selected target. Historical lookup matches exact technical version, package key,
+product id, release type, channel, and platform, including inactive/unpublished
+rows needed to describe a rollback source. A missing row or incomplete identity
+pair produces two `null` installed fields. If no installed package version was
+provided, the installed identity fields are omitted to preserve the previous
+response shape. Extension and desktop releases omit them.
+
 Release workflow keeps display identity independent from technical package
 ordering. A new NT8 release changes `nt8_version` and normally resets
 `trader_revision` to `0`. A TraderPro-only strategy release retains

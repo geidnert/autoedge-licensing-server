@@ -2334,11 +2334,61 @@ class LicensingService:
         release_type = release.get("release_type") or release_type_from_scope(release.get("scope"))
         if release_type == TRADER_DESKTOP_RELEASE_TYPE:
             return app_version
+        installed_version = self._installed_version_for_release(release, installed_versions)
+        return installed_version if installed_version is not None else app_version
+
+    def _installed_version_for_release(
+        self,
+        release: dict[str, Any],
+        installed_versions: dict[str, str],
+    ) -> str | None:
         for candidate in (release.get("product_key"), release.get("product_slug"), release.get("feature_id"), release.get("product_id")):
             key = str(candidate or "").strip().lower()
             if key and key in installed_versions:
                 return installed_versions[key]
-        return app_version
+        return None
+
+    def _installed_strategy_identity(
+        self,
+        connection: sqlite3.Connection,
+        target_release: dict[str, Any],
+        installed_version: str,
+    ) -> tuple[str | None, int | None]:
+        product_key = str(target_release.get("product_key") or "").strip().lower()
+        product_id = target_release.get("product_id")
+        if not product_key or not product_id:
+            return None, None
+        row = connection.execute(
+            """
+            SELECT nt8_version, trader_revision
+            FROM trader_releases
+            WHERE version = ?
+              AND platform = ?
+              AND channel = ?
+              AND product_id = ?
+              AND LOWER(product_key) = ?
+              AND COALESCE(
+                    release_type,
+                    CASE WHEN scope = 'app' THEN 'trader_desktop' ELSE 'strategy_package' END
+                  ) = 'strategy_package'
+            ORDER BY updated_at DESC, created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (
+                installed_version,
+                target_release.get("platform"),
+                target_release.get("channel"),
+                product_id,
+                product_key,
+            ),
+        ).fetchone()
+        if row is None:
+            return None, None
+        nt8_version = normalize_optional_text(row["nt8_version"])
+        trader_revision = row["trader_revision"]
+        if nt8_version is None or trader_revision is None:
+            return None, None
+        return nt8_version, trader_revision
 
     def _release_sort_key(self, release: dict[str, Any]) -> tuple[Any, ...]:
         return (
@@ -2539,6 +2589,16 @@ class LicensingService:
                     group_by="_package_group_key",
                 )
                 package_rows = selected
+                for release in package_rows:
+                    if (release.get("release_type") or release_type_from_scope(release.get("scope"))) != STRATEGY_RELEASE_TYPE:
+                        continue
+                    installed_version = self._installed_version_for_release(release, installed_versions)
+                    if installed_version is not None:
+                        release["_installed_identity"] = self._installed_strategy_identity(
+                            connection,
+                            release,
+                            installed_version,
+                        )
                 denied_releases.extend(denied)
             if TRADER_DESKTOP_RELEASE_TYPE in requested_types:
                 app_rows = connection.execute(
@@ -2585,6 +2645,7 @@ class LicensingService:
                 release,
                 self._current_version_for_release(release, app_version, installed_versions),
                 license_by_product_id.get(release.get("product_id")),
+                release.get("_installed_identity"),
             )
             for release in package_rows
         ]
@@ -2781,6 +2842,7 @@ class LicensingService:
         release: dict[str, Any],
         current_version: str | None,
         license_grant: dict[str, Any] | None = None,
+        installed_identity: tuple[str | None, int | None] | None = None,
     ) -> dict[str, Any]:
         release_type = release.get("release_type") or release_type_from_scope(release.get("scope"))
         action = release_action_for_row(release, current_version)
@@ -2831,6 +2893,9 @@ class LicensingService:
         if release_type == STRATEGY_RELEASE_TYPE:
             item["nt8_version"] = release.get("nt8_version")
             item["trader_revision"] = release.get("trader_revision")
+            if installed_identity is not None:
+                item["installed_nt8_version"] = installed_identity[0]
+                item["installed_trader_revision"] = installed_identity[1]
         return item
 
     def _trader_desktop_update_item(self, release: dict[str, Any], current_version: str | None) -> dict[str, Any]:

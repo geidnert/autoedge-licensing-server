@@ -91,6 +91,32 @@ class LicensingServiceTests(unittest.TestCase):
             trader_revision=trader_revision,
         )
 
+    def strategy_manifest(
+        self,
+        created,
+        *,
+        installed_packages: list[dict[str, str]] | None,
+        platform: str = "windows-x64",
+        channel: str = "stable",
+        app_version: str = "9.9.9",
+    ):
+        return self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint=f"strategy-manifest-{created.customer['id']}",
+            app_version=app_version,
+            channel=channel,
+            platform=platform,
+            include_types=["strategy_package"],
+            installed_packages=installed_packages,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+
     def desktop_release(
         self,
         *,
@@ -2446,6 +2472,180 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertIn("trader_revision", release)
         self.assertIsNone(release["nt8_version"])
         self.assertIsNone(release["trader_revision"])
+
+    def test_strategy_manifest_returns_installed_and_target_release_identities(self) -> None:
+        created = self.active_customer("installed-release-identity@example.com")
+        self.strategy_release(version="0.1.38", nt8_version="2.1.0.8", trader_revision=0)
+        self.strategy_release(version="0.1.39", nt8_version="2.1.0.9", trader_revision=0)
+
+        manifest = self.strategy_manifest(
+            created,
+            installed_packages=[{"package_id": "duo-runtime", "version": "0.1.38"}],
+        )
+
+        release = manifest["releases"][0]
+        self.assertEqual("0.1.38", release["current_version"])
+        self.assertEqual("0.1.39", release["target_version"])
+        self.assertEqual("2.1.0.9", release["nt8_version"])
+        self.assertEqual(0, release["trader_revision"])
+        self.assertEqual("2.1.0.8", release["installed_nt8_version"])
+        self.assertEqual(0, release["installed_trader_revision"])
+        self.assertEqual("update", release["action"])
+        self.assertTrue(release["update_available"])
+
+    def test_strategy_manifest_current_release_returns_its_installed_identity(self) -> None:
+        created = self.active_customer("current-release-identity@example.com")
+        self.strategy_release(version="0.1.39", nt8_version="2.1.0.9", trader_revision=2)
+
+        release = self.strategy_manifest(
+            created,
+            installed_packages=[{"package_id": "duo-runtime", "version": "0.1.39"}],
+        )["releases"][0]
+
+        self.assertEqual("current", release["action"])
+        self.assertFalse(release["update_available"])
+        self.assertEqual("2.1.0.9", release["installed_nt8_version"])
+        self.assertEqual(2, release["installed_trader_revision"])
+
+    def test_strategy_manifest_rollback_returns_newer_installed_release_identity(self) -> None:
+        created = self.active_customer("rollback-installed-identity@example.com")
+        self.strategy_release(
+            version="0.1.39",
+            rollback_reason="Rollback strategy package",
+            nt8_version="2.1.0.9",
+            trader_revision=0,
+        )
+        self.strategy_release(
+            version="0.1.40",
+            is_active=False,
+            nt8_version="2.1.0.10",
+            trader_revision=1,
+        )
+
+        release = self.strategy_manifest(
+            created,
+            installed_packages=[{"package_id": "duo-runtime", "version": "0.1.40"}],
+        )["releases"][0]
+
+        self.assertEqual("rollback", release["action"])
+        self.assertEqual("0.1.40", release["current_version"])
+        self.assertEqual("0.1.39", release["target_version"])
+        self.assertEqual("2.1.0.10", release["installed_nt8_version"])
+        self.assertEqual(1, release["installed_trader_revision"])
+        self.assertEqual("2.1.0.9", release["nt8_version"])
+        self.assertEqual(0, release["trader_revision"])
+
+    def test_strategy_manifest_unknown_installed_version_returns_null_identity_pair(self) -> None:
+        created = self.active_customer("unknown-installed-identity@example.com")
+        self.strategy_release(version="0.1.39", nt8_version="2.1.0.9", trader_revision=0)
+
+        release = self.strategy_manifest(
+            created,
+            installed_packages=[{"package_id": "duo-runtime", "version": "legacy-build"}],
+        )["releases"][0]
+
+        self.assertIsNone(release["installed_nt8_version"])
+        self.assertIsNone(release["installed_trader_revision"])
+
+    def test_strategy_manifest_installed_release_with_missing_metadata_returns_null_pair(self) -> None:
+        created = self.active_customer("missing-installed-identity@example.com")
+        installed = self.strategy_release(version="0.1.38")
+        with self.database.session() as connection:
+            connection.execute(
+                "UPDATE trader_releases SET nt8_version = ? WHERE id = ?",
+                ("2.1.0.8", installed["id"]),
+            )
+        self.strategy_release(version="0.1.39", nt8_version="2.1.0.9", trader_revision=0)
+
+        release = self.strategy_manifest(
+            created,
+            installed_packages=[{"package_id": "duo-runtime", "version": "0.1.38"}],
+        )["releases"][0]
+
+        self.assertIsNone(release["installed_nt8_version"])
+        self.assertIsNone(release["installed_trader_revision"])
+        self.assertEqual("2.1.0.9", release["nt8_version"])
+        self.assertEqual(0, release["trader_revision"])
+
+    def test_strategy_manifest_resolves_multiple_installed_package_identities(self) -> None:
+        created = self.active_customer("multiple-installed-identities@example.com")
+        duorc = self.service.upsert_product(
+            slug="duorc-runtime",
+            name="DUOrc Runtime",
+            feature_id="strategy.duorc.runtime",
+            whop_product_id="prod_duorc",
+        )
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=duorc["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(days=30)),
+            reason="test grant",
+            actor_id="admin",
+            ip_address=None,
+        )
+        self.strategy_release(version="0.1.38", nt8_version="2.1.0.8", trader_revision=0)
+        self.strategy_release(version="0.1.39", nt8_version="2.1.0.9", trader_revision=0)
+        self.strategy_release(version="1.4.2", product_id=duorc["id"], nt8_version="3.0.0.2", trader_revision=4)
+        self.strategy_release(version="1.4.3", product_id=duorc["id"], nt8_version="3.0.0.3", trader_revision=0)
+
+        manifest = self.strategy_manifest(
+            created,
+            installed_packages=[
+                {"package_id": "duo-runtime", "version": "0.1.38"},
+                {"package_id": "duorc-runtime", "version": "1.4.2"},
+            ],
+        )
+
+        releases = {release["package_id"]: release for release in manifest["releases"]}
+        self.assertEqual("2.1.0.8", releases["duo-runtime"]["installed_nt8_version"])
+        self.assertEqual(0, releases["duo-runtime"]["installed_trader_revision"])
+        self.assertEqual("3.0.0.2", releases["duorc-runtime"]["installed_nt8_version"])
+        self.assertEqual(4, releases["duorc-runtime"]["installed_trader_revision"])
+
+    def test_strategy_manifest_installed_identity_is_platform_specific(self) -> None:
+        created = self.active_customer("platform-installed-identity@example.com")
+        self.strategy_release(
+            version="0.1.38",
+            platform="windows-x64",
+            nt8_version="2.1.0.8",
+            trader_revision=0,
+        )
+        self.strategy_release(
+            version="0.1.38",
+            platform="macos-arm64",
+            nt8_version="9.9.9.9",
+            trader_revision=9,
+        )
+        self.strategy_release(
+            version="0.1.39",
+            platform="windows-x64",
+            nt8_version="2.1.0.9",
+            trader_revision=0,
+        )
+
+        release = self.strategy_manifest(
+            created,
+            installed_packages=[{"package_id": "duo-runtime", "version": "0.1.38"}],
+            platform="windows-x64",
+        )["releases"][0]
+
+        self.assertEqual("2.1.0.8", release["installed_nt8_version"])
+        self.assertEqual(0, release["installed_trader_revision"])
+
+    def test_strategy_manifest_without_installed_package_keeps_previous_shape(self) -> None:
+        created = self.active_customer("no-installed-identity@example.com")
+        self.strategy_release(version="0.1.39", nt8_version="2.1.0.9", trader_revision=0)
+
+        release = self.strategy_manifest(
+            created,
+            installed_packages=None,
+            app_version="0.1.38",
+        )["releases"][0]
+
+        self.assertEqual("0.1.38", release["current_version"])
+        self.assertNotIn("installed_nt8_version", release)
+        self.assertNotIn("installed_trader_revision", release)
 
     def test_strategy_release_identity_validation(self) -> None:
         for invalid_version in ("2.1.0", "2.1.0.8.1", "2.1.a.8", "2..0.8", "v2.1.0.8"):

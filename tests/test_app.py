@@ -592,6 +592,26 @@ class AppEndpointTests(unittest.TestCase):
         artifact_dir.mkdir()
         artifact = artifact_dir / "duo-http.zip"
         artifact.write_bytes(b"http artifact")
+        self.app.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=product["id"],
+            channel="stable",
+            platform="linux-x64",
+            version="1.9.0",
+            min_supported_version=None,
+            is_required=False,
+            is_active=False,
+            artifact_path="duo-http.zip",
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+            nt8_version="2.1.0.7",
+            trader_revision=0,
+        )
         release = self.app.service.upsert_release(
             release_id=None,
             scope="strategy",
@@ -622,6 +642,7 @@ class AppEndpointTests(unittest.TestCase):
                 "app_version": "1.0.0",
                 "channel": "stable",
                 "platform": "linux-x64",
+                "installed_packages": [{"package_id": "duo-runtime", "version": "1.9.0"}],
             },
             {},
         )
@@ -652,6 +673,8 @@ class AppEndpointTests(unittest.TestCase):
         self.assertEqual("linux-x64", manifest["releases"][0]["platform"])
         self.assertEqual("2.1.0.8", manifest["releases"][0]["nt8_version"])
         self.assertEqual(1, manifest["releases"][0]["trader_revision"])
+        self.assertEqual("2.1.0.7", manifest["releases"][0]["installed_nt8_version"])
+        self.assertEqual(0, manifest["releases"][0]["installed_trader_revision"])
         self.assertTrue(token_status.startswith("200"), token_body)
         self.assertEqual("2.1.0.8", token_payload["release"]["nt8_version"])
         self.assertEqual(1, token_payload["release"]["trader_revision"])
