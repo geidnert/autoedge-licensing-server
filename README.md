@@ -597,8 +597,9 @@ unchanged.
 Release `artifact.signature` values can contain compact ES256 release envelopes.
 Every supplied signature is verified during release registration, including
 when signature enforcement is disabled. Existing unsigned rows remain readable
-and downloadable. Keep `AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=false` until the
-TraderPro release pipeline and client verifier support the new contract.
+and downloadable when inactive. Production has completed the server-side
+transition and runs with `AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=true`; unsigned
+historical rows remain stored but are inactive and unpublished.
 
 The exact compact-token bytes, 64-byte `R || S` signature representation,
 license and release JSON contracts, key provisioning and rotation, client
@@ -701,8 +702,8 @@ AUTOEDGE_TRADER_LICENSE_SIGNING_KEY_ID=license-2026-01
 AUTOEDGE_TRADER_LICENSE_VERIFICATION_KEYS='{"license-2026-01":"/etc/autoedge-licensing/keys/license-2026-01-public.pem"}'
 AUTOEDGE_TRADER_LICENSE_ISSUER=solidparts.se
 AUTOEDGE_TRADER_LICENSE_AUDIENCE=traderpro
-AUTOEDGE_RELEASE_VERIFICATION_KEYS={}
-AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=false
+AUTOEDGE_RELEASE_VERIFICATION_KEYS='{"release-2026-01":"/etc/autoedge-licensing/release-public/release-2026-01.pem"}'
+AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=true
 TRADOVATE_OAUTH_CLIENT_ID=replace-with-tradovate-client-id
 TRADOVATE_OAUTH_CLIENT_SECRET=replace-with-tradovate-client-secret
 TRADOVATE_OAUTH_REDIRECT_URI=https://licenses.example.com/api/trader/tradovate/oauth/callback
@@ -729,6 +730,15 @@ sudo install -o root -g autoedge -m 0640 license-2026-01-private.pem \
   /etc/autoedge-licensing/keys/license-2026-01-private.pem
 sudo install -o root -g autoedge -m 0644 license-2026-01-public.pem \
   /etc/autoedge-licensing/keys/license-2026-01-public.pem
+```
+
+Provision only the offline release-signing public key on the server. The
+matching private key remains on the protected release/build machine:
+
+```bash
+sudo install -d -o root -g root -m 0755 /etc/autoedge-licensing/release-public
+sudo install -o root -g root -m 0644 release-2026-01.pem \
+  /etc/autoedge-licensing/release-public/release-2026-01.pem
 ```
 
 Install systemd unit:
@@ -810,6 +820,9 @@ The current Debian deployment runs on `solidparts.se` behind nginx:
 - Database: `/var/lib/autoedge-licensing/autoedge.db`
 - Release artifacts: `/var/lib/autoedge-licensing/artifacts`
 - Environment file: `/etc/autoedge-licensing.env`
+- Release verification key: `release-2026-01` at
+  `/etc/autoedge-licensing/release-public/release-2026-01.pem`; production
+  requires signed published releases
 
 Production should use Whop Standard Webhooks with `WHOP_WEBHOOK_SECRET`. The bearer token fallback is intended only for local testing.
 

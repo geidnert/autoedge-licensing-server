@@ -148,12 +148,15 @@ Release verification on the server:
 
 ```dotenv
 AUTOEDGE_RELEASE_VERIFICATION_KEYS='{"release-2026-01":"/etc/autoedge-licensing/release-public/release-2026-01.pem"}'
-AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=false
+AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=true
 ```
 
 An empty release mapping is `{}` during the unsigned transition. Key mappings
 are JSON objects, which allow old and new public keys to coexist during
 rotation. Private-key paths are filesystem configuration, never CLI arguments.
+Production completed this transition on 2026-07-12: unsigned historical rows
+were retained but made inactive/unpublished, and mandatory release signatures
+were enabled.
 
 ## Key generation and secure provisioning
 

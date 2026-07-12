@@ -521,9 +521,36 @@ ES256 production rollout on 2026-07-12:
   `/etc/autoedge-licensing/keys/license-2026-01-private.pem`, owned
   `root:autoedge` mode `0640`. Its public-key DER-SPKI SHA-256 fingerprint is
   `f1020035a5aef1d27c46f4a541b6c65b970ccdc89fe10c37ef05d86bcafe6ad6`.
-- No release private key exists on the server, the release public-key mapping
-  is empty, and `AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=false` remains the
-  production transition setting.
+- No release private key exists on the server. Release public key
+  `release-2026-01` is stored at
+  `/etc/autoedge-licensing/release-public/release-2026-01.pem`; its DER-SPKI
+  SHA-256 fingerprint is
+  `b7057a866d42ebe0e0e14ef108a2103ccca68540b29503ab16deedece8fdd87c`.
+- Production completed release-signature enforcement on 2026-07-12 and now
+  runs with `AUTOEDGE_REQUIRE_RELEASE_SIGNATURES=true`. The running systemd
+  process environment was checked directly after restart.
+- Before enforcement, the live customer-selectable inventory was 223 unsigned
+  TraderPro Desktop rows, 134 unsigned strategy rows, and 12 unsigned extension
+  rows. A guarded `BEGIN IMMEDIATE` transaction set all 369 rows inactive and
+  unpublished without deleting database rows or artifacts, and wrote one
+  `release.unsigned_retired` audit event per row. Afterward, the selectable
+  inventory was 15 signed Desktop, 12 signed strategy, and 3 signed extension
+  rows, with zero unsigned rows in all three types.
+- All 30 remaining active signed rows passed artifact existence, actual
+  size/SHA-256, signed-envelope metadata, `release-2026-01` key ID, and ES256
+  verification. The required 18 current Desktop/DUO/DUOrc/HUGO/MICH/Discord
+  rows were also verified individually before and after retirement.
+- A live synthetic licensed-customer probe returned exactly the six expected
+  signed current releases for each of `macos-arm64`, `windows-x64`, and
+  `linux-x64`, created and resolved download tokens for all 18, and verified a
+  machine-bound `license-2026-01` lease. Probe customer/check/download records
+  were removed afterward.
+- Pre-enforcement backups are
+  `/var/backups/autoedge-licensing/autoedge-before-release-enforcement-20260712T152406Z.db`
+  (SHA-256 `cb5b703c508e1eb28b155af859ee75c67f0d80e11c121e92b0285cea65781188`,
+  `quick_check: ok`) and
+  `/var/backups/autoedge-licensing/env-before-release-enforcement-20260712T152406Z`
+  (SHA-256 `e9bacb35574bdd1592b07f31b28f7badbd321e0fb176204d2ed5dabef9505ff0`).
 - A synthetic post-deploy probe verified the active signed lease, public-key
   verification, customer/device/full-fingerprint binding, blocking null lease,
   nested manifest lease, and an existing unsigned release download-token and
