@@ -145,6 +145,38 @@ class AppEndpointTests(unittest.TestCase):
         self.assertEqual("active", detail["entitlements"][0]["status"])
         self.assertIsNone(detail["entitlements"][0]["expires_at"])
 
+    def test_admin_manual_entitlement_can_change_from_lifetime_to_date(self) -> None:
+        product = self.app.service.upsert_product(
+            slug="lifetime-to-date-strategy",
+            name="Lifetime To Date Strategy",
+            feature_id="strategy.lifetime-to-date.runtime",
+        )
+        created = self.app.service.create_or_update_customer(email="lifetime-to-date@example.com")
+        self.app.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=product["id"],
+            status="active",
+            expires_at=None,
+            reason="initial lifetime grant",
+            actor_id="admin",
+            ip_address=None,
+        )
+
+        response = self.admin_customer_entitlement_response(
+            created.customer["id"],
+            {
+                "product_id": product["id"],
+                "status": "active",
+                "expires_mode": "date",
+                "expires_at": "2026-07-15T14:19:06",
+                "reason": "dated grant",
+            },
+        )
+        detail = self.app.service.customer_detail(created.customer["id"])
+
+        self.assertEqual(303, response.status.value)
+        self.assertEqual("2026-07-15T18:19:06Z", detail["entitlements"][0]["expires_at"])
+
     def test_admin_can_remove_entitlement_from_customer(self) -> None:
         product = self.app.service.upsert_product(
             slug="remove-strategy",

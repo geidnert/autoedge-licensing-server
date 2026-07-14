@@ -13,8 +13,8 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
   - search customers
   - inspect Whop IDs, email, license key suffix, subscriptions, entitlements, devices, check-ins, and audit events
   - manually grant, revoke, suspend, or expire strategy access
-  - set expiry dates
-  - set manual strategy access to Lifetime with no expiry
+  - set or replace expiry dates on manual strategy access
+  - switch manual strategy access between dated expiry and Lifetime with no expiry
   - remove individual entitlement rows from a customer
   - block or unblock devices
   - enforce and override per-customer device limits
@@ -97,7 +97,7 @@ Lifecycle handling:
 - Normal expiration events do not revoke access or replace a later paid expiry. Future-dated access remains active until its stored expiry, and no-expiry Lifetime access remains Lifetime.
 - `refund.created`, chargebacks, disputes, and `membership.went_invalid` are explicit revocation operations for the affected source. If no other source remains, the license response is `revoked`.
 - Whop entitlement mutations use serialized SQLite write transactions so an older concurrent update cannot overwrite a later coverage date.
-- Admin `active` and `trialing` saves also ensure access through the submitted date instead of shortening a later date. Once a source is Lifetime, later dated saves keep it Lifetime; admins can still use explicit `expired`, `revoked`, or `suspended` statuses.
+- Admin manual entitlement saves replace the selected row's status and expiry exactly, so an admin can shorten or extend a date and switch between dated access and Lifetime. Whop event processing remains monotonic and does not shorten existing Whop coverage.
 - Expired, suspended, and revoked results are returned clearly to TraderPro so strategies can block access.
 
 ### TraderPro License Check

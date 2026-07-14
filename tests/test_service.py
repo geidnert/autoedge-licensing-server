@@ -490,6 +490,52 @@ class LicensingServiceTests(unittest.TestCase):
 
         self.assertEqual("2026-12-31T23:59:00Z", entitlement["expires_at"])
 
+    def test_manual_grant_expiry_can_be_replaced_in_both_directions(self) -> None:
+        created = self.service.create_or_update_customer(email="replace-expiry@example.com")
+        later_expiry = "2026-12-31T23:59:00Z"
+        earlier_expiry = "2026-07-15T18:19:06Z"
+
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at=later_expiry,
+            reason="initial dated grant",
+            actor_id="admin",
+            ip_address=None,
+        )
+        shortened = self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at=earlier_expiry,
+            reason="shortened dated grant",
+            actor_id="admin",
+            ip_address=None,
+        )
+        lifetime = self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at=None,
+            reason="lifetime grant",
+            actor_id="admin",
+            ip_address=None,
+        )
+        dated_again = self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=self.product["id"],
+            status="active",
+            expires_at=earlier_expiry,
+            reason="dated again",
+            actor_id="admin",
+            ip_address=None,
+        )
+
+        self.assertEqual(earlier_expiry, shortened["expires_at"])
+        self.assertIsNone(lifetime["expires_at"])
+        self.assertEqual(earlier_expiry, dated_again["expires_at"])
+
     def test_manual_grant_rejects_invalid_expiry_text(self) -> None:
         created = self.service.create_or_update_customer(email="bad-expiry@example.com")
 

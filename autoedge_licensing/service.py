@@ -1359,12 +1359,6 @@ class LicensingService:
                 "SELECT * FROM entitlements WHERE source = 'manual' AND external_id = ?",
                 (external_id,),
             ).fetchone()
-            if existing is not None:
-                existing_expiry = parse_time(existing["expires_at"])
-                if existing_expiry is None:
-                    saved_expiry = None
-                elif status in ACTIVE_ENTITLEMENT_STATUSES and parsed_expiry is not None:
-                    saved_expiry = iso(later_time(existing_expiry, parsed_expiry))
             if existing is None:
                 entitlement_id = uuid.uuid4().hex
                 connection.execute(

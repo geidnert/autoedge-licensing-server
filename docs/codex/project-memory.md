@@ -1,6 +1,6 @@
 # AutoEdge Licensing Server Codex Memory
 
-Last refreshed: 2026-07-12
+Last refreshed: 2026-07-14
 
 ## Repository Shape
 
@@ -498,10 +498,12 @@ Important behavior:
 - Manual strategy access can be set to `Date/time` or `Lifetime`; `Lifetime`
   uses the existing nullable `entitlements.expires_at` storage and should render
   as Lifetime for active/trialing no-expiry rows.
-- Manual `active`/`trialing` saves are monotonic ensure-through operations. They
-  do not shorten an existing later expiry, and a Lifetime source cannot be
-  changed back to dated access. Explicit expired/revoked/suspended statuses
-  remain available for deliberate blocking actions.
+- Manual entitlement saves are explicit replacements: admins can shorten or
+  extend a date and switch between dated access and Lifetime in either
+  direction. The monotonic ensure-through rule applies to Whop event processing,
+  not manual admin edits. A former rule that also made manual saves monotonic
+  caused Lifetime-to-date POSTs to succeed while silently retaining `NULL`;
+  removing and recreating the row appeared to work around it.
 - Customer entitlement rows have a per-row Remove action in the visible
   Entitlements table. It deletes the selected `entitlements` row and writes an
   `entitlement.removed` audit event; Whop grant ledger rows keep their nullable
