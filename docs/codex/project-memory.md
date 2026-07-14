@@ -521,6 +521,8 @@ Important behavior:
 
 ## Deployment Memory
 
+- 2026-07-14: Commit `70d4012` deployed the additive TraderPro `entitlement_states` display metadata to production. The exact archive SHA-256 was `325adb4e1edf2810b5f0d480b7625d081677e74178bc32f332c8fa2256994ca8`; all `127` tests passed from the extracted staging archive before deployment. The pre-deploy online SQLite backup is `/var/backups/autoedge-before-70d4012-20260714T164333Z.db` (SHA-256 `073409945b55e7618162ec352bb004abc8cbc666c21fee76b4a84c86a323e1e3`, `quick_check: ok`) and the code backup is `/var/backups/autoedge-code-before-70d4012-20260714T164333Z.tar.gz` (SHA-256 `f73970c23cc0ac496d918403b8fc8d204715d02c8562b1e1c4393b54b53a8562`). After restart, systemd was active, local `/healthz` returned `{"status": "ok"}`, public `/privacy` and `/admin/login` returned HTTP 200, the live DB passed `quick_check`, and production `service.py` matched the committed SHA-256 `d0a00d1587569d14e930c02603bf2e297e76fa86f7836c7f2fdcb1ebb4885324`.
+
 ES256 production rollout on 2026-07-12:
 
 - Production uses `/opt/autoedge-licensing/.venv` with the pinned
