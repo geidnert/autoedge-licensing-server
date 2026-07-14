@@ -3576,6 +3576,12 @@ class LicensingService:
 
             grants = self._current_grants(connection, customer["id"])
             grants = self._filter_grants_for_client(grants, normalized_client_type)
+            entitlement_states = self._entitlement_states(
+                connection,
+                customer["id"],
+                grants,
+                normalized_client_type,
+            )
             licensed = [grant for grant in grants if grant["is_licensed"]]
             if licensed:
                 device_over_limit = (
@@ -3592,6 +3598,7 @@ class LicensingService:
                         customer,
                         device,
                         device_limit,
+                        entitlement_states,
                     )
                     self.audit(
                         connection,
@@ -3618,7 +3625,17 @@ class LicensingService:
                 message = "License active."
             else:
                 status, message = self._blocking_status(grants)
-            response = self._license_response(status, message, licensed, check_interval_seconds, grace_period_seconds, customer, device, device_limit)
+            response = self._license_response(
+                status,
+                message,
+                licensed,
+                check_interval_seconds,
+                grace_period_seconds,
+                customer,
+                device,
+                device_limit,
+                entitlement_states,
+            )
             if status == "active" and normalized_client_type == CLIENT_TYPE_TRADER:
                 response["license_lease"] = self._issue_trader_license_lease(
                     customer=customer,
@@ -3838,6 +3855,97 @@ class LicensingService:
             return [grant for grant in grants if bool(grant.get("trader_enabled", 1))]
         return grants
 
+    def _entitlement_states(
+        self,
+        connection: sqlite3.Connection,
+        customer_id: str,
+        grants: list[dict[str, Any]],
+        client_type: str,
+    ) -> list[dict[str, Any]]:
+        now = utc_now()
+        states: list[dict[str, Any]] = []
+        current_product_ids: set[str] = set()
+        for grant in grants:
+            product_id = str(grant["product_id"])
+            current_product_ids.add(product_id)
+            status = str(grant.get("status") or "unlicensed").strip().lower()
+            expires_at = parse_time(grant.get("expires_at"))
+            if grant.get("is_licensed"):
+                status = "active"
+            elif parse_time(grant.get("revoked_at")) is not None:
+                status = "revoked"
+            elif status not in {"revoked", "suspended", "expired"} and expires_at is not None and expires_at <= now:
+                status = "expired"
+            states.append(
+                {
+                    "product_id": product_id,
+                    "slug": grant.get("slug"),
+                    "name": grant.get("name"),
+                    "feature_id": grant.get("feature_id"),
+                    "status": status,
+                    "source": grant.get("source"),
+                    "expires_at": grant.get("expires_at"),
+                    "changed_at": grant.get("updated_at"),
+                }
+            )
+
+        removed_product_ids: set[str] = set()
+        audit_rows = connection.execute(
+            """
+            SELECT details_json, created_at
+            FROM audit_log
+            WHERE action = 'entitlement.removed'
+              AND details_json LIKE ?
+            ORDER BY created_at DESC
+            """,
+            (f"%{customer_id}%",),
+        ).fetchall()
+        for audit_row in audit_rows:
+            try:
+                details = json.loads(audit_row["details_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(details, dict):
+                continue
+            if details.get("customer_id") != customer_id:
+                continue
+            product_id = str(details.get("product_id") or "").strip()
+            if not product_id or product_id in current_product_ids or product_id in removed_product_ids:
+                continue
+            product = connection.execute(
+                """
+                SELECT id, slug, name, feature_id, nt8_strategy_key, trader_enabled, nt8_enabled
+                FROM products
+                WHERE id = ?
+                """,
+                (product_id,),
+            ).fetchone()
+            if product is None:
+                continue
+            product_dict = dict(product)
+            if client_type == CLIENT_TYPE_TRADER and not bool(product_dict.get("trader_enabled", 1)):
+                continue
+            if client_type == CLIENT_TYPE_NT8 and (
+                not bool(product_dict.get("nt8_enabled", 1))
+                or not str(product_dict.get("nt8_strategy_key") or "").strip()
+            ):
+                continue
+            removed_product_ids.add(product_id)
+            states.append(
+                {
+                    "product_id": product_id,
+                    "slug": product_dict.get("slug"),
+                    "name": product_dict.get("name") or details.get("product_name"),
+                    "feature_id": product_dict.get("feature_id"),
+                    "status": "removed",
+                    "source": details.get("source"),
+                    "expires_at": details.get("expires_at"),
+                    "changed_at": audit_row["created_at"],
+                }
+            )
+
+        return sorted(states, key=lambda state: str(state.get("name") or state.get("slug") or "").lower())
+
     def _license_response(
         self,
         status: str,
@@ -3848,6 +3956,7 @@ class LicensingService:
         customer: sqlite3.Row | dict[str, Any] | None = None,
         device: sqlite3.Row | dict[str, Any] | None = None,
         device_limit: dict[str, Any] | None = None,
+        entitlement_states: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
         expiry_values = [parse_time(grant.get("expires_at")) for grant in grants if grant.get("expires_at")]
@@ -3890,6 +3999,7 @@ class LicensingService:
                 }
                 for grant in grants
             ],
+            "entitlement_states": entitlement_states or [],
             "expires_at": iso(min(expiry_values)) if expiry_values else None,
             "next_check_at": iso(now + timedelta(seconds=check_interval_seconds)),
             "next_check_seconds": check_interval_seconds,

@@ -508,6 +508,12 @@ Important behavior:
   Entitlements table. It deletes the selected `entitlements` row and writes an
   `entitlement.removed` audit event; Whop grant ledger rows keep their nullable
   entitlement reference.
+- 2026-07-14: Trader license responses include additive `entitlement_states`
+  display metadata for current active/inactive grants and the latest audited
+  removal of a product. Inactive entries normalize elapsed active grants to
+  `expired` and expose `expires_at`/`changed_at` so TraderPro can explain access
+  loss. This array is not an access authority: active `licensed_strategies` and
+  the signed lease remain the only grant inputs.
 - Product/admin pages intentionally hide internal slugs and feature ids in user
   facing tables where tests assert that behavior.
 - Customer tags are normalized to lowercase release-targeting tags.

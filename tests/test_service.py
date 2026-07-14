@@ -569,18 +569,38 @@ class LicensingServiceTests(unittest.TestCase):
             ip_address=None,
         )
         detail = self.service.customer_detail(created.customer["id"])
+        response = self.service.check_license(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="machine-removed",
+            app_version=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
 
         self.assertTrue(removed)
         self.assertEqual([], detail["entitlements"])
         self.assertTrue(any(audit["action"] == "entitlement.removed" for audit in detail["audit"]))
+        self.assertEqual("unlicensed", response["status"])
+        removed_state = next(
+            state for state in response["entitlement_states"] if state["product_id"] == self.product["id"]
+        )
+        self.assertEqual("removed", removed_state["status"])
+        self.assertEqual("strategy.duo.runtime", removed_state["feature_id"])
+        self.assertIsNotNone(removed_state["changed_at"])
 
     def test_expired_grant_returns_expired_without_strategies(self) -> None:
         created = self.service.create_or_update_customer(email="expired@example.com")
+        expired_at = iso(utc_now() - timedelta(days=1))
         self.service.manual_set_entitlement(
             customer_id=created.customer["id"],
             product_id=self.product["id"],
             status="expired",
-            expires_at=iso(utc_now() - timedelta(days=1)),
+            expires_at=expired_at,
             reason="manual expiry",
             actor_id="admin",
             ip_address=None,
@@ -601,6 +621,10 @@ class LicensingServiceTests(unittest.TestCase):
 
         self.assertEqual("expired", response["status"])
         self.assertEqual([], response["licensed_strategies"])
+        expired_state = response["entitlement_states"][0]
+        self.assertEqual("expired", expired_state["status"])
+        self.assertEqual(expired_at, expired_state["expires_at"])
+        self.assertIsNotNone(expired_state["changed_at"])
 
     def test_revoked_grant_returns_revoked_without_strategies(self) -> None:
         created = self.service.create_or_update_customer(email="revoked@example.com")

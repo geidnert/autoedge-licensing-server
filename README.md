@@ -148,6 +148,18 @@ Response:
       "expires_at": "2026-07-03T20:00:00Z"
     }
   ],
+  "entitlement_states": [
+    {
+      "product_id": "product-id",
+      "slug": "duo-runtime",
+      "name": "DUO Runtime",
+      "feature_id": "strategy.duo.runtime",
+      "status": "active",
+      "source": "whop",
+      "expires_at": "2026-07-03T20:00:00Z",
+      "changed_at": "2026-06-03T19:55:00Z"
+    }
+  ],
   "expires_at": "2026-07-03T20:00:00Z",
   "next_check_at": "2026-06-04T02:00:00Z",
   "next_check_seconds": 21600,
@@ -163,6 +175,8 @@ Response:
 Blocking statuses are explicit: `unknown_customer`, `unlicensed`, `expired`, `revoked`, `suspended`, `device_blocked`, `device_limit_exceeded`, `invalid_request`, and `rate_limited`.
 
 TraderPro should allow strategy or extension access only when `status == "active"` and the required `feature_id` is present in `licensed_strategies`. The field name is legacy; it can contain any active TraderPro-enabled licensed product, including optional extensions such as `trader.notifications.discord`.
+
+`entitlement_states` is additive display metadata for the current effective entitlement per product, including inactive `expired`, `revoked`, `suspended`, and audited `removed` states. TraderPro can use `expires_at` and `changed_at` to explain why an installed package no longer has access, but it must never grant access from this array; `licensed_strategies` and the signed TraderPro lease remain authoritative.
 
 Manual Lifetime grants and other no-expiry entitlements are represented as `expires_at: null` on the affected `licensed_strategies` entries. The top-level `expires_at` is `null` only when all licensed strategies in the response have no expiry.
 
