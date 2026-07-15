@@ -186,6 +186,57 @@ class StrategyReleaseIdentityMigrationTests(unittest.TestCase):
             self.assertIsNotNone(migration)
 
 
+class ProductSubscriptionUrlMigrationTests(unittest.TestCase):
+    def test_existing_products_gain_nullable_url_and_duo_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(f"{directory}/pre-subscription-url.db")
+            migrations = sorted(migration_dir().glob("*.sql"))
+            apply_migrations(
+                database,
+                [migration for migration in migrations if migration.name < "016_product_subscription_urls.sql"],
+            )
+            now = iso(utc_now().replace(microsecond=0))
+            with database.session() as connection:
+                connection.executemany(
+                    """
+                    INSERT INTO products(id, slug, name, feature_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        ("product-legacy", "legacy-runtime", "Legacy Runtime", "strategy.legacy.runtime", now, now),
+                        ("product-duo", "duo-runtime", "DUO Runtime", "strategy.duo.runtime", now, now),
+                        ("product-duorc", "duorc-runtime", "DUOrc Runtime", "strategy.duorc.runtime", now, now),
+                    ],
+                )
+
+            apply_migrations(database)
+
+            with database.session() as connection:
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(products)")}
+                products = {
+                    row["slug"]: row["subscription_url"]
+                    for row in connection.execute(
+                        "SELECT slug, subscription_url FROM products "
+                        "WHERE id IN ('product-legacy', 'product-duo', 'product-duorc')"
+                    )
+                }
+                migration = connection.execute(
+                    "SELECT name FROM schema_migrations WHERE name = '016_product_subscription_urls.sql'"
+                ).fetchone()
+
+            self.assertIn("subscription_url", columns)
+            self.assertIsNone(products["legacy-runtime"])
+            self.assertEqual(
+                "https://whop.com/auto-edge/duo-nasdaq-futures-bot/",
+                products["duo-runtime"],
+            )
+            self.assertEqual(
+                "https://whop.com/auto-edge/duo-nasdaq-futures-bot/",
+                products["duorc-runtime"],
+            )
+            self.assertIsNotNone(migration)
+
+
 class LinuxReleasePlatformMigrationTests(unittest.TestCase):
     def test_existing_mich_metadata_adds_linux_without_creating_release_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

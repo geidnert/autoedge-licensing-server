@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -39,6 +40,7 @@ from .signing import (
 
 ACTIVE_ENTITLEMENT_STATUSES = {"active", "trialing"}
 BLOCKING_ENTITLEMENT_STATUSES = {"expired", "revoked", "suspended"}
+_UNSET = object()
 
 
 def utc_now() -> datetime:
@@ -85,6 +87,29 @@ def normalize_optional_text(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def normalize_subscription_url(value: str | None) -> str | None:
+    cleaned = normalize_optional_text(value)
+    if cleaned is None:
+        return None
+    if any(character.isspace() for character in cleaned):
+        raise ValueError("Subscription URL must be an absolute HTTPS URL.")
+    try:
+        parsed = urlsplit(cleaned)
+        parsed_port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Subscription URL must be an absolute HTTPS URL.") from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed_port is not None and not 1 <= parsed_port <= 65535
+    ):
+        raise ValueError("Subscription URL must be an absolute HTTPS URL.")
+    return cleaned
 
 
 def slugify(value: str) -> str:
@@ -238,6 +263,20 @@ def normalize_release_types(values: list[str] | None) -> set[str]:
         return set(DEFAULT_MANIFEST_RELEASE_TYPES)
     normalized = {str(value).strip() for value in values if str(value).strip() in RELEASE_TYPES}
     return normalized or set(DEFAULT_MANIFEST_RELEASE_TYPES)
+
+
+def product_release_type(product: dict[str, Any]) -> str:
+    try:
+        metadata = json.loads(product.get("metadata_json") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    configured = str(metadata.get("release_type") or "").strip()
+    if configured in PACKAGE_RELEASE_TYPES:
+        return configured
+    package_kind = str(metadata.get("package_kind") or "").strip()
+    if package_kind in {"extension", EXTENSION_PACKAGE_RELEASE_TYPE}:
+        return EXTENSION_PACKAGE_RELEASE_TYPE
+    return STRATEGY_RELEASE_TYPE
 
 
 def normalize_tag(value: str | None) -> str:
@@ -479,6 +518,7 @@ class LicensingService:
         nt8_strategy_key: str | None = None,
         trader_enabled: bool = True,
         nt8_enabled: bool = True,
+        subscription_url: str | None | object = _UNSET,
         actor_id: str | None = None,
         ip_address: str | None = None,
     ) -> dict[str, Any]:
@@ -489,6 +529,11 @@ class LicensingService:
             existing = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
             if existing is None:
                 raise ValueError("Product not found.")
+            normalized_subscription_url = (
+                existing["subscription_url"]
+                if subscription_url is _UNSET
+                else normalize_subscription_url(subscription_url)
+            )
             connection.execute(
                 """
                 UPDATE products
@@ -500,6 +545,7 @@ class LicensingService:
                     nt8_strategy_key = ?,
                     trader_enabled = ?,
                     nt8_enabled = ?,
+                    subscription_url = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -512,6 +558,7 @@ class LicensingService:
                     normalized_nt8_key,
                     int(trader_enabled),
                     int(nt8_enabled),
+                    normalized_subscription_url,
                     now,
                     product_id,
                 ),
@@ -529,6 +576,7 @@ class LicensingService:
                     "nt8_strategy_key": normalized_nt8_key,
                     "trader_enabled": trader_enabled,
                     "nt8_enabled": nt8_enabled,
+                    "subscription_url": normalized_subscription_url,
                 },
                 ip_address,
             )
@@ -546,6 +594,7 @@ class LicensingService:
         nt8_strategy_key: str | None = None,
         trader_enabled: bool = True,
         nt8_enabled: bool = True,
+        subscription_url: str | None | object = _UNSET,
         metadata: dict[str, Any] | None = None,
         actor_id: str | None = None,
         ip_address: str | None = None,
@@ -559,6 +608,13 @@ class LicensingService:
                 "SELECT * FROM products WHERE slug = ? OR feature_id = ? OR (whop_product_id IS NOT NULL AND whop_product_id = ?)",
                 (normalized_slug, feature_id, whop_product_id),
             ).fetchone()
+            normalized_subscription_url = (
+                None
+                if row is None and subscription_url is _UNSET
+                else row["subscription_url"]
+                if subscription_url is _UNSET
+                else normalize_subscription_url(subscription_url)
+            )
             if row is None:
                 product_id = uuid.uuid4().hex
                 connection.execute(
@@ -566,9 +622,9 @@ class LicensingService:
                     INSERT INTO products(
                         id, whop_product_id, slug, name, feature_id, is_active,
                         nt8_strategy_key, trader_enabled, nt8_enabled,
-                        metadata_json, created_at, updated_at
+                        subscription_url, metadata_json, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         product_id,
@@ -580,6 +636,7 @@ class LicensingService:
                         normalized_nt8_key,
                         int(trader_enabled),
                         int(nt8_enabled),
+                        normalized_subscription_url,
                         metadata_json,
                         now,
                         now,
@@ -599,6 +656,7 @@ class LicensingService:
                         nt8_strategy_key = ?,
                         trader_enabled = ?,
                         nt8_enabled = ?,
+                        subscription_url = ?,
                         metadata_json = ?,
                         updated_at = ?
                     WHERE id = ?
@@ -612,6 +670,7 @@ class LicensingService:
                         normalized_nt8_key,
                         int(trader_enabled),
                         int(nt8_enabled),
+                        normalized_subscription_url,
                         metadata_json,
                         now,
                         product_id,
@@ -630,6 +689,7 @@ class LicensingService:
                     "nt8_strategy_key": normalized_nt8_key,
                     "trader_enabled": trader_enabled,
                     "nt8_enabled": nt8_enabled,
+                    "subscription_url": normalized_subscription_url,
                 },
                 ip_address,
             )
@@ -794,7 +854,7 @@ class LicensingService:
             rows = connection.execute(
                 f"""
                 SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
-                       products.feature_id AS feature_id
+                       products.feature_id AS feature_id, products.subscription_url AS subscription_url
                 FROM trader_releases
                 LEFT JOIN products ON products.id = trader_releases.product_id
                 {where}
@@ -809,7 +869,7 @@ class LicensingService:
             row = connection.execute(
                 """
                 SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
-                       products.feature_id AS feature_id
+                       products.feature_id AS feature_id, products.subscription_url AS subscription_url
                 FROM trader_releases
                 LEFT JOIN products ON products.id = trader_releases.product_id
                 WHERE trader_releases.id = ?
@@ -1092,7 +1152,7 @@ class LicensingService:
             release = connection.execute(
                 """
                 SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
-                       products.feature_id AS feature_id
+                       products.feature_id AS feature_id, products.subscription_url AS subscription_url
                 FROM trader_releases
                 LEFT JOIN products ON products.id = trader_releases.product_id
                 WHERE trader_releases.id = ?
@@ -2552,6 +2612,48 @@ class LicensingService:
                 visible_by_group[group_value] = release
         return list(visible_by_group.values()), denied
 
+    def _trader_manifest_packages(self, license_response: dict[str, Any]) -> list[dict[str, Any]]:
+        states_by_product_id = {
+            str(state.get("product_id")): state
+            for state in license_response.get("entitlement_states", [])
+            if state.get("product_id")
+        }
+        with self.database.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM products
+                WHERE is_active = 1
+                  AND trader_enabled = 1
+                ORDER BY name ASC
+                """
+            ).fetchall()
+        packages: list[dict[str, Any]] = []
+        for row in rows:
+            product = dict(row)
+            release_type = product_release_type(product)
+            display_name = (
+                display_strategy_name(product.get("name"))
+                if release_type == STRATEGY_RELEASE_TYPE
+                else product.get("name") or product.get("slug")
+            )
+            state = states_by_product_id.get(str(product["id"]))
+            packages.append(
+                {
+                    "product_id": product["id"],
+                    "package_id": product["slug"],
+                    "display_name": display_name,
+                    "product_name": display_name,
+                    "feature_id": product["feature_id"],
+                    "release_type": release_type,
+                    "subscription_url": product.get("subscription_url"),
+                    "license_status": state.get("status") if state else "unlicensed",
+                    "license_source": state.get("source") if state else None,
+                    "expires_at": state.get("expires_at") if state else None,
+                }
+            )
+        return packages
+
     def release_manifest(
         self,
         *,
@@ -2584,6 +2686,7 @@ class LicensingService:
             grace_period_seconds=grace_period_seconds,
             max_devices=max_devices,
         )
+        packages = self._trader_manifest_packages(license_response)
         if license_response["status"] != "active":
             return {
                 "status": license_response["status"],
@@ -2591,6 +2694,7 @@ class LicensingService:
                 "server_time": iso(),
                 "channel": channel or "stable",
                 "platform": platform or DEFAULT_RELEASE_PLATFORM,
+                "packages": packages,
                 "releases": [],
                 "app_update": None,
                 "license": license_response,
@@ -2614,6 +2718,7 @@ class LicensingService:
                     "server_time": iso(),
                     "channel": normalized_channel,
                     "platform": normalized_platform,
+                    "packages": packages,
                     "releases": [],
                     "app_update": None,
                     "license": license_response,
@@ -2626,7 +2731,7 @@ class LicensingService:
                 rows = connection.execute(
                     """
                     SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
-                           products.feature_id AS feature_id
+                           products.feature_id AS feature_id, products.subscription_url AS subscription_url
                     FROM trader_releases
                     LEFT JOIN products ON products.id = trader_releases.product_id
                     WHERE trader_releases.is_active = 1
@@ -2667,7 +2772,7 @@ class LicensingService:
                 app_rows = connection.execute(
                     """
                     SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
-                           products.feature_id AS feature_id
+                           products.feature_id AS feature_id, products.subscription_url AS subscription_url
                     FROM trader_releases
                     LEFT JOIN products ON products.id = trader_releases.product_id
                     WHERE trader_releases.is_active = 1
@@ -2724,6 +2829,7 @@ class LicensingService:
             "server_time": iso(),
             "channel": normalized_channel,
             "platform": normalized_platform,
+            "packages": packages,
             "releases": releases,
             "app_update": app_update,
             "license": license_response,
@@ -2785,7 +2891,7 @@ class LicensingService:
             release = connection.execute(
                 """
                 SELECT trader_releases.*, products.name AS product_name, products.slug AS product_slug,
-                       products.feature_id AS feature_id
+                       products.feature_id AS feature_id, products.subscription_url AS subscription_url
                 FROM trader_releases
                 LEFT JOIN products ON products.id = trader_releases.product_id
                 WHERE trader_releases.id = ?
@@ -2866,7 +2972,7 @@ class LicensingService:
                 """
                 SELECT release_download_tokens.*, trader_releases.*,
                        products.name AS product_name, products.slug AS product_slug,
-                       products.feature_id AS feature_id
+                       products.feature_id AS feature_id, products.subscription_url AS subscription_url
                 FROM release_download_tokens
                 JOIN trader_releases ON trader_releases.id = release_download_tokens.release_id
                 LEFT JOIN products ON products.id = trader_releases.product_id
@@ -2930,6 +3036,7 @@ class LicensingService:
             "product_id": release.get("product_id"),
             "feature_id": feature_id,
             "required_features": [feature_id] if feature_id else [],
+            "subscription_url": release.get("subscription_url"),
             "channel": release["channel"],
             "platform": release["platform"],
             "version": release["version"],
@@ -3882,6 +3989,7 @@ class LicensingService:
                     "slug": grant.get("slug"),
                     "name": grant.get("name"),
                     "feature_id": grant.get("feature_id"),
+                    "subscription_url": grant.get("subscription_url"),
                     "status": status,
                     "source": grant.get("source"),
                     "expires_at": grant.get("expires_at"),
@@ -3914,7 +4022,8 @@ class LicensingService:
                 continue
             product = connection.execute(
                 """
-                SELECT id, slug, name, feature_id, nt8_strategy_key, trader_enabled, nt8_enabled
+                SELECT id, slug, name, feature_id, subscription_url,
+                       nt8_strategy_key, trader_enabled, nt8_enabled
                 FROM products
                 WHERE id = ?
                 """,
@@ -3937,6 +4046,7 @@ class LicensingService:
                     "slug": product_dict.get("slug"),
                     "name": product_dict.get("name") or details.get("product_name"),
                     "feature_id": product_dict.get("feature_id"),
+                    "subscription_url": product_dict.get("subscription_url"),
                     "status": "removed",
                     "source": details.get("source"),
                     "expires_at": details.get("expires_at"),
@@ -3990,6 +4100,7 @@ class LicensingService:
                     "slug": grant["slug"],
                     "name": grant["name"],
                     "feature_id": grant["feature_id"],
+                    "subscription_url": grant.get("subscription_url"),
                     "nt8_strategy_key": grant.get("nt8_strategy_key"),
                     "trader_enabled": bool(grant.get("trader_enabled", 1)),
                     "nt8_enabled": bool(grant.get("nt8_enabled", 1)),
@@ -4265,7 +4376,8 @@ class LicensingService:
         rows = connection.execute(
             """
             SELECT entitlements.*, products.id AS product_id, products.slug, products.name, products.feature_id,
-                   products.is_active, products.nt8_strategy_key, products.trader_enabled, products.nt8_enabled,
+                   products.subscription_url, products.is_active, products.nt8_strategy_key,
+                   products.trader_enabled, products.nt8_enabled,
                    subscriptions.whop_membership_id
             FROM entitlements
             JOIN products ON products.id = entitlements.product_id

@@ -1,6 +1,6 @@
 # AutoEdge Licensing Server Codex Memory
 
-Last refreshed: 2026-07-14
+Last refreshed: 2026-07-15
 
 ## Repository Shape
 
@@ -180,6 +180,10 @@ NT8 license checks:
 - Use the same customers, entitlements, devices, device limits, and audit log as
   TraderPro Desktop.
 - Products have `nt8_strategy_key`, `trader_enabled`, and `nt8_enabled`.
+- Products also have a nullable `subscription_url`. Product administration
+  accepts only absolute HTTPS URLs and permits clearing the field. DUO and
+  DUOrc use `https://whop.com/auto-edge/duo-nasdaq-futures-bot/`; other links
+  must not be guessed.
 - Return `licensed: true`, `strategy_keys`, and an HMAC-signed opaque lease when
   active.
 - Manual Lifetime grants and other no-expiry entitlements also return
@@ -398,6 +402,12 @@ or deterministic rollout percent.
 Download flow:
 
 - Manifest returns visible releases and app updates only for active licenses.
+- Manifest `packages` is an additive catalog of every active TraderPro-enabled
+  product. It includes `package_id`, display/product identity, `release_type`,
+  current entitlement display metadata, and nullable `subscription_url`, and
+  remains populated for unlicensed/expired/blocking responses. This catalog is
+  never an access authority; blocking manifests still return no releases or app
+  update, and download-token/resolution checks are unchanged.
 - If `include_types` is omitted, manifests intentionally keep the old default:
   `strategy_package` and `trader_desktop`. Clients that support optional
   extensions must request `extension_package`.
@@ -469,6 +479,9 @@ Current migration sequence:
   existing rows remain `NULL`.
 - `015_linux_x64_release_platform.sql`: adds `linux-x64` to existing seeded MICH
   product metadata without creating or copying release rows.
+- `016_product_subscription_urls.sql`: adds nullable
+  `products.subscription_url` and configures the verified shared DUO/DUOrc Whop
+  URL without inventing links for other existing products.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not
@@ -516,6 +529,9 @@ Important behavior:
   the signed lease remain the only grant inputs.
 - Product/admin pages intentionally hide internal slugs and feature ids in user
   facing tables where tests assert that behavior.
+- Product administration clearly displays and edits the current optional
+  subscription URL. Blank input clears it; service validation rejects relative,
+  non-HTTPS, credential-bearing, malformed, or whitespace-containing URLs.
 - Customer tags are normalized to lowercase release-targeting tags.
 - Admin password changes revoke active sessions by forcing a sign-in cycle.
 

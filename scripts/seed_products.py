@@ -14,8 +14,18 @@ from autoedge_licensing.service import LicensingService
 
 
 DEFAULT_PRODUCTS = [
-    {"slug": "duo-runtime", "name": "DUO Runtime", "feature_id": "strategy.duo.runtime"},
-    {"slug": "duorc-runtime", "name": "DUOrc Runtime", "feature_id": "strategy.duorc.runtime"},
+    {
+        "slug": "duo-runtime",
+        "name": "DUO Runtime",
+        "feature_id": "strategy.duo.runtime",
+        "subscription_url": "https://whop.com/auto-edge/duo-nasdaq-futures-bot/",
+    },
+    {
+        "slug": "duorc-runtime",
+        "name": "DUOrc Runtime",
+        "feature_id": "strategy.duorc.runtime",
+        "subscription_url": "https://whop.com/auto-edge/duo-nasdaq-futures-bot/",
+    },
     {"slug": "orbo2-runtime", "name": "ORBO2 Runtime", "feature_id": "strategy.orbo2.runtime"},
     {"slug": "orboib-runtime", "name": "ORBOib Runtime", "feature_id": "strategy.orboib.runtime"},
     {"slug": "adam-runtime", "name": "ADAM Runtime", "feature_id": "strategy.adam.runtime"},
@@ -74,8 +84,14 @@ def main() -> int:
     database = Database(settings.database_path)
     apply_migrations(database)
     service = LicensingService(database)
+    existing_slugs = {product["slug"] for product in service.list_products()}
     for definition in DEFAULT_PRODUCTS:
         slug = definition["slug"]
+        subscription_fields = (
+            {"subscription_url": definition["subscription_url"]}
+            if slug not in existing_slugs and definition.get("subscription_url")
+            else {}
+        )
         product = service.upsert_product(
             slug=slug,
             name=definition["name"],
@@ -84,6 +100,7 @@ def main() -> int:
             trader_enabled=definition.get("trader_enabled", True),
             nt8_enabled=definition.get("nt8_enabled", True),
             metadata=definition.get("metadata", {"seeded": True, "package_kind": "strategy"}),
+            **subscription_fields,
         )
         print(f"Seeded {product['slug']} -> {product['feature_id']}")
     return 0

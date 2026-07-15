@@ -18,7 +18,7 @@ The server receives Whop AutoEdge entitlement updates, stores customer/product/s
   - remove individual entitlement rows from a customer
   - block or unblock devices
   - enforce and override per-customer device limits
-  - manage TraderPro strategy and extension products
+  - manage TraderPro strategy and extension products, including optional subscription URLs
   - map Whop plans/products to one or more licensed products with day grants
 - TraderPro client endpoint:
   - activate/check by license key, email, customer id, or Whop user id
@@ -50,6 +50,12 @@ The endpoint is idempotent by `webhook-id`. Duplicate deliveries return `{"statu
 ### Whop Package Mappings
 
 Products are internal licensed TraderPro capabilities, such as DUO, DUOrc, or optional TraderPro Desktop extensions. Whop Packages describe what Whop sells.
+
+Configure each product's optional purchase/renewal link in `/admin/products`.
+`subscription_url` accepts only absolute HTTPS URLs and can be cleared. The
+server seeds DUO and DUOrc with
+`https://whop.com/auto-edge/duo-nasdaq-futures-bot/`; all other product URLs
+remain `null` until an administrator supplies a verified link.
 
 Configure packages in `/admin/packages`:
 
@@ -143,6 +149,7 @@ Response:
       "slug": "duo-runtime",
       "name": "DUO Runtime",
       "feature_id": "strategy.duo.runtime",
+      "subscription_url": "https://whop.com/auto-edge/duo-nasdaq-futures-bot/",
       "status": "active",
       "source": "whop",
       "expires_at": "2026-07-03T20:00:00Z"
@@ -154,6 +161,7 @@ Response:
       "slug": "duo-runtime",
       "name": "DUO Runtime",
       "feature_id": "strategy.duo.runtime",
+      "subscription_url": "https://whop.com/auto-edge/duo-nasdaq-futures-bot/",
       "status": "active",
       "source": "whop",
       "expires_at": "2026-07-03T20:00:00Z",
@@ -280,6 +288,10 @@ Request:
 
 The same license identifiers as `/api/trader/license/check` are accepted. The response includes the normal license decision plus:
 
+- `packages`: the active TraderPro product catalog and its current entitlement
+  display state, including optional server-controlled `subscription_url`
+  metadata. It is returned for active and blocking license decisions so Access
+  & Updates can offer purchase or renewal links without granting access.
 - `releases`: product-bound package releases only for features the customer is licensed and targeted to use.
 - `app_update`: the TraderPro Desktop target release for the customer when it differs from `app_version`.
 
@@ -301,6 +313,20 @@ Response:
   "message": "Release manifest available.",
   "channel": "stable",
   "platform": "macos-arm64",
+  "packages": [
+    {
+      "product_id": "product-id",
+      "package_id": "duo-runtime",
+      "display_name": "DUO",
+      "product_name": "DUO",
+      "feature_id": "strategy.duo.runtime",
+      "release_type": "strategy_package",
+      "subscription_url": "https://whop.com/auto-edge/duo-nasdaq-futures-bot/",
+      "license_status": "active",
+      "license_source": "whop",
+      "expires_at": "2026-07-03T20:00:00Z"
+    }
+  ],
   "releases": [
     {
       "id": "release-id",
@@ -314,6 +340,7 @@ Response:
       "product_id": "product-id",
       "feature_id": "strategy.duo.runtime",
       "required_features": ["strategy.duo.runtime"],
+      "subscription_url": "https://whop.com/auto-edge/duo-nasdaq-futures-bot/",
       "version": "1.2.0",
       "nt8_version": "2.1.0.8",
       "trader_revision": 1,
@@ -390,6 +417,13 @@ inferred or backfilled. `nt8_version` must have exactly four numeric components
 non-negative integer. Supply both values or leave both blank.
 
 TraderPro should use the manifest only when `status == "active"`. Expired, revoked, suspended, blocked, device-limit-exceeded, or unknown customers receive an empty release list, `app_update: null`, and the same blocking license status.
+
+`packages[].subscription_url` is nullable. A `null` value means no verified
+purchase link is configured and clients should omit the subscribe/renew action.
+`packages[].license_status` is display metadata only. Neither the package
+catalog nor its subscription URL grants access; `licensed_strategies`, the
+signed TraderPro lease, release selection, download-token checks, and resolved
+download authorization remain authoritative.
 
 `action` is one of:
 

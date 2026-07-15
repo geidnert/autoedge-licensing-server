@@ -2275,6 +2275,77 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("prod_duorc", updated["whop_product_id"])
         self.assertEqual(1, [product["slug"] for product in self.service.list_products()].count("duorc-runtime"))
 
+    def test_product_subscription_url_create_update_readback_and_clear(self) -> None:
+        first_url = "https://whop.com/auto-edge/example-product/"
+        second_url = "https://whop.com/auto-edge/example-renewal/?source=traderpro"
+        product = self.service.upsert_product(
+            slug="subscription-product",
+            name="Subscription Product",
+            feature_id="strategy.subscription.runtime",
+            subscription_url=first_url,
+        )
+
+        self.assertEqual(first_url, product["subscription_url"])
+        self.assertEqual(first_url, self.service.get_product(product["id"])["subscription_url"])
+
+        updated = self.service.update_product(
+            product_id=product["id"],
+            slug=product["slug"],
+            name=product["name"],
+            feature_id=product["feature_id"],
+            whop_product_id=None,
+            is_active=True,
+            subscription_url=second_url,
+        )
+        listed = next(item for item in self.service.list_products() if item["id"] == product["id"])
+
+        self.assertEqual(second_url, updated["subscription_url"])
+        self.assertEqual(second_url, listed["subscription_url"])
+
+        cleared = self.service.update_product(
+            product_id=product["id"],
+            slug=product["slug"],
+            name=product["name"],
+            feature_id=product["feature_id"],
+            whop_product_id=None,
+            is_active=True,
+            subscription_url="",
+        )
+
+        self.assertIsNone(cleared["subscription_url"])
+        self.assertIsNone(self.service.get_product(product["id"])["subscription_url"])
+
+    def test_product_subscription_url_accepts_only_absolute_https_urls(self) -> None:
+        valid = self.service.upsert_product(
+            slug="valid-subscription-url",
+            name="Valid Subscription URL",
+            feature_id="strategy.valid-subscription-url.runtime",
+            subscription_url="https://example.com/products/strategy?renew=1#access",
+        )
+        self.assertEqual(
+            "https://example.com/products/strategy?renew=1#access",
+            valid["subscription_url"],
+        )
+
+        for index, invalid_url in enumerate(
+            [
+                "http://example.com/product",
+                "//example.com/product",
+                "/products/strategy",
+                "whop.com/auto-edge/product",
+                "https://",
+                "https://user:password@example.com/product",
+                "https://example.com/product with spaces",
+            ]
+        ):
+            with self.subTest(invalid_url=invalid_url), self.assertRaises(ValueError):
+                self.service.upsert_product(
+                    slug=f"invalid-subscription-url-{index}",
+                    name=f"Invalid Subscription URL {index}",
+                    feature_id=f"strategy.invalid-subscription-url-{index}.runtime",
+                    subscription_url=invalid_url,
+                )
+
     def test_seeded_mich_product_can_be_licensed_and_manifested_after_artifact_registration(self) -> None:
         mich = next(product for product in self.service.list_products() if product["slug"] == "mich-runtime")
         metadata = json.loads(mich["metadata_json"])
@@ -2470,6 +2541,101 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual(["DUO"], [release["strategy"] for release in manifest["releases"]])
         self.assertTrue(manifest["releases"][0]["update_available"])
         self.assertEqual(len(b"duo package"), manifest["releases"][0]["artifact"]["size_bytes"])
+
+    def test_manifest_packages_expose_subscription_url_without_changing_authorization(self) -> None:
+        subscription_url = "https://whop.com/auto-edge/duo-nasdaq-futures-bot/"
+        self.service.update_product(
+            product_id=self.product["id"],
+            slug=self.product["slug"],
+            name=self.product["name"],
+            feature_id=self.product["feature_id"],
+            whop_product_id=self.product["whop_product_id"],
+            is_active=True,
+            subscription_url=subscription_url,
+        )
+        release = self.strategy_release(version="8.0.0")
+        entitled = self.active_customer("subscription-entitled@example.com")
+        unentitled = self.service.create_or_update_customer(email="subscription-unentitled@example.com")
+        expired = self.service.create_or_update_customer(email="subscription-expired@example.com")
+        self.service.manual_set_entitlement(
+            customer_id=expired.customer["id"],
+            product_id=self.product["id"],
+            status="expired",
+            expires_at=iso(utc_now() - timedelta(days=1)),
+            reason="expired subscription URL test",
+            actor_id="admin",
+            ip_address=None,
+        )
+
+        def manifest_for(created, fingerprint: str) -> dict:
+            return self.service.release_manifest(
+                license_key=created.license_key,
+                email=None,
+                customer_id=None,
+                whop_user_id=None,
+                machine_fingerprint=fingerprint,
+                app_version="1.0.0",
+                channel="stable",
+                platform="windows-x64",
+                include_types=["strategy_package"],
+                installed_packages=None,
+                ip_address=None,
+                user_agent=None,
+                check_interval_seconds=3600,
+                grace_period_seconds=86400,
+            )
+
+        entitled_manifest = manifest_for(entitled, "subscription-entitled-machine")
+        unentitled_manifest = manifest_for(unentitled, "subscription-unentitled-machine")
+        expired_manifest = manifest_for(expired, "subscription-expired-machine")
+        entitled_package = next(
+            package for package in entitled_manifest["packages"] if package["product_id"] == self.product["id"]
+        )
+        unentitled_package = next(
+            package for package in unentitled_manifest["packages"] if package["product_id"] == self.product["id"]
+        )
+        expired_package = next(
+            package for package in expired_manifest["packages"] if package["product_id"] == self.product["id"]
+        )
+        null_package = next(
+            package for package in unentitled_manifest["packages"] if package["package_id"] == "mich-runtime"
+        )
+
+        self.assertEqual("active", entitled_manifest["status"])
+        self.assertEqual(subscription_url, entitled_package["subscription_url"])
+        self.assertEqual("active", entitled_package["license_status"])
+        self.assertEqual(subscription_url, entitled_manifest["releases"][0]["subscription_url"])
+        self.assertEqual("unlicensed", unentitled_manifest["status"])
+        self.assertEqual(subscription_url, unentitled_package["subscription_url"])
+        self.assertEqual("unlicensed", unentitled_package["license_status"])
+        self.assertEqual([], unentitled_manifest["releases"])
+        self.assertIsNone(unentitled_manifest["app_update"])
+        self.assertEqual("expired", expired_manifest["status"])
+        self.assertEqual(subscription_url, expired_package["subscription_url"])
+        self.assertEqual("expired", expired_package["license_status"])
+        self.assertEqual([], expired_manifest["releases"])
+        self.assertIsNone(null_package["subscription_url"])
+
+        denied_token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=unentitled.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="subscription-unentitled-machine",
+            app_version="1.0.0",
+            channel="stable",
+            platform="windows-x64",
+            installed_packages=None,
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
+
+        self.assertEqual("unlicensed", denied_token["status"])
+        self.assertIsNone(denied_token["token"])
 
     def test_strategy_release_identity_is_created_updated_and_platform_specific(self) -> None:
         windows = self.strategy_release(

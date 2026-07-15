@@ -321,6 +321,7 @@ class AppEndpointTests(unittest.TestCase):
                     "nt8_strategy_key": "DUO",
                     "trader_enabled": 1,
                     "nt8_enabled": 1,
+                    "subscription_url": "https://whop.com/auto-edge/duo-nasdaq-futures-bot/",
                     "is_active": 1,
                     "updated_at": "2026-06-04T00:00:00Z",
                 }
@@ -334,8 +335,50 @@ class AppEndpointTests(unittest.TestCase):
         self.assertNotIn("strategy.duo.runtime", html)
         self.assertIn("NT8 key", html)
         self.assertIn("TraderPro", html)
+        self.assertIn("Subscription URL", html)
+        self.assertIn('name="subscription_url"', html)
+        self.assertIn("https://whop.com/auto-edge/duo-nasdaq-futures-bot/", html)
+        self.assertIn("Clear this field to remove the link.", html)
         self.assertIn("DUO", html)
         self.assertIn("2026-06-03 20:00:00 ET", html)
+
+    def test_admin_product_subscription_url_can_be_created_read_back_and_cleared(self) -> None:
+        subscription_url = "https://whop.com/auto-edge/admin-product/"
+        created_response = self.admin_product_response(
+            {
+                "product_id": "",
+                "name": "Admin Product",
+                "nt8_strategy_key": "AdminProduct",
+                "trader_enabled": "on",
+                "nt8_enabled": "on",
+                "is_active": "on",
+                "subscription_url": subscription_url,
+            }
+        )
+        created = next(
+            product for product in self.app.service.list_products() if product["name"] == "Admin Product"
+        )
+
+        self.assertEqual(303, created_response.status.value)
+        self.assertEqual(subscription_url, created["subscription_url"])
+        self.assertIn(subscription_url, products_page([created], "csrf-token", created))
+
+        cleared_response = self.admin_product_response(
+            {
+                "product_id": created["id"],
+                "slug": created["slug"],
+                "feature_id": created["feature_id"],
+                "name": "Admin Product",
+                "nt8_strategy_key": "AdminProduct",
+                "trader_enabled": "on",
+                "nt8_enabled": "on",
+                "is_active": "on",
+                "subscription_url": "",
+            }
+        )
+
+        self.assertEqual(303, cleared_response.status.value)
+        self.assertIsNone(self.app.service.get_product(created["id"])["subscription_url"])
 
     def test_packages_page_shows_bundle_without_internal_feature_ids(self) -> None:
         html = packages_page(
@@ -950,6 +993,21 @@ class AppEndpointTests(unittest.TestCase):
             }
         )
         return self.app.admin_customers(request, {"id": "admin-001", "username": "admin"})
+
+    def admin_product_response(self, fields: dict[str, str]):
+        body = urlencode(fields).encode("utf-8")
+        request = Request(
+            {
+                "REQUEST_METHOD": "POST",
+                "PATH_INFO": "/admin/products",
+                "QUERY_STRING": "",
+                "CONTENT_LENGTH": str(len(body)),
+                "CONTENT_TYPE": "application/x-www-form-urlencoded",
+                "wsgi.input": io.BytesIO(body),
+                "REMOTE_ADDR": "127.0.0.1",
+            }
+        )
+        return self.app.admin_products(request, {"id": "admin-001", "username": "admin"})
 
     def admin_customer_entitlement_response(self, customer_id: str, fields: dict[str, str]):
         body = urlencode(fields).encode("utf-8")

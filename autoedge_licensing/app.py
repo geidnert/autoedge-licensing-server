@@ -689,6 +689,7 @@ class AutoEdgeApp:
                     nt8_strategy_key=form.get("nt8_strategy_key") or None,
                     trader_enabled=form.get("trader_enabled") == "on",
                     nt8_enabled=form.get("nt8_enabled") == "on",
+                    subscription_url=form.get("subscription_url"),
                     actor_id=admin["id"],
                     ip_address=request.ip,
                 )
@@ -702,6 +703,7 @@ class AutoEdgeApp:
                     nt8_strategy_key=form.get("nt8_strategy_key") or None,
                     trader_enabled=form.get("trader_enabled") == "on",
                     nt8_enabled=form.get("nt8_enabled") == "on",
+                    subscription_url=form.get("subscription_url"),
                     actor_id=admin["id"],
                     ip_address=request.ip,
                 )
@@ -1355,6 +1357,7 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
         <tr>
           <td>{e(display_product_name(product.get('name')))}</td>
           <td>{e(product.get('nt8_strategy_key'))}</td>
+          <td>{f'<a href="{e(product.get("subscription_url"))}" target="_blank" rel="noopener noreferrer">{e(product.get("subscription_url"))}</a>' if product.get('subscription_url') else 'Not configured'}</td>
           <td>{format_bool(product.get('trader_enabled', 1))}</td>
           <td>{format_bool(product.get('nt8_enabled', 1))}</td>
           <td>{format_bool(product.get('is_active'))}</td>
@@ -1380,6 +1383,8 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
         <input type="hidden" name="feature_id" value="{e(selected.get('feature_id'))}">
         <label>Strategy <input name="name" required placeholder="DUO" value="{e(selected_name)}"></label>
         <label>NT8 key <input name="nt8_strategy_key" required placeholder="DUO" value="{e(selected.get('nt8_strategy_key') or selected_name)}"></label>
+        <label>Subscription URL <input name="subscription_url" type="url" inputmode="url" placeholder="https://whop.com/..." value="{e(selected.get('subscription_url'))}"></label>
+        <p class="hint">Optional absolute HTTPS purchase or renewal URL. Clear this field to remove the link.</p>
         <label class="checkbox"><input name="trader_enabled" type="checkbox" {trader_checked}> TraderPro</label>
         <label class="checkbox"><input name="nt8_enabled" type="checkbox" {nt8_checked}> NT8</label>
         <label class="checkbox"><input name="is_active" type="checkbox" {active_checked}> Active</label>
@@ -1389,8 +1394,8 @@ def products_page(products: list[dict[str, Any]], csrf: str, selected_product: d
     </section>
     <section class="panel">
       <table>
-        <thead><tr><th>Strategy</th><th>NT8 key</th><th>TraderPro</th><th>NT8</th><th>Active</th><th>Updated ET</th><th></th></tr></thead>
-        <tbody>{rows or '<tr><td colspan="7">No products configured.</td></tr>'}</tbody>
+        <thead><tr><th>Strategy</th><th>NT8 key</th><th>Subscription URL</th><th>TraderPro</th><th>NT8</th><th>Active</th><th>Updated ET</th><th></th></tr></thead>
+        <tbody>{rows or '<tr><td colspan="8">No products configured.</td></tr>'}</tbody>
       </table>
     </section>
     """
