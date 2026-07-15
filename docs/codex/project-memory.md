@@ -537,6 +537,29 @@ Important behavior:
 
 ## Deployment Memory
 
+- 2026-07-15: Commit `024e40e` deployed product subscription URLs and additive
+  TraderPro manifest `packages` metadata to production. The exact archive
+  SHA-256 was `3c95a441e9270a35978c3e1a0652fefe96a3b7de4dc42e702970acf28152d406`;
+  all `132` tests passed locally and from the extracted production staging
+  archive. The pre-deploy online SQLite backup is
+  `/var/backups/autoedge-before-024e40e-20260715T125207Z.db` (SHA-256
+  `47664914c2056572ffcdb60dd7fe942ffc26638787eb9ed0f9f96a7033ceb5b9`,
+  `quick_check: ok`) and the code backup is
+  `/var/backups/autoedge-code-before-024e40e-20260715T125207Z.tar.gz`
+  (SHA-256
+  `3e5c4dc34a902bdb59064be03e70c3ab2c40acbf785f1cfd1779725345a446a9`).
+  Migration `016_product_subscription_urls.sql` is recorded, the live DB
+  passes `quick_check`, local health is OK, public `/privacy` and
+  `/admin/login` return HTTP 200, and deployed `service.py`, `app.py`, and the
+  migration match the committed checksums. A cleaned-up HTTP manifest probe
+  returned all 10 active TraderPro products, the configured DUO/DUOrc URLs,
+  `null` for MICH, and no releases/app update for the unlicensed identity.
+  The first restart briefly returned 502 because `cp -a <mktemp-dir>/.` copied
+  the staging directory's `0700` mode onto `/opt/autoedge-licensing`; systemd
+  failed at `CHDIR` before running the app or migration. Restoring
+  `root:root 0755` and restarting recovered the service, after which the
+  migration and all verification succeeded. Preserve or explicitly restore
+  the live app directory mode before future restarts.
 - 2026-07-14: Commit `70d4012` deployed the additive TraderPro `entitlement_states` display metadata to production. The exact archive SHA-256 was `325adb4e1edf2810b5f0d480b7625d081677e74178bc32f332c8fa2256994ca8`; all `127` tests passed from the extracted staging archive before deployment. The pre-deploy online SQLite backup is `/var/backups/autoedge-before-70d4012-20260714T164333Z.db` (SHA-256 `073409945b55e7618162ec352bb004abc8cbc666c21fee76b4a84c86a323e1e3`, `quick_check: ok`) and the code backup is `/var/backups/autoedge-code-before-70d4012-20260714T164333Z.tar.gz` (SHA-256 `f73970c23cc0ac496d918403b8fc8d204715d02c8562b1e1c4393b54b53a8562`). After restart, systemd was active, local `/healthz` returned `{"status": "ok"}`, public `/privacy` and `/admin/login` returned HTTP 200, the live DB passed `quick_check`, and production `service.py` matched the committed SHA-256 `d0a00d1587569d14e930c02603bf2e297e76fa86f7836c7f2fdcb1ebb4885324`.
 
 ES256 production rollout on 2026-07-12:
@@ -631,6 +654,11 @@ Operational SSH notes:
   with `PRAGMA quick_check`. Restart `autoedge-licensing`, confirm the new
   migration in `schema_migrations`, run `PRAGMA quick_check` on the live DB,
   and check both local app health and publicly proxied routes.
+- `mktemp -d` creates a `0700` staging directory. Do not let an archive copy
+  preserve that top-level mode onto `/opt/autoedge-licensing`; the `autoedge`
+  service user then cannot enter its working directory. Preserve the existing
+  target directory metadata or explicitly restore `root:root 0755` before the
+  restart.
 - nginx does not currently expose `/healthz` on `solidparts.se`; the local
   `http://127.0.0.1:8788/healthz` endpoint is authoritative for service health.
   Use public routes such as `/privacy` and `/admin/login` to verify external
