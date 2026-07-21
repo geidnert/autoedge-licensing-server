@@ -2542,6 +2542,45 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertTrue(manifest["releases"][0]["update_available"])
         self.assertEqual(len(b"duo package"), manifest["releases"][0]["artifact"]["size_bytes"])
 
+    def test_release_manifest_keeps_distinct_packages_that_share_one_licensed_product(self) -> None:
+        created = self.active_customer("shared-strategy-subscription@example.com")
+        artifact_dir = Path(self.tmp.name) / "shared-product-artifacts"
+        artifact_dir.mkdir()
+        (artifact_dir / "duo.zip").write_bytes(b"duo")
+        (artifact_dir / "duolo.zip").write_bytes(b"duolo")
+        for package_id, artifact_path in (("duo-runtime", "duo.zip"), ("duolo-runtime", "duolo.zip")):
+            self.service.upsert_release(
+                release_id=None,
+                scope="strategy",
+                release_type="strategy_package",
+                product_key=package_id,
+                product_id=self.product["id"],
+                channel="stable",
+                platform="windows-x64",
+                version="1.0.0",
+                min_supported_version=None,
+                is_required=False,
+                is_active=True,
+                artifact_path=artifact_path,
+                artifact_filename=None,
+                size_bytes=None,
+                sha256_value=None,
+                signature=None,
+                release_notes=None,
+                artifact_dir=str(artifact_dir),
+            )
+
+        manifest = self.strategy_manifest(created, installed_packages=[])
+        releases = {release["package_id"]: release for release in manifest["releases"]}
+
+        self.assertEqual("active", manifest["status"])
+        self.assertEqual({"duo-runtime", "duolo-runtime"}, set(releases))
+        self.assertEqual("DUO", releases["duo-runtime"]["display_name"])
+        self.assertEqual("DUOlo", releases["duolo-runtime"]["display_name"])
+        self.assertEqual("DUOlo", releases["duolo-runtime"]["strategy"])
+        self.assertEqual("strategy.duo.runtime", releases["duolo-runtime"]["feature_id"])
+        self.assertEqual("active", releases["duolo-runtime"]["license_status"])
+
     def test_manifest_packages_expose_subscription_url_without_changing_authorization(self) -> None:
         subscription_url = "https://whop.com/auto-edge/duo-nasdaq-futures-bot/"
         self.service.update_product(

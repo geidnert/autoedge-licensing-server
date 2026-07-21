@@ -415,6 +415,11 @@ Download flow:
   `required_features`, `release_id`, artifact `path`/`filename`,
   `license_status`, and product grant `expires_at` in addition to the existing
   strategy-package fields.
+- Product-bound release selection groups by `release_type` and release
+  `product_key`, falling back to the licensed product only for legacy rows. This
+  lets DUO (`duo-runtime`) and DUOlo (`duolo-runtime`) share the DUO product and
+  `strategy.duo.runtime` entitlement while remaining separately visible and
+  downloadable; DUOlo's manifest display/strategy name comes from its package id.
 - `/api/trader/releases/download-token` rechecks license, device limit, platform,
   and targeting before issuing a short-lived token. Product-bound packages,
   including `extension_package`, require an active grant for the release product.

@@ -148,6 +148,7 @@ TRADER_DESKTOP_RELEASE_TYPE = "trader_desktop"
 TRADER_DESKTOP_PRODUCT_ID = "trader-desktop"
 TRADERPRO_DESKTOP_DISPLAY_NAME = "TraderPro Desktop"
 TRADERPRO_DESKTOP_DEFAULT_RELEASE_NOTES = "TraderPro Desktop update"
+STRATEGY_PACKAGE_DISPLAY_NAMES = {"duolo-runtime": "DUOlo"}
 PACKAGE_RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, EXTENSION_PACKAGE_RELEASE_TYPE}
 DEFAULT_MANIFEST_RELEASE_TYPES = {STRATEGY_RELEASE_TYPE, TRADER_DESKTOP_RELEASE_TYPE}
 RELEASE_TYPES = PACKAGE_RELEASE_TYPES | {TRADER_DESKTOP_RELEASE_TYPE}
@@ -171,6 +172,11 @@ def display_strategy_name(value: str | None) -> str:
     if value.endswith(" Runtime"):
         return value[: -len(" Runtime")]
     return value
+
+
+def display_strategy_package_name(product_name: str | None, package_id: str | None) -> str:
+    normalized_package_id = (package_id or "").strip().lower()
+    return STRATEGY_PACKAGE_DISPLAY_NAMES.get(normalized_package_id, display_strategy_name(product_name))
 
 
 def file_sha256(path: Path) -> str:
@@ -2749,7 +2755,8 @@ class LicensingService:
                 package_candidates = [dict(row) for row in rows]
                 for release in package_candidates:
                     release_type = release.get("release_type") or release_type_from_scope(release.get("scope"))
-                    release["_package_group_key"] = f"{release_type}:{release.get('product_id')}"
+                    package_key = release.get("product_key") or release.get("product_slug") or release.get("product_id")
+                    release["_package_group_key"] = f"{release_type}:{package_key}"
                 selected, denied = self._select_visible_releases(
                     package_candidates,
                     customer,
@@ -3021,7 +3028,7 @@ class LicensingService:
         if release_type == TRADER_DESKTOP_RELEASE_TYPE:
             display_name = TRADERPRO_DESKTOP_DISPLAY_NAME
         elif release_type == STRATEGY_RELEASE_TYPE:
-            display_name = display_strategy_name(product_name)
+            display_name = display_strategy_package_name(product_name, package_id)
         else:
             display_name = product_name or package_id
         item = {
@@ -3032,7 +3039,7 @@ class LicensingService:
             "package_id": package_id,
             "display_name": display_name,
             "product_name": display_name,
-            "strategy": display_strategy_name(product_name) if release_type == STRATEGY_RELEASE_TYPE and product_name else None,
+            "strategy": display_name if release_type == STRATEGY_RELEASE_TYPE and product_name else None,
             "product_id": release.get("product_id"),
             "feature_id": feature_id,
             "required_features": [feature_id] if feature_id else [],
