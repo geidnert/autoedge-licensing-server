@@ -542,6 +542,26 @@ Important behavior:
 
 ## Deployment Memory
 
+- 2026-07-21: Commit `7bbbf32` deployed package-key release grouping so DUO
+  and DUOlo remain separate manifest downloads under the shared DUO product and
+  entitlement. The exact committed archive SHA-256 was
+  `b7dc55ee00b759a0f24fa159ca547f6f3b08ac096d0bbccbef0e26d9602a436f`;
+  all `133` committed tests passed locally and from the extracted server
+  staging archive. The pre-deploy online SQLite backup is
+  `/var/backups/autoedge-before-7bbbf32-20260721T204117Z.db` (SHA-256
+  `07139baf9a35a7861e2bd8952c18941ce1448a4085eed86036722ea730c0a20c`,
+  `quick_check: ok`) and the code backup is
+  `/var/backups/autoedge-code-before-7bbbf32-20260721T204117Z.tar.gz`
+  (SHA-256
+  `0cddd5c3483a013aba0d93a6e2f13dcd17b5097fd4cc424b29cc3ce2025c6663`).
+  Deployed `service.py` matched the committed SHA-256
+  `fedc4bca52370e2c4f6d62af185fd20a99a9059b4b7ebe471aea45b6db7521c3`;
+  systemd and local health were active/OK, the live database passed
+  `quick_check`, and public GET probes for `/privacy` and `/admin/login`
+  returned 200. After DUOlo publication, an independent audit verified all
+  `256` active artifacts and ES256 signatures with zero failures and confirmed
+  both `duo-runtime` and `duolo-runtime` were selected for macOS, Windows, and
+  Linux manifests.
 - 2026-07-15: Commit `024e40e` deployed product subscription URLs and additive
   TraderPro manifest `packages` metadata to production. The exact archive
   SHA-256 was `3c95a441e9270a35978c3e1a0652fefe96a3b7de4dc42e702970acf28152d406`;
