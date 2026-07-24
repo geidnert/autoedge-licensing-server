@@ -2774,7 +2774,8 @@ class LicensingServiceTests(unittest.TestCase):
         )
         tester = self.service.create_or_update_customer(email="emal-tester@example.com")
         ordinary = self.service.create_or_update_customer(email="emal-ordinary@example.com")
-        for created in (tester, ordinary):
+        internal_tester = self.service.create_or_update_customer(email="emal-internal@example.com")
+        for created in (tester, ordinary, internal_tester):
             self.service.manual_set_entitlement(
                 customer_id=created.customer["id"],
                 product_id=product["id"],
@@ -2784,6 +2785,12 @@ class LicensingServiceTests(unittest.TestCase):
                 actor_id="admin",
                 ip_address=None,
             )
+        self.service.set_customer_tags(
+            customer_id=internal_tester.customer["id"],
+            tags="internal",
+            actor_id="admin",
+            ip_address=None,
+        )
         allowlisted_unentitled = self.active_customer("emal-allowlisted-unentitled@example.com")
         ordinary_unentitled = self.active_customer("emal-ordinary-unentitled@example.com")
 
@@ -2838,6 +2845,7 @@ class LicensingServiceTests(unittest.TestCase):
 
         tester_manifest = manifest_for(tester, "emal-allowlisted-machine")
         ordinary_manifest = manifest_for(ordinary, "emal-ordinary-machine")
+        internal_manifest = manifest_for(internal_tester, "emal-internal-machine")
         allowlisted_unentitled_manifest = manifest_for(
             allowlisted_unentitled,
             "emal-allowlisted-unentitled-machine",
@@ -2878,10 +2886,28 @@ class LicensingServiceTests(unittest.TestCase):
             grace_period_seconds=86400,
             token_seconds=600,
         )
+        internal_token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=internal_tester.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="emal-internal-machine",
+            app_version="0.1.182",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
 
         self.assertEqual(["emal-runtime"], [item["package_id"] for item in tester_manifest["releases"]])
         self.assertEqual(["windows-x64"], [item["platform"] for item in tester_manifest["releases"]])
         self.assertIn("emal-runtime", [item["package_id"] for item in tester_manifest["packages"]])
+        self.assertEqual(["emal-runtime"], [item["package_id"] for item in internal_manifest["releases"]])
+        self.assertIn("emal-runtime", [item["package_id"] for item in internal_manifest["packages"]])
         self.assertEqual([], ordinary_manifest["releases"])
         self.assertNotIn("emal-runtime", [item["package_id"] for item in ordinary_manifest["packages"]])
         self.assertNotIn(
@@ -2913,6 +2939,8 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("unlicensed", public_unlicensed["license_status"])
         self.assertEqual("audience_denied", ordinary_token["status"])
         self.assertIsNone(ordinary_token["token"])
+        self.assertEqual("ok", internal_token["status"])
+        self.assertIsNotNone(internal_token["token"])
         self.assertEqual("not_licensed", allowlisted_unentitled_token["status"])
         self.assertIsNone(allowlisted_unentitled_token["token"])
 
@@ -2941,6 +2969,7 @@ class LicensingServiceTests(unittest.TestCase):
             trader_revision=0,
         )
         disabled_manifest = manifest_for(tester, "emal-allowlisted-machine")
+        disabled_internal_manifest = manifest_for(internal_tester, "emal-internal-machine")
         disabled_token = self.service.create_release_download_token(
             release_id=release["id"],
             license_key=tester.license_key,
@@ -2957,6 +2986,22 @@ class LicensingServiceTests(unittest.TestCase):
             grace_period_seconds=86400,
             token_seconds=600,
         )
+        disabled_internal_token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=internal_tester.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="emal-internal-machine",
+            app_version="0.1.182",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
 
         self.assertEqual([], disabled_manifest["releases"])
         self.assertNotIn("emal-runtime", [item["package_id"] for item in disabled_manifest["packages"]])
@@ -2964,8 +3009,15 @@ class LicensingServiceTests(unittest.TestCase):
             "emal-runtime",
             [item["slug"] for item in disabled_manifest["license"]["licensed_strategies"]],
         )
+        self.assertEqual([], disabled_internal_manifest["releases"])
+        self.assertNotIn(
+            "emal-runtime",
+            [item["package_id"] for item in disabled_internal_manifest["packages"]],
+        )
         self.assertEqual("audience_denied", disabled_token["status"])
         self.assertIsNone(disabled_token["token"])
+        self.assertEqual("audience_denied", disabled_internal_token["status"])
+        self.assertIsNone(disabled_internal_token["token"])
 
     def test_release_manifest_returns_only_licensed_strategy_releases(self) -> None:
         duorc = self.service.upsert_product(

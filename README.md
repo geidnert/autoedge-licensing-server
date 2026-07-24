@@ -342,7 +342,13 @@ not evidence that an artifact or release row exists.
 
 `installed_packages` is optional and lets the server compare each package against the version installed locally. If omitted, older clients still receive the same compatible release rows.
 
-Release targeting is fully server-side. The client only sees releases it is allowed to see. Admins can target releases by channel, customer id, email, full license key, customer tags/roles, deterministic rollout percent, or disable the release audience entirely.
+Release targeting is fully server-side. The client only sees releases it is
+allowed to see. Admins can target releases by channel, customer id, email, full
+license key, customer tags/roles, deterministic rollout percent, or disable the
+release audience entirely. The customer tag `internal` is a global tester
+designation: an actively licensed customer with that tag can see any
+`channel=internal` release regardless of allowlist, roles, required-tag, or
+percentage targeting. `audience_mode=disabled` remains invisible to everyone.
 
 Platforms are exact selectors. The canonical values are `macos-arm64`,
 `windows-x64`, and `linux-x64`; a Linux manifest selects only `linux-x64`
@@ -688,14 +694,14 @@ the client wrapper `scripts/release-emal-package.sh` once per platform with
 `--min-trader-version 0.1.182`, `--nt8-version 1.0.0.0`, and
 `--trader-revision 0`. Start with `--channel internal --audience-mode allowlist`
 and at least one explicit `--allowed-customer-ids`, `--allowed-emails`, or
-`--allowed-license-keys` value. Prefer immutable internal customer ids and omit
-`--required-tags` when the intent is a strict tester list, because required
-tags are an additional allowlist match. A disabled release is invisible to
-everyone. An allowlisted internal release remains invisible and
-non-downloadable to an entitled customer who does not match the allowlist;
-download-token issuance rechecks the same audience rule. The EMAL product
-metadata enforces this initial policy server-side: only `internal` or `canary`
-channels and only `allowlist` or `disabled` audience modes are accepted.
+`--allowed-license-keys` value. An entitled customer tagged `internal` also
+qualifies for every internal-channel release without being copied into each
+release allowlist. A customer without that global tag must still match the
+release's explicit allowlist or required tags. A disabled release is invisible
+to everyone, including internal-tagged customers. Download-token issuance
+rechecks the same entitlement and audience rules. The EMAL product metadata
+enforces this initial policy server-side: only `internal` or `canary` channels
+and only `allowlist` or `disabled` audience modes are accepted.
 
 Extension package releases use release type `Extension package`, choose the licensed extension product, and use the product slug as the package id. For Discord Notifier:
 

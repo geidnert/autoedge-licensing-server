@@ -2586,6 +2586,10 @@ class LicensingService:
             return False, "audience_disabled"
 
         customer_tags = set(json_list(customer.get("tags_json")))
+        release_channel = str(release.get("channel") or "stable").strip().lower()
+        if release_channel == "internal" and "internal" in customer_tags:
+            return True, "internal_tag"
+
         required_tags = set(normalize_tag_list(json_list(release.get("required_tags_json"))))
         tag_match = bool(required_tags & customer_tags) if required_tags else True
         if mode == "all":

@@ -397,7 +397,11 @@ Channels, in increasing exposure:
 Release targeting is server-side. The client only sees releases it is allowed to
 see. Audience modes are `all`, `allowlist`, `roles`, `percent`, and `disabled`.
 Targeting can use customer ids, emails, full license keys, customer tags/roles,
-or deterministic rollout percent.
+or deterministic rollout percent. The normalized customer tag `internal` is a
+global tester designation: for `channel = internal`, it satisfies every
+non-disabled audience mode regardless of explicit allowlist, required tags, or
+rollout percentage. `audience_mode = disabled` remains an unconditional denial.
+Product-bound releases still require an active entitlement.
 
 Download flow:
 
@@ -504,16 +508,17 @@ Download flow:
   NT8 identity `1.0.0.0` plus Trader revision `0`, and minimum TraderPro
   `0.1.182`. The seed creates no release, artifact, entitlement, Whop package,
   grant, subscription URL, or commercial mapping.
-- EMAL's first release is internal-only. Use channel `internal`, audience mode
-  `allowlist`, and explicit customer ids, normalized emails, or full license
-  keys. Prefer customer ids and omit required tags for a strict tester list,
-  since allowlist mode treats a matching required tag as an alternative match.
-  A disabled release is invisible to everyone. An ordinary entitled customer
-  who is not allowlisted cannot see the internal release or obtain a download
-  token. Product entitlement and audience targeting are both required. EMAL's
-  seed metadata enforces allowed channels `internal|canary` and audience modes
-  `allowlist|disabled` during registration, so the generic wrapper defaults
-  `stable|all` are rejected rather than published.
+- EMAL's first release is internal-only. Use channel `internal` and audience
+  mode `allowlist`. Explicit customer ids, normalized emails, and full license
+  keys remain supported for release-specific testers. An actively entitled
+  customer with the global `internal` tag sees all internal-channel releases
+  without being repeated in each release allowlist. An ordinary entitled
+  customer without that tag or an explicit audience match cannot see the
+  release or obtain a download token. A disabled release is invisible to
+  everyone, including internal-tagged customers. EMAL's seed metadata enforces
+  allowed channels `internal|canary` and audience modes `allowlist|disabled`
+  during registration, so the generic wrapper defaults `stable|all` are
+  rejected rather than published.
 - EMAL product metadata sets `catalog_visibility = private`. Migration
   `019_private_product_catalog_visibility.sql` applies that setting
   idempotently to the existing production product without changing its release,
