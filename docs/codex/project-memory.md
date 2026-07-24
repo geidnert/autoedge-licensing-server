@@ -27,24 +27,45 @@ Last refreshed: 2026-07-24
   `scripts/verify_release_envelope.py`, and `scripts/audit_release_artifacts.py`
   provide key, offline release-signing, verification, and active-artifact audit
   workflows without accepting private PEM contents on the command line.
+- `scripts/bootstrap_development.sh` reconstructs and tests a development
+  checkout. `scripts/backup_sqlite.py` creates a verified online SQLite
+  snapshot, while `scripts/backup_production.sh` and
+  `scripts/backup_release_signing_key.sh` send production state and the
+  deliberately separate offline release key to encrypted off-host restic
+  repositories.
+- `scripts/check_recovery_readiness.sh` verifies that required recovery files
+  are tracked, secrets/data are not tracked, the tree is clean, and the branch
+  matches its upstream. With the relevant restic access,
+  `--check-production-backup` or `--check-release-key-backup` also verifies the
+  selected backup class is reachable.
 - `deploy/` contains nginx and Caddy reverse-proxy examples.
 - `systemd/autoedge-licensing.service` runs the app with `/etc/autoedge-licensing.env`
   and writes only to `/var/lib/autoedge-licensing`.
+- `systemd/autoedge-backup.service` and `.timer` define a daily encrypted
+  off-host backup after `/etc/autoedge-backup.env` has been configured.
+- `.github/workflows/test.yml` runs the unit suite on Python 3.11, 3.12, and
+  3.13 for pushes and pull requests.
 - `tests/` uses `unittest` and temp SQLite DBs; there is no pytest requirement.
 
 There was no existing `AGENTS.md` or `docs/` tree before this memory refresh.
 
-## Current Git State At Refresh
+## Git And Recovery Continuity
 
-- Branch: `main`
-- Tracking state: `main...origin/main [ahead 8]`
-- Worktree before documentation edits: clean
-- Recent commits included work around customer entitlement counts, effective
-  entitlements display, Whop activation/cancel-at-period-end handling, reduced
-  device limit enforcement, and nginx forwarding for NT8.
-
-Do not reset, rebase, or discard these local commits unless the user explicitly
-asks.
+- GitHub `origin` is the recovery source for code, migrations, tests,
+  dependency pins, deployment files, documentation, and repository-level Codex
+  instructions.
+- The owner requires completed repository work to be tested, documented,
+  committed, and pushed before a task finishes. Confirm that the working tree
+  is clean and the current branch is not ahead of its upstream.
+- Never satisfy that rule by committing `.env`, databases, release artifacts,
+  credentials, SSH keys, restic configuration/passwords, or private signing
+  keys.
+- Full recovery requirements and exact new-workstation/production-host
+  procedures are in `docs/disaster-recovery.md`. Keep that runbook,
+  `deploy/autoedge-backup.env.example`, the systemd backup units, and the
+  readiness check synchronized when recovery assets change.
+- Preserve unrelated or incomplete user work. If it cannot safely be completed
+  and pushed, report exactly what remains local rather than discarding it.
 
 ## Runtime And Local Workflow
 
@@ -647,6 +668,25 @@ Important behavior:
 
 ## Deployment Memory
 
+- 2026-07-24 recovery audit: GitHub already contained application code,
+  migrations, pinned packages, service/proxy templates, tests, `AGENTS.md`, and
+  Codex project memory. It did not contain a clean-machine bootstrap, CI,
+  complete disaster-recovery runbook, scheduled backup units, or a safe
+  off-host backup workflow. Production was healthy, the database was about
+  40 MiB, and artifacts were about 22 GiB. Existing database/code backups were
+  deployment-time files under `/var/backups` on the same host; no AutoEdge
+  backup timer or cron job existed. Repository support was added for online
+  SQLite snapshots and encrypted incremental restic backups with daily/weekly/
+  monthly retention, but the production timer must not be enabled until an
+  external restic backend and separately stored recovery password are
+  configured.
+- The offline release-signing keypair exists only outside repositories at
+  `~/.config/autoedge/signing/release-2026-01-{private,public}.pem` on the
+  current release workstation. The public fingerprint was reverified as
+  `b7057a866d42ebe0e0e14ef108a2103ccca68540b29503ab16deedece8fdd87c`.
+  The private key requires its own encrypted off-host restic snapshot and must
+  never be placed on production or in Git. Production backups include the
+  separate online license-signing private key.
 - 2026-07-24: Commit `81bce86` made normalized customer tag `internal` a
   global tester designation for releases whose channel is `internal`.
   Internal-tagged customers bypass non-disabled release audience targeting

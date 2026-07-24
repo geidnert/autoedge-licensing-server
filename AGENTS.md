@@ -1,8 +1,8 @@
 # Codex Instructions
 
 This repository is the AutoEdge licensing and entitlement server. It is a small
-stdlib Python WSGI service backed by SQLite, with no runtime dependencies listed
-in `pyproject.toml`.
+stdlib Python WSGI service backed by SQLite, with one pinned cryptographic
+runtime dependency and no application framework.
 
 ## First Reads
 
@@ -19,6 +19,26 @@ When future work changes durable project knowledge, update the relevant
 schema, endpoint contracts, deployment paths, operational workflows, security
 assumptions, and regressions or gotchas that future Codex threads should not
 rediscover.
+
+## Continuity Rule
+
+GitHub `origin` is the recovery source for code, tests, migrations, deployment
+files, documentation, and Codex instructions. The repository owner has a
+standing requirement that completed work must not remain only on one computer.
+
+- Before finishing completed repository work, run the relevant verification,
+  update durable documentation, commit the intended files, push the current
+  branch, and confirm the branch is not ahead of its upstream.
+- Do not commit unfinished experiments or unrelated user changes merely to make
+  the tree clean. Preserve them and report them explicitly if they cannot be
+  completed safely.
+- Never commit `.env`, databases, artifacts, credentials, SSH keys, restic
+  passwords/backend credentials, or private signing keys.
+- When backup/recovery paths or required assets change, update
+  `docs/disaster-recovery.md`, the backup configuration example, and the
+  recovery readiness check in the same change.
+- If a push or off-host backup check cannot be completed, say exactly what
+  remains local before ending the task.
 
 ## Working Rules
 
@@ -48,4 +68,3 @@ rediscover.
 - Scripts:
   - `python3 scripts/create_admin.py admin`
   - `python3 scripts/seed_products.py`
-

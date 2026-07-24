@@ -746,6 +746,18 @@ are documented in [docs/es256-protection.md](docs/es256-protection.md).
 
 ## Local Development
 
+For a new development computer, the one-command bootstrap is:
+
+```bash
+git clone git@github.com:geidnert/autoedge-licensing-server.git
+cd autoedge-licensing-server
+./scripts/bootstrap_development.sh
+```
+
+This creates the virtual environment, installs the pinned packages, prepares
+ignored local files/directories, and runs the full test suite. The manual
+equivalent is:
+
 ```bash
 cd /Users/andreas.geidnert/Dev/autoedge-licensing-server
 cp .env.example .env
@@ -793,7 +805,7 @@ Install packages:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv git nginx certbot python3-certbot-nginx
+sudo apt install -y python3 python3-venv git nginx certbot python3-certbot-nginx restic
 ```
 
 Create service user and directories:
@@ -835,6 +847,7 @@ AUTOEDGE_TRADER_MAX_DEVICES=1
 AUTOEDGE_RATE_LIMIT_PER_MINUTE=60
 AUTOEDGE_RELEASE_ARTIFACT_DIR=/var/lib/autoedge-licensing/artifacts
 AUTOEDGE_RELEASE_DOWNLOAD_TOKEN_SECONDS=600
+AUTOEDGE_RELEASE_ARTIFACT_RETENTION_COUNT=5
 AUTOEDGE_TRADER_LICENSE_SIGNING_PRIVATE_KEY_PATH=/etc/autoedge-licensing/keys/license-2026-01-private.pem
 AUTOEDGE_TRADER_LICENSE_SIGNING_KEY_ID=license-2026-01
 AUTOEDGE_TRADER_LICENSE_VERIFICATION_KEYS='{"license-2026-01":"/etc/autoedge-licensing/keys/license-2026-01-public.pem"}'
@@ -966,12 +979,32 @@ Production should use Whop Standard Webhooks with `WHOP_WEBHOOK_SECRET`. The bea
 
 ## Backups
 
-Back up `/var/lib/autoedge-licensing/autoedge.db` and its WAL files, or stop the service briefly and copy the database file:
+GitHub contains the complete application, migrations, tests, pinned dependency
+set, deployment templates, Codex instructions, and recovery runbook. GitHub
+intentionally does not contain production data, release artifacts, secrets,
+SSH credentials, or private signing keys.
+
+The repository includes:
+
+- `scripts/backup_sqlite.py` for a consistent online SQLite snapshot with
+  `PRAGMA quick_check`;
+- `scripts/backup_production.sh` for an encrypted, incremental restic snapshot
+  of the database, artifacts, environment, keys, deployed code, and host
+  configuration;
+- `systemd/autoedge-backup.service` and `.timer` for daily execution; and
+- `scripts/backup_release_signing_key.sh` for the separate offline release key.
+
+The restic repository must be off the production server and development
+computer. Its password, backend credentials, and account/2FA recovery details
+must be stored in an external password manager. Configure
+`deploy/autoedge-backup.env.example`, initialize the repository, install the
+timer, and test an isolated restore by following
+[docs/disaster-recovery.md](docs/disaster-recovery.md).
+
+Check source continuity at any time with:
 
 ```bash
-sudo systemctl stop autoedge-licensing
-sudo cp /var/lib/autoedge-licensing/autoedge.db /var/backups/autoedge-$(date +%Y%m%d).db
-sudo systemctl start autoedge-licensing
+./scripts/check_recovery_readiness.sh
 ```
 
 ## Notes
