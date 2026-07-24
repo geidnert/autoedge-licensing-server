@@ -1006,6 +1006,31 @@ class LicensingService:
                 normalized_product_key = normalized_product_key or product["slug"]
                 feature_id = product["feature_id"]
                 package_metadata = product_package_metadata(dict(product))
+                release_policy = package_metadata.get("release_policy")
+                if isinstance(release_policy, dict):
+                    allowed_channels = {
+                        str(value).strip().lower()
+                        for value in release_policy.get("allowed_channels", [])
+                        if str(value).strip()
+                    }
+                    allowed_audience_modes = {
+                        str(value).strip().lower()
+                        for value in release_policy.get("allowed_audience_modes", [])
+                        if str(value).strip()
+                    }
+                    if allowed_channels and normalized_channel not in allowed_channels:
+                        raise ValueError(
+                            f"{product['slug']} releases require one of these channels: "
+                            f"{', '.join(sorted(allowed_channels))}."
+                        )
+                    if (
+                        allowed_audience_modes
+                        and normalized_audience_mode not in allowed_audience_modes
+                    ):
+                        raise ValueError(
+                            f"{product['slug']} releases require one of these audience modes: "
+                            f"{', '.join(sorted(allowed_audience_modes))}."
+                        )
                 catalog_minimum = normalize_optional_text(
                     package_metadata.get("minimum_trader_version")
                 )

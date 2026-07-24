@@ -312,6 +312,15 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
             "entry_assembly": "Trader.Strategies.Aura.dll",
             "planned_nt8_version": "1.0.0.3",
         },
+        "emal-runtime": {
+            "name": "EMAL Runtime",
+            "feature_id": "strategy.emal.runtime",
+            "strategy_family": "EMAL",
+            "strategy_id": "emal",
+            "entry_assembly": "Trader.Strategies.Emal.dll",
+            "planned_nt8_version": "1.0.0.0",
+            "planned_trader_revision": 0,
+        },
     }
 
     def test_migration_backfills_existing_products_without_rekeying_entitlements(self) -> None:
@@ -363,6 +372,13 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                     "strategy.aura.runtime",
                     "AURA",
                 ),
+                (
+                    "product-emal",
+                    "emal-runtime",
+                    "Legacy EMAL",
+                    "strategy.emal.runtime",
+                    "EMAL",
+                ),
             ]
             with database.session() as connection:
                 connection.execute(
@@ -410,7 +426,7 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                         SELECT *
                         FROM products
                         WHERE slug IN ('orbo-runtime', 'orboib-runtime', 'adam-runtime',
-                                       'eve-runtime', 'aura-runtime')
+                                       'eve-runtime', 'aura-runtime', 'emal-runtime')
                         ORDER BY slug
                         """
                     )
@@ -432,7 +448,7 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                     FROM trader_releases
                     WHERE product_id IN (
                         'product-orbo', 'product-orboib', 'product-adam',
-                        'product-eve', 'product-aura'
+                        'product-eve', 'product-aura', 'product-emal'
                     )
                     """
                 ).fetchone()[0]
@@ -446,7 +462,7 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                         SELECT *
                         FROM products
                         WHERE slug IN ('orbo-runtime', 'orboib-runtime', 'adam-runtime',
-                                       'eve-runtime', 'aura-runtime')
+                                       'eve-runtime', 'aura-runtime', 'emal-runtime')
                         ORDER BY slug
                         """
                     )
@@ -456,6 +472,13 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                     SELECT COUNT(*)
                     FROM schema_migrations
                     WHERE name = '017_seed_traderpro_runtime_packages.sql'
+                    """
+                ).fetchone()[0]
+                emal_migration_count = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM schema_migrations
+                    WHERE name = '018_seed_emal_runtime_package.sql'
                     """
                 ).fetchone()[0]
                 legacy_orbo_count = connection.execute(
@@ -475,6 +498,7 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
             )
             self.assertEqual(0, release_count)
             self.assertEqual(1, migration_count)
+            self.assertEqual(1, emal_migration_count)
             self.assertEqual(0, legacy_orbo_count)
             for slug, expected in self.EXPECTED.items():
                 with self.subTest(slug=slug):
@@ -501,6 +525,18 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                         expected["planned_nt8_version"],
                         metadata["planned_nt8_version"],
                     )
+                    if "planned_trader_revision" in expected:
+                        self.assertEqual(
+                            expected["planned_trader_revision"],
+                            metadata["planned_trader_revision"],
+                        )
+                        self.assertEqual(
+                            {
+                                "allowed_channels": ["internal", "canary"],
+                                "allowed_audience_modes": ["disabled", "allowlist"],
+                            },
+                            metadata["release_policy"],
+                        )
                     self.assertEqual(
                         ["macos-arm64", "windows-x64", "linux-x64"],
                         metadata["supported_platforms"],
@@ -535,7 +571,7 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                         SELECT slug, COUNT(*) AS product_count
                         FROM products
                         WHERE slug IN ('orbo-runtime', 'orboib-runtime', 'adam-runtime',
-                                       'eve-runtime', 'aura-runtime')
+                                       'eve-runtime', 'aura-runtime', 'emal-runtime')
                         GROUP BY slug
                         """
                     )
@@ -549,12 +585,25 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                 grant_count = connection.execute(
                     "SELECT COUNT(*) FROM whop_package_grants"
                 ).fetchone()[0]
+                entitlement_count = connection.execute(
+                    "SELECT COUNT(*) FROM entitlements"
+                ).fetchone()[0]
+                emal = connection.execute(
+                    """
+                    SELECT whop_product_id, subscription_url
+                    FROM products
+                    WHERE slug = 'emal-runtime'
+                    """
+                ).fetchone()
 
             self.assertEqual(first, second)
             self.assertEqual({slug: 1 for slug in self.EXPECTED}, counts)
             self.assertEqual(0, release_count)
             self.assertEqual(0, package_count)
             self.assertEqual(0, grant_count)
+            self.assertEqual(0, entitlement_count)
+            self.assertIsNone(emal["whop_product_id"])
+            self.assertIsNone(emal["subscription_url"])
 
 
 if __name__ == "__main__":

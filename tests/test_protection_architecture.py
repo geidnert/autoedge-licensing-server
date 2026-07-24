@@ -115,6 +115,7 @@ class ProtectionArchitectureTests(unittest.TestCase):
         expected_features = [
             "strategy.adam.runtime",
             "strategy.aura.runtime",
+            "strategy.emal.runtime",
             "strategy.eve.runtime",
             "strategy.orbo.runtime",
             "strategy.orboib.runtime",

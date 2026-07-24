@@ -21,7 +21,7 @@ Last refreshed: 2026-07-24
   and the immutable release-envelope contract.
 - `scripts/create_admin.py` creates an admin user after applying migrations.
 - `scripts/seed_products.py` idempotently seeds default strategy products
-  DUO, DUOrc, ORBO2, ORBO2ib, ADAM, EVE, MICH, HUGO, and AURA, plus the
+  DUO, DUOrc, ORBO2, ORBO2ib, ADAM, EVE, MICH, HUGO, AURA, and EMAL, plus the
   TraderPro Desktop extension product Discord Notifier.
 - `scripts/es256_keys.py`, `scripts/sign_release_envelope.py`,
   `scripts/verify_release_envelope.py`, and `scripts/audit_release_artifacts.py`
@@ -492,6 +492,22 @@ Download flow:
   ids, `required_features` is the product feature, and download-token issuance
   rechecks the same product grant. Keep this generic behavior for future
   strategy packages.
+- Migration `018_seed_emal_runtime_package.sql` and the durable seed script add
+  EMAL as `emal-runtime` / `strategy.emal.runtime`, strategy id `emal`, entry
+  assembly `Trader.Strategies.Emal.dll`, technical version `0.1.0`, planned
+  NT8 identity `1.0.0.0` plus Trader revision `0`, and minimum TraderPro
+  `0.1.182`. The seed creates no release, artifact, entitlement, Whop package,
+  grant, subscription URL, or commercial mapping.
+- EMAL's first release is internal-only. Use channel `internal`, audience mode
+  `allowlist`, and explicit customer ids, normalized emails, or full license
+  keys. Prefer customer ids and omit required tags for a strict tester list,
+  since allowlist mode treats a matching required tag as an alternative match.
+  A disabled release is invisible to everyone. An ordinary entitled customer
+  who is not allowlisted cannot see the internal release or obtain a download
+  token. Product entitlement and audience targeting are both required. EMAL's
+  seed metadata enforces allowed channels `internal|canary` and audience modes
+  `allowlist|disabled` during registration, so the generic wrapper defaults
+  `stable|all` are rejected rather than published.
 
 Rollback behavior is server-directed. Clients must not assume that a newer local
 version is valid when the server returns a lower `target_version` with
@@ -545,6 +561,10 @@ Current migration sequence:
   minimum TraderPro `0.1.182`, internal package signature descriptor, planned
   NT8 identity, and the three supported platforms. It creates no release rows
   or commercial mappings and preserves existing product ids.
+- `018_seed_emal_runtime_package.sql`: idempotently seeds/backfills the EMAL
+  TraderPro strategy-package product and exact `strategy.emal.runtime` feature
+  metadata without creating releases, artifacts, entitlements, Whop packages,
+  grants, subscription URLs, or commercial mappings.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not

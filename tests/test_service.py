@@ -2472,6 +2472,7 @@ class LicensingServiceTests(unittest.TestCase):
             "adam-runtime": ("strategy.adam.runtime", "ADAM", "1.0.1.5"),
             "eve-runtime": ("strategy.eve.runtime", "EVE", "1.0.2.6"),
             "aura-runtime": ("strategy.aura.runtime", "AURA", "1.0.0.3"),
+            "emal-runtime": ("strategy.emal.runtime", "EMAL", "1.0.0.0"),
         }
         products = {
             product["slug"]: product
@@ -2484,13 +2485,14 @@ class LicensingServiceTests(unittest.TestCase):
         for slug, (feature_id, _, nt8_version) in expectations.items():
             artifact_path = f"{slug}-0.1.0-windows-x64.zip"
             (artifact_dir / artifact_path).write_bytes(f"{slug} runtime".encode())
+            is_emal = slug == "emal-runtime"
             releases[slug] = self.service.upsert_release(
                 release_id=None,
                 scope="strategy",
                 release_type="strategy_package",
                 product_key=slug,
                 product_id=products[slug]["id"],
-                channel="stable",
+                channel="internal" if is_emal else "stable",
                 platform="windows-x64",
                 version="0.1.0",
                 min_supported_version=None,
@@ -2503,6 +2505,12 @@ class LicensingServiceTests(unittest.TestCase):
                 signature=None,
                 release_notes=f"{slug} runtime test release",
                 artifact_dir=str(artifact_dir),
+                audience_mode="allowlist" if is_emal else None,
+                allowed_emails=(
+                    f"seeded-runtime-{list(expectations).index(slug)}@example.com"
+                    if is_emal
+                    else None
+                ),
                 nt8_version=nt8_version,
                 trader_revision=0,
             )
@@ -2673,24 +2681,24 @@ class LicensingServiceTests(unittest.TestCase):
         product = next(
             product
             for product in self.service.list_products()
-            if product["slug"] == "adam-runtime"
+            if product["slug"] == "emal-runtime"
         )
         artifact_dir = Path(self.tmp.name) / "minimum-version-artifacts"
         artifact_dir.mkdir()
-        artifact = artifact_dir / "Adam-Runtime-0.1.0-windows-x64.zip"
-        artifact.write_bytes(b"adam runtime")
+        artifact = artifact_dir / "Emal-Runtime-0.1.0-windows-x64.zip"
+        artifact.write_bytes(b"emal runtime")
 
         with self.assertRaisesRegex(
             ValueError,
-            "adam-runtime releases require TraderPro 0.1.182 or newer",
+            "emal-runtime releases require TraderPro 0.1.182 or newer",
         ):
             self.service.upsert_release(
                 release_id=None,
                 scope="strategy",
                 release_type="strategy_package",
-                product_key="adam-runtime",
+                product_key="emal-runtime",
                 product_id=product["id"],
-                channel="stable",
+                channel="internal",
                 platform="windows-x64",
                 version="0.1.0",
                 min_supported_version="0.1.0",
@@ -2703,9 +2711,196 @@ class LicensingServiceTests(unittest.TestCase):
                 signature=None,
                 release_notes=None,
                 artifact_dir=str(artifact_dir),
-                nt8_version="1.0.1.5",
+                audience_mode="allowlist",
+                allowed_customer_ids="emal-internal-tester",
+                nt8_version="1.0.0.0",
                 trader_revision=0,
             )
+
+    def test_emal_release_policy_rejects_public_or_non_internal_targeting(self) -> None:
+        product = next(
+            product
+            for product in self.service.list_products()
+            if product["slug"] == "emal-runtime"
+        )
+        artifact_dir = Path(self.tmp.name) / "emal-policy-artifacts"
+        artifact_dir.mkdir()
+        artifact = artifact_dir / "Emal-Runtime-0.1.0-windows-x64.zip"
+        artifact.write_bytes(b"emal policy")
+
+        def register(*, channel: str, audience_mode: str) -> None:
+            self.service.upsert_release(
+                release_id=None,
+                scope="strategy",
+                release_type="strategy_package",
+                product_key="emal-runtime",
+                product_id=product["id"],
+                channel=channel,
+                platform="windows-x64",
+                version="0.1.0",
+                min_supported_version="0.1.182",
+                is_required=False,
+                is_active=True,
+                artifact_path=artifact.name,
+                artifact_filename=None,
+                size_bytes=None,
+                sha256_value=None,
+                signature=None,
+                release_notes=None,
+                artifact_dir=str(artifact_dir),
+                audience_mode=audience_mode,
+                allowed_customer_ids="emal-internal-tester",
+                rollout_percent=100,
+                nt8_version="1.0.0.0",
+                trader_revision=0,
+            )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "emal-runtime releases require one of these audience modes: allowlist, disabled",
+        ):
+            register(channel="internal", audience_mode="all")
+        with self.assertRaisesRegex(
+            ValueError,
+            "emal-runtime releases require one of these channels: canary, internal",
+        ):
+            register(channel="stable", audience_mode="allowlist")
+
+    def test_emal_internal_allowlist_and_disabled_release_remain_private(self) -> None:
+        product = next(
+            product
+            for product in self.service.list_products()
+            if product["slug"] == "emal-runtime"
+        )
+        tester = self.service.create_or_update_customer(email="emal-tester@example.com")
+        ordinary = self.service.create_or_update_customer(email="emal-ordinary@example.com")
+        for created in (tester, ordinary):
+            self.service.manual_set_entitlement(
+                customer_id=created.customer["id"],
+                product_id=product["id"],
+                status="active",
+                expires_at=None,
+                reason="EMAL targeting test",
+                actor_id="admin",
+                ip_address=None,
+            )
+
+        artifact_dir = Path(self.tmp.name) / "emal-targeting-artifacts"
+        artifact_dir.mkdir()
+        artifact = artifact_dir / "Emal-Runtime-0.1.0-windows-x64.zip"
+        artifact.write_bytes(b"emal internal targeting")
+        release = self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            release_type="strategy_package",
+            product_key="emal-runtime",
+            product_id=product["id"],
+            channel="internal",
+            platform="windows-x64",
+            version="0.1.0",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path=artifact.name,
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes="EMAL internal targeting test",
+            artifact_dir=str(artifact_dir),
+            audience_mode="allowlist",
+            allowed_customer_ids=tester.customer["id"],
+            rollout_percent=100,
+            nt8_version="1.0.0.0",
+            trader_revision=0,
+        )
+
+        def manifest_for(created, fingerprint: str) -> dict:
+            return self.service.release_manifest(
+                license_key=created.license_key,
+                email=None,
+                customer_id=None,
+                whop_user_id=None,
+                machine_fingerprint=fingerprint,
+                app_version="0.1.182",
+                channel="stable",
+                platform="windows-x64",
+                include_types=["strategy_package"],
+                ip_address=None,
+                user_agent=None,
+                check_interval_seconds=3600,
+                grace_period_seconds=86400,
+            )
+
+        tester_manifest = manifest_for(tester, "emal-allowlisted-machine")
+        ordinary_manifest = manifest_for(ordinary, "emal-ordinary-machine")
+        ordinary_token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=ordinary.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="emal-ordinary-machine",
+            app_version="0.1.182",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
+
+        self.assertEqual(["emal-runtime"], [item["package_id"] for item in tester_manifest["releases"]])
+        self.assertEqual([], ordinary_manifest["releases"])
+        self.assertEqual("audience_denied", ordinary_token["status"])
+        self.assertIsNone(ordinary_token["token"])
+
+        self.service.upsert_release(
+            release_id=release["id"],
+            scope="strategy",
+            release_type="strategy_package",
+            product_key="emal-runtime",
+            product_id=product["id"],
+            channel="internal",
+            platform="windows-x64",
+            version="0.1.0",
+            min_supported_version="0.1.182",
+            is_required=False,
+            is_active=True,
+            artifact_path=artifact.name,
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes="EMAL disabled targeting test",
+            artifact_dir=str(artifact_dir),
+            audience_mode="disabled",
+            rollout_percent=100,
+            nt8_version="1.0.0.0",
+            trader_revision=0,
+        )
+        disabled_manifest = manifest_for(tester, "emal-allowlisted-machine")
+        disabled_token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=tester.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="emal-allowlisted-machine",
+            app_version="0.1.182",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
+
+        self.assertEqual([], disabled_manifest["releases"])
+        self.assertEqual("audience_denied", disabled_token["status"])
+        self.assertIsNone(disabled_token["token"])
 
     def test_release_manifest_returns_only_licensed_strategy_releases(self) -> None:
         duorc = self.service.upsert_product(

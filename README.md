@@ -94,7 +94,7 @@ Built-in strategy products include MICH as a product/feature seed only:
 
 MICH is not generally released by the seed data. Register MICH release rows only after actual package artifacts are copied under `AUTOEDGE_RELEASE_ARTIFACT_DIR`.
 
-The durable product catalog also seeds five TraderPro runtime packages:
+The durable product catalog also seeds six TraderPro runtime packages:
 
 | Product | Package/product slug | Feature id | Strategy id | Entry assembly | Initial technical version | Minimum TraderPro | Planned NT8 identity |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -103,6 +103,7 @@ The durable product catalog also seeds five TraderPro runtime packages:
 | ADAM Runtime | `adam-runtime` | `strategy.adam.runtime` | `adam` | `Trader.Strategies.Adam.dll` | `0.1.0` | `0.1.182` | `1.0.1.5` |
 | EVE Runtime | `eve-runtime` | `strategy.eve.runtime` | `eve` | `Trader.Strategies.Eve.dll` | `0.1.0` | `0.1.182` | `1.0.2.6` |
 | AURA Runtime | `aura-runtime` | `strategy.aura.runtime` | `aura` | `Trader.Strategies.Aura.dll` | `0.1.0` | `0.1.182` | `1.0.0.3` |
+| EMAL Runtime | `emal-runtime` | `strategy.emal.runtime` | `emal` | `Trader.Strategies.Emal.dll` | `0.1.0` | `0.1.182` | `1.0.0.0` |
 
 Each is a `strategy_package` for exact platforms `macos-arm64`,
 `windows-x64`, and `linux-x64`. The migration and seed script create or
@@ -659,7 +660,7 @@ requested platform exactly.
 
 For MICH, use seeded product `MICH Runtime` with product/package id `mich-runtime`, release type `strategy_package`, version `0.1.0`, and feature id `strategy.mich.runtime`. Copy one real artifact per published platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register a separate `Strategy package` release with the matching `macos-arm64`, `windows-x64`, or `linux-x64` platform. Do not register placeholder releases without artifacts, and do not add MICH parity claims while May 3, 2026 through June 16, 2026 parity is pending.
 
-ORBO2, ORBO2ib, ADAM, EVE, and AURA follow the same artifact-first workflow
+ORBO2, ORBO2ib, ADAM, EVE, AURA, and EMAL follow the same artifact-first workflow
 using the seeded catalog values above. Their initial technical version is
 `0.1.0` and their catalog minimum TraderPro version is `0.1.182`. New or
 published release registrations inherit that minimum when omitted and reject a
@@ -675,6 +676,21 @@ pass `--min-trader-version 0.1.182`. Remaining release-time inputs are the real
 platform artifact, confirmed technical version, confirmed NT8 identity and
 Trader revision, channel/audience/rollout, release notes, and the offline ES256
 release-envelope signature.
+
+EMAL is seeded without a release, artifact, entitlement, Whop package, package
+grant, subscription URL, or commercial mapping. Its first real release must use
+the client wrapper `scripts/release-emal-package.sh` once per platform with
+`--min-trader-version 0.1.182`, `--nt8-version 1.0.0.0`, and
+`--trader-revision 0`. Start with `--channel internal --audience-mode allowlist`
+and at least one explicit `--allowed-customer-ids`, `--allowed-emails`, or
+`--allowed-license-keys` value. Prefer immutable internal customer ids and omit
+`--required-tags` when the intent is a strict tester list, because required
+tags are an additional allowlist match. A disabled release is invisible to
+everyone. An allowlisted internal release remains invisible and
+non-downloadable to an entitled customer who does not match the allowlist;
+download-token issuance rechecks the same audience rule. The EMAL product
+metadata enforces this initial policy server-side: only `internal` or `canary`
+channels and only `allowlist` or `disabled` audience modes are accepted.
 
 Extension package releases use release type `Extension package`, choose the licensed extension product, and use the product slug as the package id. For Discord Notifier:
 

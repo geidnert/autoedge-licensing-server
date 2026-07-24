@@ -387,6 +387,7 @@ class AppEndpointTests(unittest.TestCase):
             "adam-runtime": "ADAM",
             "eve-runtime": "EVE",
             "aura-runtime": "AURA",
+            "emal-runtime": "EMAL",
         }
         products = [
             product
