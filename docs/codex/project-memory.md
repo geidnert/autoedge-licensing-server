@@ -624,6 +624,28 @@ Important behavior:
 
 ## Deployment Memory
 
+- 2026-07-24: Commit `dcf0f6d` deployed the EMAL runtime-package catalog
+  contract and migration `018_seed_emal_runtime_package.sql` to production. The
+  exact committed archive SHA-256 was
+  `23a6fc52668f5efbb595130ed0caf15abe937415d5f3c7fdf4d76a49064d6859`;
+  all `142` tests passed from the extracted production staging archive. The
+  pre-deploy online SQLite backup is
+  `/var/backups/autoedge-before-dcf0f6d-20260724T085937Z.db` (SHA-256
+  `cda9851dccc2c6b372b1e3671021f2659cc375c18953461b7ad193fe9df92288`,
+  `quick_check: ok`) and the code backup is
+  `/var/backups/autoedge-code-before-dcf0f6d-20260724T085937Z.tar.gz`
+  (SHA-256
+  `1be16e74aa993098835e205774a80c334c762895b316c7ecde8a94f2fb87a441`).
+  Migration `018` is recorded and product `emal-runtime`
+  (`30eaa830cd3411d89cf4509d8a51ec8c`) has exact feature
+  `strategy.emal.runtime`, no Whop product/subscription URL, and the enforced
+  `internal|canary` plus `allowlist|disabled` release policy. Product count
+  increased from `10` to `11`; release (`732`), entitlement (`126`), Whop
+  package (`7`), and Whop grant (`32`) totals remained unchanged. EMAL has zero
+  release, artifact, entitlement, and Whop-grant rows. The live database passes
+  `quick_check`, mandatory ES256 release signatures remain enabled, the service
+  is active, local `/healthz` is OK, and public `/privacy` and `/admin/login`
+  return HTTP 200.
 - 2026-07-24: Commit `27b8836` deployed the five TraderPro runtime-package
   product contracts and migration `017_seed_traderpro_runtime_packages.sql` to
   production. The exact committed archive SHA-256 was
