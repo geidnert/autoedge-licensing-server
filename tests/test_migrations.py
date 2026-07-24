@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import timedelta
 
 from autoedge_licensing.db import Database, apply_migrations, migration_dir
-from autoedge_licensing.service import iso, utc_now
+from autoedge_licensing.service import LicensingService, iso, utc_now
+from scripts.seed_products import seed_default_products
 
 
 class EntitlementSourceMigrationTests(unittest.TestCase):
@@ -266,6 +268,293 @@ class LinuxReleasePlatformMigrationTests(unittest.TestCase):
             )
             self.assertEqual(0, release_count)
             self.assertIsNotNone(migration)
+
+
+class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
+    EXPECTED = {
+        "orbo-runtime": {
+            "name": "ORBO2 Runtime",
+            "feature_id": "strategy.orbo.runtime",
+            "strategy_family": "ORBO2",
+            "strategy_id": "orbo",
+            "entry_assembly": "Trader.Strategies.Orbo.dll",
+            "planned_nt8_version": "2.0.2.1",
+        },
+        "orboib-runtime": {
+            "name": "ORBO2ib Runtime",
+            "feature_id": "strategy.orboib.runtime",
+            "strategy_family": "ORBO2ib",
+            "strategy_id": "orboib",
+            "entry_assembly": "Trader.Strategies.Orboib.dll",
+            "planned_nt8_version": "2.0.0.8",
+        },
+        "adam-runtime": {
+            "name": "ADAM Runtime",
+            "feature_id": "strategy.adam.runtime",
+            "strategy_family": "ADAM",
+            "strategy_id": "adam",
+            "entry_assembly": "Trader.Strategies.Adam.dll",
+            "planned_nt8_version": "1.0.1.5",
+        },
+        "eve-runtime": {
+            "name": "EVE Runtime",
+            "feature_id": "strategy.eve.runtime",
+            "strategy_family": "EVE",
+            "strategy_id": "eve",
+            "entry_assembly": "Trader.Strategies.Eve.dll",
+            "planned_nt8_version": "1.0.2.6",
+        },
+        "aura-runtime": {
+            "name": "AURA Runtime",
+            "feature_id": "strategy.aura.runtime",
+            "strategy_family": "AURA",
+            "strategy_id": "aura",
+            "entry_assembly": "Trader.Strategies.Aura.dll",
+            "planned_nt8_version": "1.0.0.3",
+        },
+    }
+
+    def test_migration_backfills_existing_products_without_rekeying_entitlements(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(f"{directory}/pre-runtime-packages.db")
+            migrations = sorted(migration_dir().glob("*.sql"))
+            apply_migrations(
+                database,
+                [
+                    migration
+                    for migration in migrations
+                    if migration.name < "017_seed_traderpro_runtime_packages.sql"
+                ],
+            )
+            now = iso(utc_now().replace(microsecond=0))
+            legacy_products = [
+                (
+                    "product-orbo",
+                    "orbo2-runtime",
+                    "ORBO2 Runtime",
+                    "strategy.orbo2.runtime",
+                    "ORBO2",
+                ),
+                (
+                    "product-orboib",
+                    "orboib-runtime",
+                    "ORBOib Runtime",
+                    "strategy.orboib.runtime",
+                    "ORBOib",
+                ),
+                (
+                    "product-adam",
+                    "adam-runtime",
+                    "ADAM Runtime",
+                    "strategy.adam.runtime",
+                    "ADAM",
+                ),
+                (
+                    "product-eve",
+                    "eve-runtime",
+                    "EVE Runtime",
+                    "strategy.eve.runtime",
+                    "EVE",
+                ),
+                (
+                    "product-aura",
+                    "aura-runtime",
+                    "AURA Runtime",
+                    "strategy.aura.runtime",
+                    "AURA",
+                ),
+            ]
+            with database.session() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO customers(id, email, email_normalized, created_at, updated_at)
+                    VALUES ('customer-runtime-seeds', 'runtime-seeds@example.com',
+                            'runtime-seeds@example.com', ?, ?)
+                    """,
+                    (now, now),
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO products(
+                        id, slug, name, feature_id, is_active, metadata_json,
+                        created_at, updated_at, nt8_strategy_key, trader_enabled,
+                        nt8_enabled, subscription_url
+                    )
+                    VALUES (?, ?, ?, ?, 1, '{"legacy":true}', ?, ?, ?, 1, 1, NULL)
+                    """,
+                    [
+                        (product_id, slug, name, feature_id, now, now, nt8_key)
+                        for product_id, slug, name, feature_id, nt8_key in legacy_products
+                    ],
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO entitlements(
+                        id, customer_id, product_id, source, status, starts_at,
+                        created_at, updated_at
+                    )
+                    VALUES (?, 'customer-runtime-seeds', ?, 'manual', 'active', ?, ?, ?)
+                    """,
+                    [
+                        (f"entitlement-{product_id}", product_id, now, now, now)
+                        for product_id, *_ in legacy_products
+                    ],
+                )
+
+            apply_migrations(database)
+            with database.session() as connection:
+                first_products = {
+                    row["slug"]: dict(row)
+                    for row in connection.execute(
+                        """
+                        SELECT *
+                        FROM products
+                        WHERE slug IN ('orbo-runtime', 'orboib-runtime', 'adam-runtime',
+                                       'eve-runtime', 'aura-runtime')
+                        ORDER BY slug
+                        """
+                    )
+                }
+                first_entitlement_product_ids = [
+                    row["product_id"]
+                    for row in connection.execute(
+                        """
+                        SELECT product_id
+                        FROM entitlements
+                        WHERE customer_id = 'customer-runtime-seeds'
+                        ORDER BY product_id
+                        """
+                    )
+                ]
+                release_count = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM trader_releases
+                    WHERE product_id IN (
+                        'product-orbo', 'product-orboib', 'product-adam',
+                        'product-eve', 'product-aura'
+                    )
+                    """
+                ).fetchone()[0]
+
+            apply_migrations(database)
+            with database.session() as connection:
+                repeated_products = {
+                    row["slug"]: dict(row)
+                    for row in connection.execute(
+                        """
+                        SELECT *
+                        FROM products
+                        WHERE slug IN ('orbo-runtime', 'orboib-runtime', 'adam-runtime',
+                                       'eve-runtime', 'aura-runtime')
+                        ORDER BY slug
+                        """
+                    )
+                }
+                migration_count = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM schema_migrations
+                    WHERE name = '017_seed_traderpro_runtime_packages.sql'
+                    """
+                ).fetchone()[0]
+                legacy_orbo_count = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM products
+                    WHERE slug = 'orbo2-runtime'
+                       OR feature_id = 'strategy.orbo2.runtime'
+                    """
+                ).fetchone()[0]
+
+            self.assertEqual(set(self.EXPECTED), set(first_products))
+            self.assertEqual(first_products, repeated_products)
+            self.assertEqual(
+                sorted(product_id for product_id, *_ in legacy_products),
+                first_entitlement_product_ids,
+            )
+            self.assertEqual(0, release_count)
+            self.assertEqual(1, migration_count)
+            self.assertEqual(0, legacy_orbo_count)
+            for slug, expected in self.EXPECTED.items():
+                with self.subTest(slug=slug):
+                    product = first_products[slug]
+                    metadata = json.loads(product["metadata_json"])
+                    expected_id = next(
+                        product_id
+                        for product_id, legacy_slug, *_ in legacy_products
+                        if legacy_slug in {slug, "orbo2-runtime" if slug == "orbo-runtime" else slug}
+                    )
+                    self.assertEqual(expected_id, product["id"])
+                    self.assertEqual(expected["name"], product["name"])
+                    self.assertEqual(expected["feature_id"], product["feature_id"])
+                    self.assertEqual("strategy_package", metadata["package_kind"])
+                    self.assertEqual("strategy_package", metadata["release_type"])
+                    self.assertEqual(slug, metadata["runtime_package_id"])
+                    self.assertEqual(expected["strategy_id"], metadata["strategy_id"])
+                    self.assertEqual(expected["strategy_family"], metadata["strategy_family"])
+                    self.assertEqual("Runtime", metadata["variant"])
+                    self.assertEqual(expected["entry_assembly"], metadata["entry_assembly"])
+                    self.assertEqual("0.1.0", metadata["initial_runtime_version"])
+                    self.assertEqual("0.1.182", metadata["minimum_trader_version"])
+                    self.assertEqual(
+                        expected["planned_nt8_version"],
+                        metadata["planned_nt8_version"],
+                    )
+                    self.assertEqual(
+                        ["macos-arm64", "windows-x64", "linux-x64"],
+                        metadata["supported_platforms"],
+                    )
+                    self.assertEqual(
+                        {"algorithm": "Ed25519", "key_id": "main-2026-01"},
+                        metadata["package_signature"],
+                    )
+
+    def test_script_seed_is_idempotent_and_creates_no_release_or_whop_mapping_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(f"{directory}/script-seeds.db")
+            apply_migrations(database)
+            service = LicensingService(database)
+
+            first = {
+                product["slug"]: product["id"]
+                for product in seed_default_products(service)
+                if product["slug"] in self.EXPECTED
+            }
+            second = {
+                product["slug"]: product["id"]
+                for product in seed_default_products(service)
+                if product["slug"] in self.EXPECTED
+            }
+
+            with database.session() as connection:
+                counts = {
+                    row["slug"]: row["product_count"]
+                    for row in connection.execute(
+                        """
+                        SELECT slug, COUNT(*) AS product_count
+                        FROM products
+                        WHERE slug IN ('orbo-runtime', 'orboib-runtime', 'adam-runtime',
+                                       'eve-runtime', 'aura-runtime')
+                        GROUP BY slug
+                        """
+                    )
+                }
+                release_count = connection.execute(
+                    "SELECT COUNT(*) FROM trader_releases"
+                ).fetchone()[0]
+                package_count = connection.execute(
+                    "SELECT COUNT(*) FROM whop_packages"
+                ).fetchone()[0]
+                grant_count = connection.execute(
+                    "SELECT COUNT(*) FROM whop_package_grants"
+                ).fetchone()[0]
+
+            self.assertEqual(first, second)
+            self.assertEqual({slug: 1 for slug in self.EXPECTED}, counts)
+            self.assertEqual(0, release_count)
+            self.assertEqual(0, package_count)
+            self.assertEqual(0, grant_count)
 
 
 if __name__ == "__main__":

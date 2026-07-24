@@ -380,6 +380,35 @@ class AppEndpointTests(unittest.TestCase):
         self.assertEqual(303, cleared_response.status.value)
         self.assertIsNone(self.app.service.get_product(created["id"])["subscription_url"])
 
+    def test_seeded_traderpro_runtime_packages_are_visible_in_admin_selectors(self) -> None:
+        expected = {
+            "orbo-runtime": "ORBO2",
+            "orboib-runtime": "ORBO2ib",
+            "adam-runtime": "ADAM",
+            "eve-runtime": "EVE",
+            "aura-runtime": "AURA",
+        }
+        products = [
+            product
+            for product in self.app.service.list_products()
+            if product["slug"] in expected
+        ]
+        product_html = products_page(products, "csrf-token")
+        release_html = releases_page(
+            [],
+            products,
+            "csrf-token",
+            None,
+            self.app.settings.release_artifact_dir,
+        )
+
+        self.assertEqual(set(expected), {product["slug"] for product in products})
+        for slug, display_name in expected.items():
+            with self.subTest(slug=slug):
+                self.assertIn(display_name, product_html)
+                self.assertIn(f">{display_name}</option>", release_html)
+                self.assertNotIn(slug, product_html)
+
     def test_packages_page_shows_bundle_without_internal_feature_ids(self) -> None:
         html = packages_page(
             [

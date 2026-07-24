@@ -2465,6 +2465,248 @@ class LicensingServiceTests(unittest.TestCase):
             self.assertEqual("0.1.0", release["version"])
             self.assertEqual(platform, release["platform"])
 
+    def test_seeded_traderpro_runtime_packages_are_isolated_by_feature_and_download_auth(self) -> None:
+        expectations = {
+            "orbo-runtime": ("strategy.orbo.runtime", "ORBO2", "2.0.2.1"),
+            "orboib-runtime": ("strategy.orboib.runtime", "ORBO2ib", "2.0.0.8"),
+            "adam-runtime": ("strategy.adam.runtime", "ADAM", "1.0.1.5"),
+            "eve-runtime": ("strategy.eve.runtime", "EVE", "1.0.2.6"),
+            "aura-runtime": ("strategy.aura.runtime", "AURA", "1.0.0.3"),
+        }
+        products = {
+            product["slug"]: product
+            for product in self.service.list_products()
+            if product["slug"] in expectations
+        }
+        artifact_dir = Path(self.tmp.name) / "seeded-runtime-artifacts"
+        artifact_dir.mkdir()
+        releases: dict[str, dict] = {}
+        for slug, (feature_id, _, nt8_version) in expectations.items():
+            artifact_path = f"{slug}-0.1.0-windows-x64.zip"
+            (artifact_dir / artifact_path).write_bytes(f"{slug} runtime".encode())
+            releases[slug] = self.service.upsert_release(
+                release_id=None,
+                scope="strategy",
+                release_type="strategy_package",
+                product_key=slug,
+                product_id=products[slug]["id"],
+                channel="stable",
+                platform="windows-x64",
+                version="0.1.0",
+                min_supported_version=None,
+                is_required=False,
+                is_active=True,
+                artifact_path=artifact_path,
+                artifact_filename=None,
+                size_bytes=None,
+                sha256_value=None,
+                signature=None,
+                release_notes=f"{slug} runtime test release",
+                artifact_dir=str(artifact_dir),
+                nt8_version=nt8_version,
+                trader_revision=0,
+            )
+
+        release_ids = {slug: release["id"] for slug, release in releases.items()}
+        for index, (slug, (feature_id, display_name, nt8_version)) in enumerate(expectations.items()):
+            with self.subTest(slug=slug):
+                product = products[slug]
+                created = self.service.create_or_update_customer(
+                    email=f"seeded-runtime-{index}@example.com"
+                )
+                self.service.manual_set_entitlement(
+                    customer_id=created.customer["id"],
+                    product_id=product["id"],
+                    status="active",
+                    expires_at=iso(utc_now() + timedelta(days=30)),
+                    reason=f"{slug} runtime",
+                    actor_id="admin",
+                    ip_address=None,
+                )
+                fingerprint = f"seeded-runtime-{slug}"
+                license_response = self.service.check_license(
+                    license_key=created.license_key,
+                    email=None,
+                    customer_id=None,
+                    whop_user_id=None,
+                    machine_fingerprint=fingerprint,
+                    app_version="0.1.0",
+                    ip_address=None,
+                    user_agent=None,
+                    check_interval_seconds=3600,
+                    grace_period_seconds=86400,
+                )
+                manifest = self.service.release_manifest(
+                    license_key=created.license_key,
+                    email=None,
+                    customer_id=None,
+                    whop_user_id=None,
+                    machine_fingerprint=fingerprint,
+                    app_version="0.1.0",
+                    channel="stable",
+                    platform="windows-x64",
+                    include_types=["strategy_package"],
+                    installed_packages=[{"package_id": slug, "version": "0.0.0"}],
+                    ip_address=None,
+                    user_agent=None,
+                    check_interval_seconds=3600,
+                    grace_period_seconds=86400,
+                )
+                own_token = self.service.create_release_download_token(
+                    release_id=release_ids[slug],
+                    license_key=created.license_key,
+                    email=None,
+                    customer_id=None,
+                    whop_user_id=None,
+                    machine_fingerprint=fingerprint,
+                    app_version="0.1.0",
+                    platform="windows-x64",
+                    ip_address=None,
+                    user_agent=None,
+                    check_interval_seconds=3600,
+                    grace_period_seconds=86400,
+                    token_seconds=600,
+                )
+                other_slug = next(candidate for candidate in expectations if candidate != slug)
+                other_token = self.service.create_release_download_token(
+                    release_id=release_ids[other_slug],
+                    license_key=created.license_key,
+                    email=None,
+                    customer_id=None,
+                    whop_user_id=None,
+                    machine_fingerprint=fingerprint,
+                    app_version="0.1.0",
+                    platform="windows-x64",
+                    ip_address=None,
+                    user_agent=None,
+                    check_interval_seconds=3600,
+                    grace_period_seconds=86400,
+                    token_seconds=600,
+                )
+
+                self.assertEqual("active", license_response["status"])
+                self.assertEqual(
+                    [(slug, feature_id)],
+                    [
+                        (grant["slug"], grant["feature_id"])
+                        for grant in license_response["licensed_strategies"]
+                    ],
+                )
+                self.assertEqual("active", manifest["status"])
+                self.assertEqual([slug], [release["package_id"] for release in manifest["releases"]])
+                item = manifest["releases"][0]
+                catalog_item = next(
+                    package
+                    for package in manifest["packages"]
+                    if package["package_id"] == slug
+                )
+                self.assertEqual(display_name, item["display_name"])
+                self.assertEqual(feature_id, item["feature_id"])
+                self.assertEqual([feature_id], item["required_features"])
+                self.assertEqual("0.1.0", item["version"])
+                self.assertEqual("0.1.182", item["min_supported_version"])
+                self.assertEqual(nt8_version, item["nt8_version"])
+                self.assertEqual(0, item["trader_revision"])
+                self.assertEqual([feature_id], catalog_item["required_features"])
+                self.assertEqual(display_name, catalog_item["strategy_family"])
+                self.assertEqual("Runtime", catalog_item["variant"])
+                self.assertEqual(slug.removesuffix("-runtime"), catalog_item["strategy_id"])
+                self.assertEqual(
+                    json.loads(product["metadata_json"])["entry_assembly"],
+                    catalog_item["entry_assembly"],
+                )
+                self.assertEqual("0.1.0", catalog_item["initial_runtime_version"])
+                self.assertEqual("0.1.182", catalog_item["minimum_trader_version"])
+                self.assertEqual(
+                    ["macos-arm64", "windows-x64", "linux-x64"],
+                    catalog_item["supported_platforms"],
+                )
+                self.assertEqual(
+                    {"algorithm": "Ed25519", "key_id": "main-2026-01"},
+                    catalog_item["package_signature"],
+                )
+                self.assertEqual("ok", own_token["status"])
+                self.assertIsNotNone(own_token["token"])
+                self.assertEqual([feature_id], own_token["release"]["required_features"])
+                self.assertEqual("0.1.182", own_token["release"]["min_supported_version"])
+                self.assertEqual("not_licensed", other_token["status"])
+                self.assertIsNone(other_token["token"])
+
+        unentitled = self.active_customer("seeded-runtime-unentitled@example.com")
+        unentitled_manifest = self.service.release_manifest(
+            license_key=unentitled.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="seeded-runtime-unentitled",
+            app_version="0.1.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+        )
+        self.assertEqual("active", unentitled_manifest["status"])
+        self.assertEqual([], unentitled_manifest["releases"])
+        for slug, release_id in release_ids.items():
+            with self.subTest(unentitled_slug=slug):
+                denied = self.service.create_release_download_token(
+                    release_id=release_id,
+                    license_key=unentitled.license_key,
+                    email=None,
+                    customer_id=None,
+                    whop_user_id=None,
+                    machine_fingerprint="seeded-runtime-unentitled",
+                    app_version="0.1.0",
+                    platform="windows-x64",
+                    ip_address=None,
+                    user_agent=None,
+                    check_interval_seconds=3600,
+                    grace_period_seconds=86400,
+                    token_seconds=600,
+                )
+                self.assertEqual("not_licensed", denied["status"])
+
+    def test_seeded_runtime_release_rejects_minimum_trader_version_below_catalog_floor(self) -> None:
+        product = next(
+            product
+            for product in self.service.list_products()
+            if product["slug"] == "adam-runtime"
+        )
+        artifact_dir = Path(self.tmp.name) / "minimum-version-artifacts"
+        artifact_dir.mkdir()
+        artifact = artifact_dir / "Adam-Runtime-0.1.0-windows-x64.zip"
+        artifact.write_bytes(b"adam runtime")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "adam-runtime releases require TraderPro 0.1.182 or newer",
+        ):
+            self.service.upsert_release(
+                release_id=None,
+                scope="strategy",
+                release_type="strategy_package",
+                product_key="adam-runtime",
+                product_id=product["id"],
+                channel="stable",
+                platform="windows-x64",
+                version="0.1.0",
+                min_supported_version="0.1.0",
+                is_required=False,
+                is_active=False,
+                artifact_path=artifact.name,
+                artifact_filename=None,
+                size_bytes=None,
+                sha256_value=None,
+                signature=None,
+                release_notes=None,
+                artifact_dir=str(artifact_dir),
+                nt8_version="1.0.1.5",
+                trader_revision=0,
+            )
+
     def test_release_manifest_returns_only_licensed_strategy_releases(self) -> None:
         duorc = self.service.upsert_product(
             slug="duorc-runtime",

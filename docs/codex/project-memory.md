@@ -1,6 +1,6 @@
 # AutoEdge Licensing Server Codex Memory
 
-Last refreshed: 2026-07-15
+Last refreshed: 2026-07-24
 
 ## Repository Shape
 
@@ -20,9 +20,9 @@ Last refreshed: 2026-07-15
   verification, P-256 PEM loading/fingerprinting, JWS raw `R || S` conversion,
   and the immutable release-envelope contract.
 - `scripts/create_admin.py` creates an admin user after applying migrations.
-- `scripts/seed_products.py` seeds default strategy products
-  DUO, DUOrc, ORBO2, ORBOib, ADAM, EVE, MICH, and HUGO, plus the TraderPro
-  Desktop extension product Discord Notifier.
+- `scripts/seed_products.py` idempotently seeds default strategy products
+  DUO, DUOrc, ORBO2, ORBO2ib, ADAM, EVE, MICH, HUGO, and AURA, plus the
+  TraderPro Desktop extension product Discord Notifier.
 - `scripts/es256_keys.py`, `scripts/sign_release_envelope.py`,
   `scripts/verify_release_envelope.py`, and `scripts/audit_release_artifacts.py`
   provide key, offline release-signing, verification, and active-artifact audit
@@ -408,6 +408,11 @@ Download flow:
   remains populated for unlicensed/expired/blocking responses. This catalog is
   never an access authority; blocking manifests still return no releases or app
   update, and download-token/resolution checks are unchanged.
+- Seeded strategy packages can also expose additive package-template metadata:
+  `required_features`, `strategy_family`, `variant`, `strategy_id`,
+  `entry_assembly`, `initial_runtime_version`, `minimum_trader_version`,
+  `supported_platforms`, and the internal Ed25519 `package_signature`
+  descriptor. These fields do not imply that a release or artifact exists.
 - If `include_types` is omitted, manifests intentionally keep the old default:
   `strategy_package` and `trader_desktop`. Clients that support optional
   extensions must request `extension_package`.
@@ -440,6 +445,53 @@ Download flow:
   `Strategy package` releases with product/package id `mich-runtime`,
   release type `strategy_package`, version `0.1.0`, and the matching platform.
   MICH parity remains pending; do not add parity claims.
+- Migration `017_seed_traderpro_runtime_packages.sql` and
+  `scripts/seed_products.py` seed/backfill five additional strategy-package
+  products without creating releases, artifacts, Whop mappings, grants, or
+  entitlements:
+  - ORBO2: `orbo-runtime`, `strategy.orbo.runtime`, strategy id `orbo`,
+    `Trader.Strategies.Orbo.dll`, technical version `0.1.0`, planned NT8
+    identity `2.0.2.1`, minimum TraderPro `0.1.182`
+  - ORBO2ib: `orboib-runtime`, `strategy.orboib.runtime`, strategy id `orboib`,
+    `Trader.Strategies.Orboib.dll`, technical version `0.1.0`, planned NT8
+    identity `2.0.0.8`, minimum TraderPro `0.1.182`
+  - ADAM: `adam-runtime`, `strategy.adam.runtime`, strategy id `adam`,
+    `Trader.Strategies.Adam.dll`, technical version `0.1.0`, planned NT8
+    identity `1.0.1.5`, minimum TraderPro `0.1.182`
+  - EVE: `eve-runtime`, `strategy.eve.runtime`, strategy id `eve`,
+    `Trader.Strategies.Eve.dll`, technical version `0.1.0`, planned NT8
+    identity `1.0.2.6`, minimum TraderPro `0.1.182`
+  - AURA: `aura-runtime`, `strategy.aura.runtime`, strategy id `aura`,
+    `Trader.Strategies.Aura.dll`, technical version `0.1.0`, planned NT8
+    identity `1.0.0.3`, minimum TraderPro `0.1.182`
+- All five use metadata `package_kind = release_type = strategy_package` and
+  support exact platforms `macos-arm64`, `windows-x64`, and `linux-x64`.
+  Their internal package manifests declare variant `Runtime` and Ed25519 key
+  `main-2026-01`; that internal descriptor is separate from the server's
+  required offline ES256 release-envelope signature.
+  `planned_nt8_version` is catalog planning metadata; customer-facing release
+  identity still comes only from actual release rows carrying both
+  `nt8_version` and `trader_revision`.
+- New or published strategy releases for these products inherit the catalog
+  minimum TraderPro version `0.1.182` when omitted and reject a lower supplied
+  minimum. Higher minima remain valid for future package revisions. Untouched
+  historical rows remain unaffected.
+- The Trader thin release wrappers for these five packages call
+  `release-mich-package.sh`. As inspected on 2026-07-24, that shared script
+  defaults `TRADER_RELEASE_MIN_TRADER_VERSION` to `0.1.0`, and the thin wrappers
+  do not override it. Until Trader changes that default, every real invocation
+  must pass `--min-trader-version 0.1.182`; otherwise server registration is
+  rejected without creating a release row.
+- The ORBO2 migration changes legacy identifiers `orbo2-runtime` /
+  `strategy.orbo2.runtime` in place. It does not rekey the product, so existing
+  entitlement, Whop grant, and release foreign keys remain attached to the
+  same internal product id.
+- Feature isolation needs no product-specific authorization branch:
+  `licensed_strategies` and signed lease features derive from the active
+  product grant, manifests select only product-bound releases for those product
+  ids, `required_features` is the product feature, and download-token issuance
+  rechecks the same product grant. Keep this generic behavior for future
+  strategy packages.
 
 Rollback behavior is server-directed. Clients must not assume that a newer local
 version is valid when the server returns a lower `target_version` with
@@ -487,6 +539,12 @@ Current migration sequence:
 - `016_product_subscription_urls.sql`: adds nullable
   `products.subscription_url` and configures the verified shared DUO/DUOrc Whop
   URL without inventing links for other existing products.
+- `017_seed_traderpro_runtime_packages.sql`: idempotently seeds/backfills ORBO2,
+  ORBO2ib, ADAM, EVE, and AURA TraderPro strategy-package metadata, including
+  exact package/feature ids, entry assemblies, initial technical version,
+  minimum TraderPro `0.1.182`, internal package signature descriptor, planned
+  NT8 identity, and the three supported platforms. It creates no release rows
+  or commercial mappings and preserves existing product ids.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not
@@ -534,6 +592,10 @@ Important behavior:
   the signed lease remain the only grant inputs.
 - Product/admin pages intentionally hide internal slugs and feature ids in user
   facing tables where tests assert that behavior.
+- Seeded runtime products appear by their display names in the Products page,
+  Whop Package grant selector, customer entitlement selector, and licensed
+  product selector for releases; their internal slugs and feature ids remain
+  hidden in user-facing admin tables.
 - Product administration clearly displays and edits the current optional
   subscription URL. Blank input clears it; service validation rejects relative,
   non-HTTPS, credential-bearing, malformed, or whitespace-containing URLs.

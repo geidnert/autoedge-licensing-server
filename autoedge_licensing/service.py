@@ -271,11 +271,16 @@ def normalize_release_types(values: list[str] | None) -> set[str]:
     return normalized or set(DEFAULT_MANIFEST_RELEASE_TYPES)
 
 
-def product_release_type(product: dict[str, Any]) -> str:
+def product_package_metadata(product: dict[str, Any]) -> dict[str, Any]:
     try:
         metadata = json.loads(product.get("metadata_json") or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
-        metadata = {}
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def product_release_type(product: dict[str, Any]) -> str:
+    metadata = product_package_metadata(product)
     configured = str(metadata.get("release_type") or "").strip()
     if configured in PACKAGE_RELEASE_TYPES:
         return configured
@@ -1000,6 +1005,21 @@ class LicensingService:
                     raise ValueError("Licensed product not found.")
                 normalized_product_key = normalized_product_key or product["slug"]
                 feature_id = product["feature_id"]
+                package_metadata = product_package_metadata(dict(product))
+                catalog_minimum = normalize_optional_text(
+                    package_metadata.get("minimum_trader_version")
+                )
+                if normalized_release_type == STRATEGY_RELEASE_TYPE and catalog_minimum:
+                    if normalized_min_supported_version is None:
+                        normalized_min_supported_version = catalog_minimum
+                    elif (
+                        (release_id is None or is_active)
+                        and compare_versions(normalized_min_supported_version, catalog_minimum) < 0
+                    ):
+                        raise ValueError(
+                            f"{product['slug']} releases require TraderPro "
+                            f"{catalog_minimum} or newer."
+                        )
             if normalized_signature:
                 if calculated_size is None or calculated_sha is None:
                     raise ValueError("Signed releases require artifact size and SHA-256 metadata.")
@@ -2637,6 +2657,7 @@ class LicensingService:
         packages: list[dict[str, Any]] = []
         for row in rows:
             product = dict(row)
+            package_metadata = product_package_metadata(product)
             release_type = product_release_type(product)
             display_name = (
                 display_strategy_name(product.get("name"))
@@ -2651,7 +2672,16 @@ class LicensingService:
                     "display_name": display_name,
                     "product_name": display_name,
                     "feature_id": product["feature_id"],
+                    "required_features": [product["feature_id"]],
                     "release_type": release_type,
+                    "strategy_family": package_metadata.get("strategy_family"),
+                    "variant": package_metadata.get("variant"),
+                    "strategy_id": package_metadata.get("strategy_id"),
+                    "entry_assembly": package_metadata.get("entry_assembly"),
+                    "initial_runtime_version": package_metadata.get("initial_runtime_version"),
+                    "minimum_trader_version": package_metadata.get("minimum_trader_version"),
+                    "supported_platforms": package_metadata.get("supported_platforms") or [],
+                    "package_signature": package_metadata.get("package_signature"),
                     "subscription_url": product.get("subscription_url"),
                     "license_status": state.get("status") if state else "unlicensed",
                     "license_source": state.get("source") if state else None,

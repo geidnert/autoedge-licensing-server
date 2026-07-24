@@ -94,6 +94,37 @@ Built-in strategy products include MICH as a product/feature seed only:
 
 MICH is not generally released by the seed data. Register MICH release rows only after actual package artifacts are copied under `AUTOEDGE_RELEASE_ARTIFACT_DIR`.
 
+The durable product catalog also seeds five TraderPro runtime packages:
+
+| Product | Package/product slug | Feature id | Strategy id | Entry assembly | Initial technical version | Minimum TraderPro | Planned NT8 identity |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ORBO2 Runtime | `orbo-runtime` | `strategy.orbo.runtime` | `orbo` | `Trader.Strategies.Orbo.dll` | `0.1.0` | `0.1.182` | `2.0.2.1` |
+| ORBO2ib Runtime | `orboib-runtime` | `strategy.orboib.runtime` | `orboib` | `Trader.Strategies.Orboib.dll` | `0.1.0` | `0.1.182` | `2.0.0.8` |
+| ADAM Runtime | `adam-runtime` | `strategy.adam.runtime` | `adam` | `Trader.Strategies.Adam.dll` | `0.1.0` | `0.1.182` | `1.0.1.5` |
+| EVE Runtime | `eve-runtime` | `strategy.eve.runtime` | `eve` | `Trader.Strategies.Eve.dll` | `0.1.0` | `0.1.182` | `1.0.2.6` |
+| AURA Runtime | `aura-runtime` | `strategy.aura.runtime` | `aura` | `Trader.Strategies.Aura.dll` | `0.1.0` | `0.1.182` | `1.0.0.3` |
+
+Each is a `strategy_package` for exact platforms `macos-arm64`,
+`windows-x64`, and `linux-x64`. The migration and seed script create or
+backfill product metadata only: they do not create release rows, artifacts,
+Whop mappings, grants, or entitlements. Existing ORBO2 product rows are renamed
+in place from `orbo2-runtime` / `strategy.orbo2.runtime` so their product id and
+existing entitlement foreign keys are preserved.
+
+When real TraderPro artifacts are ready, register product-bound, ES256-signed
+release rows with the matching package slug, feature, technical version, and
+platform. The planned NT8 identity is catalog metadata until an actual release
+row is registered with `nt8_version` and `trader_revision`. A license can see
+and request a download token only for releases whose product feature is active
+in `licensed_strategies`.
+
+These values mirror the Trader runtime package manifests: family-specific
+display name, `Runtime` variant, internal Ed25519 package signature key
+`main-2026-01`, entry assembly, strategy id, required feature, and minimum
+TraderPro version `0.1.182`. Manifest `packages` catalog entries expose this
+additive metadata even before a release exists. The catalog is informational;
+it never grants access or creates a download.
+
 Lifecycle handling:
 
 - Trialing events set access through `trial_ends_at` when Whop provides it.
@@ -296,6 +327,12 @@ The same license identifiers as `/api/trader/license/check` are accepted. The re
 - `app_update`: the TraderPro Desktop target release for the customer when it differs from `app_version`.
 
 If `include_types` is omitted, both `strategy_package` and `trader_desktop` are included for backward compatibility. Future clients should request `extension_package` when they can install optional TraderPro extensions such as Discord Notifier.
+
+Seeded strategy-package catalog entries add `required_features`,
+`strategy_family`, `variant`, `strategy_id`, `entry_assembly`,
+`initial_runtime_version`, `minimum_trader_version`, `supported_platforms`, and
+the internal `package_signature` descriptor. These are package-template facts,
+not evidence that an artifact or release row exists.
 
 `installed_packages` is optional and lets the server compare each package against the version installed locally. If omitted, older clients still receive the same compatible release rows.
 
@@ -621,6 +658,23 @@ row or register a placeholder artifact; manifests and download tokens match the
 requested platform exactly.
 
 For MICH, use seeded product `MICH Runtime` with product/package id `mich-runtime`, release type `strategy_package`, version `0.1.0`, and feature id `strategy.mich.runtime`. Copy one real artifact per published platform under `AUTOEDGE_RELEASE_ARTIFACT_DIR`, then register a separate `Strategy package` release with the matching `macos-arm64`, `windows-x64`, or `linux-x64` platform. Do not register placeholder releases without artifacts, and do not add MICH parity claims while May 3, 2026 through June 16, 2026 parity is pending.
+
+ORBO2, ORBO2ib, ADAM, EVE, and AURA follow the same artifact-first workflow
+using the seeded catalog values above. Their initial technical version is
+`0.1.0` and their catalog minimum TraderPro version is `0.1.182`. New or
+published release registrations inherit that minimum when omitted and reject a
+lower value. Use the listed planned NT8 identity only when the corresponding
+real signed artifact is ready, paired with an explicit non-negative TraderPro
+revision. Do not create placeholder releases or reuse an artifact from another
+platform.
+
+The current Trader thin wrappers call the shared `release-mich-package.sh`,
+whose fallback minimum is `0.1.0`; the wrappers do not override it. Until that
+Trader-side default is changed, each real release invocation must explicitly
+pass `--min-trader-version 0.1.182`. Remaining release-time inputs are the real
+platform artifact, confirmed technical version, confirmed NT8 identity and
+Trader revision, channel/audience/rollout, release notes, and the offline ES256
+release-envelope signature.
 
 Extension package releases use release type `Extension package`, choose the licensed extension product, and use the product slug as the package id. For Discord Notifier:
 

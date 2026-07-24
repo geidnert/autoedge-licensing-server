@@ -111,6 +111,41 @@ class ProtectionArchitectureTests(unittest.TestCase):
         self.assertEqual([{"id": "strategy.duo.runtime", "exp": None}], verified.payload["features"])
         self.assertEqual(1800, verified.payload["exp"] - verified.payload["iat"])
 
+    def test_seeded_traderpro_runtime_features_are_bound_into_signed_lease(self) -> None:
+        expected_features = [
+            "strategy.adam.runtime",
+            "strategy.aura.runtime",
+            "strategy.eve.runtime",
+            "strategy.orbo.runtime",
+            "strategy.orboib.runtime",
+        ]
+        products = [
+            product
+            for product in self.service.list_products()
+            if product["feature_id"] in expected_features
+        ]
+        created = self.service.create_or_update_customer(email="signed-runtime-seeds@example.com")
+        feature_expiry = iso(utc_now() + timedelta(hours=2))
+        for product in products:
+            self.service.manual_set_entitlement(
+                customer_id=created.customer["id"],
+                product_id=product["id"],
+                status="active",
+                expires_at=feature_expiry,
+                reason="signed runtime seed lease",
+                actor_id="admin",
+                ip_address=None,
+            )
+
+        response = self.check(created, "signed-runtime-seeds-machine", grace=7200)
+        verified = self.verify_lease(response["license_lease"]["token"])
+
+        self.assertEqual(expected_features, sorted(grant["feature_id"] for grant in response["licensed_strategies"]))
+        self.assertEqual(
+            [{"id": feature_id, "exp": feature_expiry} for feature_id in expected_features],
+            verified.payload["features"],
+        )
+
     def test_blocking_responses_have_null_lease(self) -> None:
         unknown = self.service.check_license(
             license_key=None,
@@ -219,6 +254,113 @@ class ProtectionArchitectureTests(unittest.TestCase):
         self.assertEqual(signature, manifest["releases"][0]["artifact"]["signature"])
         self.assertEqual(signature, token["release"]["artifact"]["signature"])
         self.assertIsNotNone(manifest["license"]["license_lease"])
+
+    def test_seeded_orbo_runtime_uses_exact_feature_under_required_release_signing(self) -> None:
+        product = next(
+            product
+            for product in self.service.list_products()
+            if product["slug"] == "orbo-runtime"
+        )
+        created = self.service.create_or_update_customer(email="signed-orbo-runtime@example.com")
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=product["id"],
+            status="active",
+            expires_at=iso(utc_now() + timedelta(hours=2)),
+            reason="signed ORBO2 runtime",
+            actor_id="admin",
+            ip_address=None,
+        )
+        artifact = self.artifact_dir / "orbo-runtime-0.1.0-windows-x64.zip"
+        artifact.write_bytes(b"signed ORBO2 runtime artifact")
+        envelope = release_envelope_payload(
+            release_type="strategy_package",
+            package_id="orbo-runtime",
+            feature_id="strategy.orbo.runtime",
+            channel="stable",
+            platform="windows-x64",
+            version="0.1.0",
+            minimum_trader_version="0.1.182",
+            filename=artifact.name,
+            size_bytes=artifact.stat().st_size,
+            sha256=sha256(artifact.read_bytes()).hexdigest(),
+        )
+        signature = self.release_signer.sign(envelope, token_type=RELEASE_TOKEN_TYPE)
+        required_service = LicensingService(
+            self.database,
+            license_signer=self.license_signer,
+            release_public_keys={"release-test-1": self.release_private.public_key()},
+            require_release_signatures=True,
+            license_issuer="solidparts.se",
+            license_audience="traderpro",
+        )
+        release = required_service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            release_type="strategy_package",
+            product_key="orbo-runtime",
+            product_id=product["id"],
+            channel="stable",
+            platform="windows-x64",
+            version="0.1.0",
+            nt8_version="2.0.2.1",
+            trader_revision=0,
+            min_supported_version="0.1.182",
+            is_required=False,
+            is_active=True,
+            artifact_path=artifact.name,
+            artifact_filename=artifact.name,
+            size_bytes=None,
+            sha256_value=None,
+            signature=signature,
+            signature_key_id="release-test-1",
+            release_notes="Signed ORBO2 runtime",
+            artifact_dir=str(self.artifact_dir),
+        )
+        manifest = required_service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="signed-orbo-runtime-machine",
+            app_version="0.1.0",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=600,
+            grace_period_seconds=3600,
+        )
+        token = required_service.create_release_download_token(
+            release_id=release["id"],
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="signed-orbo-runtime-machine",
+            app_version="0.1.0",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=600,
+            grace_period_seconds=3600,
+            token_seconds=600,
+        )
+
+        self.assertEqual(["orbo-runtime"], [item["package_id"] for item in manifest["releases"]])
+        self.assertEqual(
+            ["strategy.orbo.runtime"],
+            manifest["releases"][0]["required_features"],
+        )
+        self.assertEqual(signature, manifest["releases"][0]["artifact"]["signature"])
+        self.assertEqual("0.1.182", manifest["releases"][0]["min_supported_version"])
+        self.assertEqual("2.0.2.1", manifest["releases"][0]["nt8_version"])
+        self.assertEqual(0, manifest["releases"][0]["trader_revision"])
+        self.assertEqual("ok", token["status"])
+        self.assertEqual(["strategy.orbo.runtime"], token["release"]["required_features"])
+        self.assertEqual(signature, token["release"]["artifact"]["signature"])
 
     def test_release_registration_rejects_metadata_mismatches_and_key_id(self) -> None:
         artifact = self.artifact_dir / "duo-1.2.3.zip"
