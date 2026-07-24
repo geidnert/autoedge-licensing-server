@@ -642,6 +642,34 @@ Important behavior:
 
 ## Deployment Memory
 
+- 2026-07-24: Commit `81bce86` made normalized customer tag `internal` a
+  global tester designation for releases whose channel is `internal`.
+  Internal-tagged customers bypass non-disabled release audience targeting
+  (allowlist, roles, required tags, and percentage rollout), while
+  `audience_mode = disabled`, active entitlement, publication, active-release,
+  platform, and channel checks remain enforced. No migration or client release
+  was required. The exact committed archive SHA-256 was
+  `3f5a12caa304a0f186e0eec505f2dec35ee3a6ca7524dfb86f74ac26c0a06b35`;
+  all `143` committed tests passed locally from the extracted archive and again
+  from production staging. The pre-deploy online SQLite backup is
+  `/var/backups/autoedge-before-81bce86-20260724T111529Z.db` (SHA-256
+  `f6bd46dcc9c372d3dcc673e2c58974abbe9d8e625d9cce262b26f6bd3273c884`,
+  `quick_check: ok`) and the code backup is
+  `/var/backups/autoedge-code-before-81bce86-20260724T111529Z.tar.gz`
+  (SHA-256
+  `9684976baf2b56127e8204c882920b149282e098462403c24acad29c23ff2557`).
+  Deployed `service.py` matches the committed SHA-256
+  `8b8911714c5aa87b96a0749ca9140b3b835625f0f6d433ad07e3038994095b90`;
+  the service is active, mandatory release signatures remain enabled, the live
+  database passes `quick_check`, local `/healthz` is OK, and public `/privacy`
+  and `/admin/login` return HTTP 200. Production-snapshot active-path
+  verification for Steve (`fb0de0712ee24092af8094445cb6b930`) showed EMAL
+  remains hidden without the tag and, after adding only `internal`, returns the
+  exact EMAL `0.1.0` release for macOS, Windows, and Linux plus an authorized
+  Windows download token. Steve's live tag was empty at verification time: the
+  audit log records the same admin saving `["internal"]` at `11:01:12Z` and
+  then saving `[]` at `11:11:02Z`, before this deployment. The deployment did
+  not change customer tags.
 - 2026-07-24: Commit `11dbe7d` fixed private TraderPro product visibility and
   deployed migration `019_private_product_catalog_visibility.sql`. The exact
   committed archive SHA-256 was
