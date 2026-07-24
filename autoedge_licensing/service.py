@@ -290,6 +290,11 @@ def product_release_type(product: dict[str, Any]) -> str:
     return STRATEGY_RELEASE_TYPE
 
 
+def product_catalog_is_private(product: dict[str, Any]) -> bool:
+    metadata = product_package_metadata(product)
+    return str(metadata.get("catalog_visibility") or "public").strip().lower() == "private"
+
+
 def normalize_tag(value: str | None) -> str:
     if not value:
         return ""
@@ -2663,7 +2668,140 @@ class LicensingService:
                 visible_by_group[group_value] = release
         return list(visible_by_group.values()), denied
 
-    def _trader_manifest_packages(self, license_response: dict[str, Any]) -> list[dict[str, Any]]:
+    def _private_manifest_product_ids(
+        self,
+        license_response: dict[str, Any],
+        requested_channel: str,
+        requested_platform: str,
+    ) -> tuple[set[str], set[str], dict[str, Any] | None]:
+        licensed_product_ids = {
+            str(grant["product_id"])
+            for grant in license_response.get("licensed_strategies", [])
+            if grant.get("product_id")
+        }
+        with self.database.session() as connection:
+            product_rows = connection.execute(
+                """
+                SELECT *
+                FROM products
+                """
+            ).fetchall()
+            private_product_ids = {
+                str(row["id"])
+                for row in product_rows
+                if product_catalog_is_private(dict(row))
+            }
+            active_private_product_ids = {
+                str(row["id"])
+                for row in product_rows
+                if bool(row["is_active"])
+                and bool(row["trader_enabled"])
+                and str(row["id"]) in private_product_ids
+            }
+            customer_id = (license_response.get("customer") or {}).get("id")
+            customer_row = (
+                connection.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+                if customer_id
+                else None
+            )
+            customer = dict(customer_row) if customer_row is not None else None
+            candidate_product_ids = active_private_product_ids & licensed_product_ids
+            if (
+                license_response.get("status") != "active"
+                or customer is None
+                or not candidate_product_ids
+            ):
+                return private_product_ids, set(), customer
+
+            product_placeholders = ",".join("?" for _ in candidate_product_ids)
+            rows = connection.execute(
+                """
+                SELECT trader_releases.*
+                FROM trader_releases
+                WHERE trader_releases.is_active = 1
+                  AND COALESCE(trader_releases.is_published, trader_releases.is_active) = 1
+                  AND trader_releases.platform = ?
+                  AND COALESCE(
+                        trader_releases.release_type,
+                        CASE WHEN trader_releases.scope = 'app' THEN 'trader_desktop' ELSE 'strategy_package' END
+                      ) IN ('strategy_package', 'extension_package')
+                  AND trader_releases.product_id IN ({product_placeholders})
+                """.format(product_placeholders=product_placeholders),
+                (requested_platform, *sorted(candidate_product_ids)),
+            ).fetchall()
+
+        visible_product_ids: set[str] = set()
+        for row in rows:
+            release = dict(row)
+            allowed, _ = self._release_visible_to_customer(
+                release,
+                customer,
+                requested_channel,
+            )
+            if allowed and release.get("product_id"):
+                visible_product_ids.add(str(release["product_id"]))
+        return private_product_ids, visible_product_ids, customer
+
+    def _manifest_license_response(
+        self,
+        license_response: dict[str, Any],
+        *,
+        private_product_ids: set[str],
+        visible_private_product_ids: set[str],
+        customer: dict[str, Any] | None,
+        machine_fingerprint: str,
+        grace_period_seconds: int,
+    ) -> dict[str, Any]:
+        hidden_private_product_ids = private_product_ids - visible_private_product_ids
+        if not hidden_private_product_ids:
+            return license_response
+
+        visible_grants = [
+            grant
+            for grant in license_response.get("licensed_strategies", [])
+            if str(grant.get("product_id") or "") not in hidden_private_product_ids
+        ]
+        visible_states = [
+            state
+            for state in license_response.get("entitlement_states", [])
+            if str(state.get("product_id") or "") not in hidden_private_product_ids
+        ]
+        if (
+            len(visible_grants) == len(license_response.get("licensed_strategies", []))
+            and len(visible_states) == len(license_response.get("entitlement_states", []))
+        ):
+            return license_response
+
+        response = dict(license_response)
+        response["licensed_strategies"] = visible_grants
+        response["entitlement_states"] = visible_states
+        finite_expiries = [
+            parsed
+            for parsed in (parse_time(grant.get("expires_at")) for grant in visible_grants)
+            if parsed is not None
+        ]
+        response["expires_at"] = iso(min(finite_expiries)) if finite_expiries else None
+        response["license_lease"] = None
+        if (
+            license_response.get("license_lease") is not None
+            and visible_grants
+            and customer is not None
+            and license_response.get("device") is not None
+        ):
+            response["license_lease"] = self._issue_trader_license_lease(
+                customer=customer,
+                device=license_response["device"],
+                machine_fingerprint=machine_fingerprint,
+                grants=visible_grants,
+                grace_period_seconds=grace_period_seconds,
+            )
+        return response
+
+    def _trader_manifest_packages(
+        self,
+        license_response: dict[str, Any],
+        visible_private_product_ids: set[str],
+    ) -> list[dict[str, Any]]:
         states_by_product_id = {
             str(state.get("product_id")): state
             for state in license_response.get("entitlement_states", [])
@@ -2682,6 +2820,11 @@ class LicensingService:
         packages: list[dict[str, Any]] = []
         for row in rows:
             product = dict(row)
+            if (
+                product_catalog_is_private(product)
+                and str(product["id"]) not in visible_private_product_ids
+            ):
+                continue
             package_metadata = product_package_metadata(product)
             release_type = product_release_type(product)
             display_name = (
@@ -2734,6 +2877,8 @@ class LicensingService:
         grace_period_seconds: int,
         max_devices: int = 1,
     ) -> dict[str, Any]:
+        normalized_channel = (channel or "stable").strip().lower()
+        normalized_platform = (platform or DEFAULT_RELEASE_PLATFORM).strip().lower()
         license_response = self.check_license(
             license_key=license_key,
             email=email,
@@ -2747,24 +2892,42 @@ class LicensingService:
             grace_period_seconds=grace_period_seconds,
             max_devices=max_devices,
         )
-        packages = self._trader_manifest_packages(license_response)
+        (
+            private_product_ids,
+            visible_private_product_ids,
+            manifest_customer,
+        ) = self._private_manifest_product_ids(
+            license_response,
+            normalized_channel,
+            normalized_platform,
+        )
+        manifest_license_response = self._manifest_license_response(
+            license_response,
+            private_product_ids=private_product_ids,
+            visible_private_product_ids=visible_private_product_ids,
+            customer=manifest_customer,
+            machine_fingerprint=machine_fingerprint,
+            grace_period_seconds=grace_period_seconds,
+        )
+        packages = self._trader_manifest_packages(
+            manifest_license_response,
+            visible_private_product_ids,
+        )
         if license_response["status"] != "active":
             return {
                 "status": license_response["status"],
                 "message": license_response["message"],
                 "server_time": iso(),
-                "channel": channel or "stable",
-                "platform": platform or DEFAULT_RELEASE_PLATFORM,
+                "channel": normalized_channel,
+                "platform": normalized_platform,
                 "packages": packages,
                 "releases": [],
                 "app_update": None,
-                "license": license_response,
+                "license": manifest_license_response,
             }
 
         license_by_product_id = {grant["product_id"]: grant for grant in license_response["licensed_strategies"]}
         licensed_product_ids = set(license_by_product_id)
-        normalized_channel = (channel or "stable").strip().lower()
-        normalized_platform = (platform or DEFAULT_RELEASE_PLATFORM).strip().lower()
         requested_types = normalize_release_types(include_types)
         installed_versions = self._installed_package_versions(installed_packages)
         package_rows: list[dict[str, Any]] = []
@@ -2782,7 +2945,7 @@ class LicensingService:
                     "packages": packages,
                     "releases": [],
                     "app_update": None,
-                    "license": license_response,
+                    "license": manifest_license_response,
                 }
             customer = dict(customer_row)
             requested_package_types = PACKAGE_RELEASE_TYPES & requested_types
@@ -2894,7 +3057,7 @@ class LicensingService:
             "packages": packages,
             "releases": releases,
             "app_update": app_update,
-            "license": license_response,
+            "license": manifest_license_response,
         }
 
     def create_release_download_token(

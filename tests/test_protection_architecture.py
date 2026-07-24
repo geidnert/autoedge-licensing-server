@@ -147,6 +147,79 @@ class ProtectionArchitectureTests(unittest.TestCase):
             verified.payload["features"],
         )
 
+    def test_manifest_lease_omits_private_feature_when_release_audience_denies_customer(self) -> None:
+        created, duo_expiry = self.active_customer()
+        emal = next(
+            product
+            for product in self.service.list_products()
+            if product["slug"] == "emal-runtime"
+        )
+        emal_expiry = iso(utc_now() + timedelta(hours=2))
+        self.service.manual_set_entitlement(
+            customer_id=created.customer["id"],
+            product_id=emal["id"],
+            status="active",
+            expires_at=emal_expiry,
+            reason="private manifest lease test",
+            actor_id="admin",
+            ip_address=None,
+        )
+        artifact = self.artifact_dir / "emal-private-windows-x64.zip"
+        artifact.write_bytes(b"private EMAL release")
+        self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            release_type="strategy_package",
+            product_key="emal-runtime",
+            product_id=emal["id"],
+            channel="internal",
+            platform="windows-x64",
+            version="0.1.0",
+            min_supported_version="0.1.182",
+            is_required=False,
+            is_active=True,
+            artifact_path=artifact.name,
+            artifact_filename=artifact.name,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(self.artifact_dir),
+            audience_mode="allowlist",
+            allowed_customer_ids="different-customer",
+            nt8_version="1.0.0.0",
+            trader_revision=0,
+        )
+
+        direct_license = self.check(created, "private-manifest-machine")
+        manifest = self.service.release_manifest(
+            license_key=created.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="private-manifest-machine",
+            app_version="0.1.182",
+            channel="stable",
+            platform="windows-x64",
+            include_types=["strategy_package"],
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=600,
+            grace_period_seconds=3600,
+        )
+        verified = self.verify_lease(manifest["license"]["license_lease"]["token"])
+
+        self.assertEqual(
+            ["strategy.duo.runtime", "strategy.emal.runtime"],
+            sorted(grant["feature_id"] for grant in direct_license["licensed_strategies"]),
+        )
+        self.assertNotIn("emal-runtime", [item["package_id"] for item in manifest["packages"]])
+        self.assertEqual([], manifest["releases"])
+        self.assertEqual(
+            [{"id": "strategy.duo.runtime", "exp": duo_expiry}],
+            verified.payload["features"],
+        )
+
     def test_blocking_responses_have_null_lease(self) -> None:
         unknown = self.service.check_license(
             license_key=None,

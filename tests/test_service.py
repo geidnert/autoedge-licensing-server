@@ -2784,6 +2784,8 @@ class LicensingServiceTests(unittest.TestCase):
                 actor_id="admin",
                 ip_address=None,
             )
+        allowlisted_unentitled = self.active_customer("emal-allowlisted-unentitled@example.com")
+        ordinary_unentitled = self.active_customer("emal-ordinary-unentitled@example.com")
 
         artifact_dir = Path(self.tmp.name) / "emal-targeting-artifacts"
         artifact_dir.mkdir()
@@ -2809,7 +2811,9 @@ class LicensingServiceTests(unittest.TestCase):
             release_notes="EMAL internal targeting test",
             artifact_dir=str(artifact_dir),
             audience_mode="allowlist",
-            allowed_customer_ids=tester.customer["id"],
+            allowed_customer_ids=(
+                f"{tester.customer['id']},{allowlisted_unentitled.customer['id']}"
+            ),
             rollout_percent=100,
             nt8_version="1.0.0.0",
             trader_revision=0,
@@ -2834,6 +2838,14 @@ class LicensingServiceTests(unittest.TestCase):
 
         tester_manifest = manifest_for(tester, "emal-allowlisted-machine")
         ordinary_manifest = manifest_for(ordinary, "emal-ordinary-machine")
+        allowlisted_unentitled_manifest = manifest_for(
+            allowlisted_unentitled,
+            "emal-allowlisted-unentitled-machine",
+        )
+        ordinary_unentitled_manifest = manifest_for(
+            ordinary_unentitled,
+            "emal-ordinary-unentitled-machine",
+        )
         ordinary_token = self.service.create_release_download_token(
             release_id=release["id"],
             license_key=ordinary.license_key,
@@ -2850,11 +2862,59 @@ class LicensingServiceTests(unittest.TestCase):
             grace_period_seconds=86400,
             token_seconds=600,
         )
+        allowlisted_unentitled_token = self.service.create_release_download_token(
+            release_id=release["id"],
+            license_key=allowlisted_unentitled.license_key,
+            email=None,
+            customer_id=None,
+            whop_user_id=None,
+            machine_fingerprint="emal-allowlisted-unentitled-machine",
+            app_version="0.1.182",
+            channel="stable",
+            platform="windows-x64",
+            ip_address=None,
+            user_agent=None,
+            check_interval_seconds=3600,
+            grace_period_seconds=86400,
+            token_seconds=600,
+        )
 
         self.assertEqual(["emal-runtime"], [item["package_id"] for item in tester_manifest["releases"]])
+        self.assertEqual(["windows-x64"], [item["platform"] for item in tester_manifest["releases"]])
+        self.assertIn("emal-runtime", [item["package_id"] for item in tester_manifest["packages"]])
         self.assertEqual([], ordinary_manifest["releases"])
+        self.assertNotIn("emal-runtime", [item["package_id"] for item in ordinary_manifest["packages"]])
+        self.assertNotIn(
+            "emal-runtime",
+            [item["slug"] for item in ordinary_manifest["license"]["licensed_strategies"]],
+        )
+        self.assertNotIn(
+            "emal-runtime",
+            [item["slug"] for item in ordinary_manifest["license"]["entitlement_states"]],
+        )
+        ordinary_manifest_json = json.dumps(ordinary_manifest, sort_keys=True).lower()
+        self.assertNotIn("emal-runtime", ordinary_manifest_json)
+        self.assertNotIn("emal runtime", ordinary_manifest_json)
+        self.assertNotIn("strategy.emal.runtime", ordinary_manifest_json)
+        self.assertNotIn(product["id"].lower(), ordinary_manifest_json)
+        self.assertNotIn(
+            "emal-runtime",
+            [item["package_id"] for item in allowlisted_unentitled_manifest["packages"]],
+        )
+        self.assertEqual([], allowlisted_unentitled_manifest["releases"])
+        self.assertNotIn(
+            "emal-runtime",
+            [item["package_id"] for item in ordinary_unentitled_manifest["packages"]],
+        )
+        self.assertEqual([], ordinary_unentitled_manifest["releases"])
+        public_unlicensed = next(
+            item for item in tester_manifest["packages"] if item["package_id"] == "duo-runtime"
+        )
+        self.assertEqual("unlicensed", public_unlicensed["license_status"])
         self.assertEqual("audience_denied", ordinary_token["status"])
         self.assertIsNone(ordinary_token["token"])
+        self.assertEqual("not_licensed", allowlisted_unentitled_token["status"])
+        self.assertIsNone(allowlisted_unentitled_token["token"])
 
         self.service.upsert_release(
             release_id=release["id"],
@@ -2899,6 +2959,11 @@ class LicensingServiceTests(unittest.TestCase):
         )
 
         self.assertEqual([], disabled_manifest["releases"])
+        self.assertNotIn("emal-runtime", [item["package_id"] for item in disabled_manifest["packages"]])
+        self.assertNotIn(
+            "emal-runtime",
+            [item["slug"] for item in disabled_manifest["license"]["licensed_strategies"]],
+        )
         self.assertEqual("audience_denied", disabled_token["status"])
         self.assertIsNone(disabled_token["token"])
 

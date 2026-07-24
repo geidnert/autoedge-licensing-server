@@ -402,12 +402,18 @@ or deterministic rollout percent.
 Download flow:
 
 - Manifest returns visible releases and app updates only for active licenses.
-- Manifest `packages` is an additive catalog of every active TraderPro-enabled
-  product. It includes `package_id`, display/product identity, `release_type`,
-  current entitlement display metadata, and nullable `subscription_url`, and
-  remains populated for unlicensed/expired/blocking responses. This catalog is
-  never an access authority; blocking manifests still return no releases or app
-  update, and download-token/resolution checks are unchanged.
+- Manifest `packages` is an additive catalog of active TraderPro-enabled public
+  products. Product metadata `catalog_visibility = private` makes a product
+  manifest-private; absence of the setting defaults to public. A private
+  product appears only when the customer has an active entitlement and an
+  active, published release for the requested platform is visible after
+  channel, audience, allowlist/tag, and rollout checks. Ineligible private
+  products are also removed from nested manifest license/entitlement metadata
+  and signed lease features so the manifest does not reveal their existence.
+  Public catalog entries remain populated for unlicensed/expired/blocking
+  responses. The catalog is never an access authority; blocking manifests still
+  return no releases or app update, and download-token/resolution checks are
+  unchanged.
 - Seeded strategy packages can also expose additive package-template metadata:
   `required_features`, `strategy_family`, `variant`, `strategy_id`,
   `entry_assembly`, `initial_runtime_version`, `minimum_trader_version`,
@@ -508,6 +514,10 @@ Download flow:
   seed metadata enforces allowed channels `internal|canary` and audience modes
   `allowlist|disabled` during registration, so the generic wrapper defaults
   `stable|all` are rejected rather than published.
+- EMAL product metadata sets `catalog_visibility = private`. Migration
+  `019_private_product_catalog_visibility.sql` applies that setting
+  idempotently to the existing production product without changing its release,
+  artifact, audience, entitlement, or Whop relationships.
 
 Rollback behavior is server-directed. Clients must not assume that a newer local
 version is valid when the server returns a lower `target_version` with
@@ -565,6 +575,9 @@ Current migration sequence:
   TraderPro strategy-package product and exact `strategy.emal.runtime` feature
   metadata without creating releases, artifacts, entitlements, Whop packages,
   grants, subscription URLs, or commercial mappings.
+- `019_private_product_catalog_visibility.sql`: idempotently sets
+  `catalog_visibility = private` on EMAL while all products without the metadata
+  setting remain public by default.
 
 Customer Whop user/member identifiers are optional. Service writes should strip
 them and treat blank strings as absent so manual admin-created customers do not

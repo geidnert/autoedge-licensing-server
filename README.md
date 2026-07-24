@@ -123,8 +123,13 @@ These values mirror the Trader runtime package manifests: family-specific
 display name, `Runtime` variant, internal Ed25519 package signature key
 `main-2026-01`, entry assembly, strategy id, required feature, and minimum
 TraderPro version `0.1.182`. Manifest `packages` catalog entries expose this
-additive metadata even before a release exists. The catalog is informational;
-it never grants access or creates a download.
+additive metadata even before a release exists for public products. Product
+metadata may explicitly set `"catalog_visibility": "private"`; public is the
+default when the setting is absent. A private product is omitted from all
+customer manifest data unless the customer has an active entitlement and at
+least one active, published release for the requested platform is visible after
+channel, audience, allowlist/tag, and rollout checks. The catalog is
+informational; it never grants access or creates a download.
 
 Lifecycle handling:
 

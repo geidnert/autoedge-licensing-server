@@ -117,6 +117,7 @@ DEFAULT_PRODUCTS = [
         "nt8_strategy_key": "EMAL",
         "metadata": {
             "seeded": True,
+            "catalog_visibility": "private",
             "strategy_id": "emal",
             "strategy_family": "EMAL",
             "variant": "Runtime",

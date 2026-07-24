@@ -481,6 +481,13 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                     WHERE name = '018_seed_emal_runtime_package.sql'
                     """
                 ).fetchone()[0]
+                private_catalog_migration_count = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM schema_migrations
+                    WHERE name = '019_private_product_catalog_visibility.sql'
+                    """
+                ).fetchone()[0]
                 legacy_orbo_count = connection.execute(
                     """
                     SELECT COUNT(*)
@@ -499,6 +506,7 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
             self.assertEqual(0, release_count)
             self.assertEqual(1, migration_count)
             self.assertEqual(1, emal_migration_count)
+            self.assertEqual(1, private_catalog_migration_count)
             self.assertEqual(0, legacy_orbo_count)
             for slug, expected in self.EXPECTED.items():
                 with self.subTest(slug=slug):
@@ -537,6 +545,9 @@ class TraderProRuntimePackageSeedMigrationTests(unittest.TestCase):
                             },
                             metadata["release_policy"],
                         )
+                        self.assertEqual("private", metadata["catalog_visibility"])
+                    else:
+                        self.assertNotIn("catalog_visibility", metadata)
                     self.assertEqual(
                         ["macos-arm64", "windows-x64", "linux-x64"],
                         metadata["supported_platforms"],
