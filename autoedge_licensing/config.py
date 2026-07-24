@@ -72,6 +72,7 @@ class Settings:
     tradovate_live_api_base_url: str = "https://live.tradovateapi.com/v1"
     tradovate_demo_api_base_url: str = "https://demo.tradovateapi.com/v1"
     tradovate_oauth_token_secret: str | None = None
+    release_artifact_retention_count: int = 5
 
     @staticmethod
     def from_env() -> "Settings":
@@ -113,6 +114,7 @@ class Settings:
             tradovate_live_api_base_url=os.environ.get("TRADOVATE_LIVE_API_BASE_URL", "https://live.tradovateapi.com/v1"),
             tradovate_demo_api_base_url=os.environ.get("TRADOVATE_DEMO_API_BASE_URL", "https://demo.tradovateapi.com/v1"),
             tradovate_oauth_token_secret=tradovate_token_secret,
+            release_artifact_retention_count=max(0, _int_env("AUTOEDGE_RELEASE_ARTIFACT_RETENTION_COUNT", 5)),
         )
 
     def validate_runtime(self) -> None:

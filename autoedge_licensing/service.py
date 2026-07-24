@@ -894,6 +894,132 @@ class LicensingService:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def prune_release_artifacts(
+        self,
+        *,
+        release_id: str,
+        artifact_dir: str,
+        keep_count: int,
+        actor_id: str | None = None,
+        ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        """Keep only the newest artifact files in one release stream.
+
+        A stream is one release type/product/channel/platform combination. Old
+        rows remain as inactive audit history, but their download tokens are
+        revoked and unshared artifact files are removed from disk.
+        """
+        if keep_count < 0:
+            raise ValueError("Release artifact retention count cannot be negative.")
+        if keep_count == 0:
+            return {"pruned_release_ids": [], "deleted_files": [], "failed_files": []}
+
+        pruned_release_ids: list[str] = []
+        artifact_paths: list[str] = []
+        with self.database.session(immediate=True) as connection:
+            rows = connection.execute(
+                """
+                SELECT trader_releases.*, rowid AS retention_rowid
+                FROM trader_releases
+                ORDER BY trader_releases.created_at DESC, retention_rowid DESC
+                """
+            ).fetchall()
+            reference = next((row for row in rows if row["id"] == release_id), None)
+            if reference is None:
+                raise ValueError("Release not found.")
+
+            def stream_key(row: sqlite3.Row) -> tuple[str, str, str, str]:
+                release_type = row["release_type"] or release_type_from_scope(row["scope"])
+                product_key = (
+                    TRADER_DESKTOP_PRODUCT_ID
+                    if release_type == TRADER_DESKTOP_RELEASE_TYPE
+                    else row["product_key"] or row["product_id"] or ""
+                )
+                return release_type, product_key, row["channel"], row["platform"]
+
+            matching_rows = [row for row in rows if stream_key(row) == stream_key(reference)]
+            stale_rows = matching_rows[keep_count:]
+            if not stale_rows:
+                return {"pruned_release_ids": [], "deleted_files": [], "failed_files": []}
+
+            stale_ids = {row["id"] for row in stale_rows}
+            shared_paths = {
+                row["artifact_path"]
+                for row in rows
+                if row["id"] not in stale_ids and row["artifact_path"]
+            }
+            unshared_paths = sorted(
+                {
+                    row["artifact_path"]
+                    for row in stale_rows
+                    if row["artifact_path"] and row["artifact_path"] not in shared_paths
+                }
+            )
+            for artifact_path in unshared_paths:
+                try:
+                    if self._artifact_path(artifact_path, artifact_dir).exists():
+                        artifact_paths.append(artifact_path)
+                except (OSError, ValueError):
+                    # Keep invalid or inaccessible paths actionable so the
+                    # caller gets a visible failure and a later release can retry.
+                    artifact_paths.append(artifact_path)
+            active_stale_ids = {
+                row["id"] for row in stale_rows if row["is_active"] or row["is_published"]
+            }
+            pruned_release_ids = [
+                row["id"]
+                for row in stale_rows
+                if row["id"] in active_stale_ids or row["artifact_path"] in artifact_paths
+            ]
+            if not pruned_release_ids:
+                return {"pruned_release_ids": [], "deleted_files": [], "failed_files": []}
+            placeholders = ",".join("?" for _ in pruned_release_ids)
+            connection.execute(
+                f"""
+                UPDATE trader_releases
+                SET is_active = 0, is_published = 0, updated_at = ?
+                WHERE id IN ({placeholders})
+                """,
+                (iso(), *pruned_release_ids),
+            )
+            connection.execute(
+                f"DELETE FROM release_download_tokens WHERE release_id IN ({placeholders})",
+                pruned_release_ids,
+            )
+            self.audit(
+                connection,
+                "admin" if actor_id else "system",
+                actor_id,
+                "release.retention_pruned",
+                "release",
+                release_id,
+                {
+                    "keep_count": keep_count,
+                    "pruned_release_ids": pruned_release_ids,
+                    "artifact_paths": artifact_paths,
+                },
+                ip_address,
+            )
+
+        deleted_files: list[str] = []
+        failed_files: list[dict[str, str]] = []
+        for artifact_path in artifact_paths:
+            try:
+                artifact_file = self._artifact_path(artifact_path, artifact_dir)
+                if artifact_file.exists():
+                    if not artifact_file.is_file():
+                        raise OSError("artifact path is not a regular file")
+                    artifact_file.unlink()
+                    deleted_files.append(artifact_path)
+            except (OSError, ValueError) as exc:
+                failed_files.append({"path": artifact_path, "error": str(exc)})
+
+        return {
+            "pruned_release_ids": pruned_release_ids,
+            "deleted_files": deleted_files,
+            "failed_files": failed_files,
+        }
+
     def upsert_release(
         self,
         *,

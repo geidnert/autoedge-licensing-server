@@ -756,8 +756,9 @@ class AutoEdgeApp:
             release_type = form.get("release_type") or (TRADER_DESKTOP_RELEASE_TYPE if form.get("scope") == "app" else STRATEGY_RELEASE_TYPE)
             scope = "app" if release_type == TRADER_DESKTOP_RELEASE_TYPE else "strategy"
             product_id = form.get("product_id") or None
-            self.service.upsert_release(
-                release_id=form.get("release_id") or None,
+            release_id = form.get("release_id") or None
+            saved_release = self.service.upsert_release(
+                release_id=release_id,
                 scope=scope,
                 release_type=release_type,
                 product_key=form.get("product_key") or None,
@@ -788,6 +789,19 @@ class AutoEdgeApp:
                 actor_id=admin["id"],
                 ip_address=request.ip,
             )
+            if release_id is None:
+                retention = self.service.prune_release_artifacts(
+                    release_id=saved_release["id"],
+                    artifact_dir=self.settings.release_artifact_dir,
+                    keep_count=self.settings.release_artifact_retention_count,
+                    actor_id=admin["id"],
+                    ip_address=request.ip,
+                )
+                if retention["failed_files"]:
+                    print(
+                        f"Release retention could not delete artifacts: {retention['failed_files']}",
+                        flush=True,
+                    )
             return redirect("/admin/releases")
         releases = self.service.list_releases()
         edit_id = request.query_value("edit")

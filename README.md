@@ -620,6 +620,15 @@ Security behavior:
 
 Configure releases in `/admin/releases`. Artifact uploads are not handled by the web UI yet; copy package files under `AUTOEDGE_RELEASE_ARTIFACT_DIR` first, then register their relative path in the release form. If the file exists, the server calculates size and SHA-256 automatically.
 
+Release artifact retention defaults to the newest 5 files per release type,
+product, channel, and platform. When a sixth release is registered in the same
+stream, the oldest release row is deactivated, its outstanding download tokens
+are revoked, and its artifact is deleted unless another release row references
+the same file. The inactive row and download history remain for auditability.
+Set `AUTOEDGE_RELEASE_ARTIFACT_RETENTION_COUNT=0` to disable automatic pruning,
+or set a different positive count to change the limit. Editing an existing
+release does not run pruning; registering a new release does.
+
 Admin pages display and accept manual expiry times in US Eastern trading time (`ET`, America/New_York). The database and TraderPro API responses continue to store and return UTC timestamps with a `Z` suffix.
 
 TraderPro Desktop release fields:

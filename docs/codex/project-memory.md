@@ -105,6 +105,11 @@ Key environment variables:
   invalid supplied signatures are rejected even while optional
 - `AUTOEDGE_TRADER_MAX_DEVICES`, default `1`
 - `AUTOEDGE_RELEASE_ARTIFACT_DIR`, default `data/artifacts`
+- `AUTOEDGE_RELEASE_ARTIFACT_RETENTION_COUNT`, default `5`; new admin release
+  registrations keep the newest configured number per release type, product,
+  channel, and platform stream. Older rows are deactivated, their outstanding
+  download tokens are revoked, and unshared artifact files are deleted while
+  metadata/download history remains. `0` disables pruning.
 - `TRADOVATE_OAUTH_CLIENT_ID`, `TRADOVATE_OAUTH_CLIENT_SECRET`, and
   `TRADOVATE_OAUTH_REDIRECT_URI`, required together to enable Tradovate OAuth
 - `TRADOVATE_OAUTH_AUTHORIZE_URL`, default `https://trader.tradovate.com/oauth`
@@ -757,6 +762,21 @@ Important behavior:
   `256` active artifacts and ES256 signatures with zero failures and confirmed
   both `duo-runtime` and `duolo-runtime` were selected for macOS, Windows, and
   Linux manifests.
+- 2026-07-21: Reconciled two valid paid Whop users that had been omitted because
+  their plan ids were unmapped. Production now maps `plan_Sl1Fzn4MCBUWV` as
+  `9 Bot Bundle 30 days`, granting DUO, DUOrc, ORBO2, ORBOib, ADAM, EVE, MICH,
+  HUGO, and AURA for 30 days, and maps `plan_XLinlzR59MCM3` as `AURA 14 days`,
+  granting AURA for 14 days. Valid, previously stored Standard Webhook events
+  were replayed through the entitlement service: the bundle customer's June 21
+  purchase and July 21 renewal produce nine active grants through
+  `2026-08-20T07:17:05Z`, and the AURA activation produces one active grant
+  through `2026-07-31T11:15:43Z`. The free product
+  `AutoEdge Systems™ Free Discord Access` remains intentionally unmapped and its
+  users were not imported. The pre-change online SQLite backup is
+  `/var/backups/autoedge-before-add-valid-whop-customers-20260721T181239Z.db`
+  (`quick_check: ok`). After reconciliation production contains 24 customers,
+  the live database passes `quick_check`, and local `/healthz` returns
+  `{"status": "ok"}`.
 - 2026-07-15: Commit `024e40e` deployed product subscription URLs and additive
   TraderPro manifest `packages` metadata to production. The exact archive
   SHA-256 was `3c95a441e9270a35978c3e1a0652fefe96a3b7de4dc42e702970acf28152d406`;

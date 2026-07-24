@@ -3135,6 +3135,85 @@ class LicensingServiceTests(unittest.TestCase):
         self.assertEqual("strategy.duo.runtime", releases["duolo-runtime"]["feature_id"])
         self.assertEqual("active", releases["duolo-runtime"]["license_status"])
 
+    def test_release_artifact_retention_keeps_newest_files_per_stream(self) -> None:
+        releases = [self.strategy_release(version=f"1.0.{index}") for index in range(4)]
+        other_platform = self.strategy_release(version="1.0.0", platform="macos-arm64")
+        artifact_dir = Path(self.tmp.name) / "release-test-artifacts"
+
+        result = self.service.prune_release_artifacts(
+            release_id=releases[-1]["id"],
+            artifact_dir=str(artifact_dir),
+            keep_count=2,
+            actor_id="admin",
+        )
+
+        self.assertEqual([releases[1]["id"], releases[0]["id"]], result["pruned_release_ids"])
+        self.assertEqual([], result["failed_files"])
+        self.assertFalse((artifact_dir / releases[0]["artifact_path"]).exists())
+        self.assertFalse((artifact_dir / releases[1]["artifact_path"]).exists())
+        self.assertTrue((artifact_dir / releases[2]["artifact_path"]).is_file())
+        self.assertTrue((artifact_dir / releases[3]["artifact_path"]).is_file())
+        self.assertTrue((artifact_dir / other_platform["artifact_path"]).is_file())
+        self.assertEqual(0, self.service.get_release(releases[0]["id"])["is_active"])
+        self.assertEqual(0, self.service.get_release(releases[1]["id"])["is_active"])
+        self.assertEqual(1, self.service.get_release(releases[2]["id"])["is_active"])
+        self.assertEqual(1, self.service.get_release(other_platform["id"])["is_active"])
+
+        repeated = self.service.prune_release_artifacts(
+            release_id=releases[-1]["id"],
+            artifact_dir=str(artifact_dir),
+            keep_count=2,
+        )
+        self.assertEqual([], repeated["pruned_release_ids"])
+        self.assertEqual([], repeated["deleted_files"])
+
+    def test_release_artifact_retention_does_not_delete_shared_file(self) -> None:
+        artifact_dir = Path(self.tmp.name) / "release-test-artifacts"
+        oldest = self.strategy_release(version="1.0.0")
+        shared = self.service.upsert_release(
+            release_id=None,
+            scope="strategy",
+            product_id=self.product["id"],
+            channel="beta",
+            platform="windows-x64",
+            version="1.0.0-beta",
+            min_supported_version=None,
+            is_required=False,
+            is_active=True,
+            artifact_path=oldest["artifact_path"],
+            artifact_filename=None,
+            size_bytes=None,
+            sha256_value=None,
+            signature=None,
+            release_notes=None,
+            artifact_dir=str(artifact_dir),
+        )
+        newest = self.strategy_release(version="1.0.1")
+
+        result = self.service.prune_release_artifacts(
+            release_id=newest["id"],
+            artifact_dir=str(artifact_dir),
+            keep_count=1,
+        )
+
+        self.assertEqual([oldest["id"]], result["pruned_release_ids"])
+        self.assertEqual([], result["deleted_files"])
+        self.assertTrue((artifact_dir / oldest["artifact_path"]).is_file())
+        self.assertEqual(1, self.service.get_release(shared["id"])["is_active"])
+
+    def test_zero_release_artifact_retention_disables_pruning(self) -> None:
+        releases = [self.strategy_release(version=f"2.0.{index}") for index in range(2)]
+        artifact_dir = Path(self.tmp.name) / "release-test-artifacts"
+
+        result = self.service.prune_release_artifacts(
+            release_id=releases[-1]["id"],
+            artifact_dir=str(artifact_dir),
+            keep_count=0,
+        )
+
+        self.assertEqual([], result["pruned_release_ids"])
+        self.assertTrue(all((artifact_dir / release["artifact_path"]).is_file() for release in releases))
+
     def test_manifest_packages_expose_subscription_url_without_changing_authorization(self) -> None:
         subscription_url = "https://whop.com/auto-edge/duo-nasdaq-futures-bot/"
         self.service.update_product(
