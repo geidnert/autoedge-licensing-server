@@ -637,6 +637,32 @@ Important behavior:
 
 ## Deployment Memory
 
+- 2026-07-24: Commit `11dbe7d` fixed private TraderPro product visibility and
+  deployed migration `019_private_product_catalog_visibility.sql`. The exact
+  committed archive SHA-256 was
+  `020430754131e333782d2b4b80c251dd2130fda11dd51ecdf1e9f1e1dd269a32`;
+  all `143` committed tests passed locally from the extracted archive and again
+  from production staging. The pre-deploy online SQLite backup is
+  `/var/backups/autoedge-before-11dbe7d-20260724T103534Z.db` (SHA-256
+  `de59dc0a0b869e8a889b0c9cc561c5f48c5039a5bcfc72832a0ecd9775b7705e`,
+  `quick_check: ok`) and the code backup is
+  `/var/backups/autoedge-code-before-11dbe7d-20260724T103534Z.tar.gz`
+  (SHA-256
+  `8a2c9e818df116a66c29ced9f41af107f0e7e457e78331ada15d6b8d92283def`).
+  Migration `019` is recorded once and EMAL product
+  `30eaa830cd3411d89cf4509d8a51ec8c` now has
+  `catalog_visibility = private`. Its three active/published internal
+  allowlisted release rows, artifact paths, one entitlement relationship, zero
+  Whop grants, and allowlisted customer remained unchanged. Active-path
+  manifests run with deployed code against a fresh online production snapshot
+  showed Steve (`fb0de0712ee24092af8094445cb6b930`) all 10 public products and
+  no EMAL package, release, nested entitlement/license entry, feature id, name,
+  slug, or product id on macOS, Windows, or Linux. The entitled allowlisted
+  customer (`fa0c87a7118e4653acc0dd673fbb35aa`) received the EMAL package and
+  exact `0.1.0` release for all three platforms. The production DB passes
+  `quick_check`, mandatory release signatures remain enabled, deployed source
+  checksums match the commit, the service is active, local `/healthz` is OK,
+  and public `/privacy` and `/admin/login` return HTTP 200.
 - 2026-07-24: Commit `dcf0f6d` deployed the EMAL runtime-package catalog
   contract and migration `018_seed_emal_runtime_package.sql` to production. The
   exact committed archive SHA-256 was
