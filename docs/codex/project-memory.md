@@ -604,6 +604,25 @@ Important behavior:
 
 ## Deployment Memory
 
+- 2026-07-24: Commit `27b8836` deployed the five TraderPro runtime-package
+  product contracts and migration `017_seed_traderpro_runtime_packages.sql` to
+  production. The exact committed archive SHA-256 was
+  `bf6b69a74d28b8d2804033b59c7ba9115bf87d8b418edb9f2eb2ebe0207b6398`;
+  all `140` tests passed from the extracted production staging archive. The
+  pre-deploy online SQLite backup is
+  `/var/backups/autoedge-before-27b8836-20260724T070912Z.db` (SHA-256
+  `d3dd5e927f19f6a161f4f31fa43d9ccfc0e0216886c8b53e71bf9df34b4e6834`,
+  `quick_check: ok`) and the code backup is
+  `/var/backups/autoedge-code-before-27b8836-20260724T070912Z.tar.gz`
+  (SHA-256
+  `4e8c4344368f1a47cd37da59972efb926caca7d48c4059cf6c9bf8aad90c03ad`).
+  Migration `017` is recorded, the live database passes `quick_check`, the
+  service is active with mandatory ES256 release signatures, local `/healthz`
+  is OK, and public `/privacy` and `/admin/login` return HTTP 200. The existing
+  ADAM, AURA, EVE, ORBO2, and ORBOib product ids were preserved while AURA and
+  ORBO2 received their canonical runtime slugs. Product-specific entitlement
+  and Whop-grant counts and the global totals remained unchanged; all five
+  products still have zero release rows.
 - 2026-07-21: Commit `7bbbf32` deployed package-key release grouping so DUO
   and DUOlo remain separate manifest downloads under the shared DUO product and
   entitlement. The exact committed archive SHA-256 was
