@@ -37,7 +37,6 @@ warn() {
 cd "${repo_root}"
 
 required_files=(
-  ".github/workflows/test.yml"
   ".env.example"
   "AGENTS.md"
   "README.md"
@@ -61,6 +60,12 @@ for required_file in "${required_files[@]}"; do
     fail "${required_file} is not tracked"
   fi
 done
+
+if git ls-files '.github/workflows/**' | grep -q .; then
+  fail "GitHub Actions workflows are tracked; validation must remain local"
+else
+  pass "no GitHub Actions workflows are tracked"
+fi
 
 if git ls-files --error-unmatch .env >/dev/null 2>&1; then
   fail ".env is tracked and may expose secrets"

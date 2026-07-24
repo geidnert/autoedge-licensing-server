@@ -43,9 +43,9 @@ Last refreshed: 2026-07-24
   and writes only to `/var/lib/autoedge-licensing`.
 - `systemd/autoedge-backup.service` and `.timer` define a daily encrypted
   off-host backup after `/etc/autoedge-backup.env` has been configured.
-- `.github/workflows/test.yml` runs the unit suite on Python 3.11, 3.12, and
-  3.13 for pushes and pull requests.
 - `tests/` uses `unittest` and temp SQLite DBs; there is no pytest requirement.
+- Tests and recovery checks run locally. Do not add GitHub Actions or hosted CI
+  without explicit owner approval; the GitHub Actions budget stays at zero.
 
 There was no existing `AGENTS.md` or `docs/` tree before this memory refresh.
 
@@ -670,7 +670,7 @@ Important behavior:
 
 - 2026-07-24 recovery audit: GitHub already contained application code,
   migrations, pinned packages, service/proxy templates, tests, `AGENTS.md`, and
-  Codex project memory. It did not contain a clean-machine bootstrap, CI,
+  Codex project memory. It did not contain a clean-machine bootstrap,
   complete disaster-recovery runbook, scheduled backup units, or a safe
   off-host backup workflow. Production was healthy, the database was about
   40 MiB, and artifacts were about 22 GiB. Existing database/code backups were
@@ -680,6 +680,9 @@ Important behavior:
   monthly retention, but the production timer must not be enabled until an
   external restic backend and separately stored recovery password are
   configured.
+- 2026-07-24: Hosted GitHub Actions were removed from the recovery work so
+  GitHub remains source storage at zero Actions cost. Local bootstrap and
+  recovery-readiness scripts are the required validation path.
 - The offline release-signing keypair exists only outside repositories at
   `~/.config/autoedge/signing/release-2026-01-{private,public}.pem` on the
   current release workstation. The public fingerprint was reverified as

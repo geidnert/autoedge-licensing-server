@@ -33,7 +33,8 @@ server.
 ## Required recovery guarantees
 
 - Completed repository work is committed and pushed before a Codex task ends.
-- GitHub Actions runs the full unit suite on pushes and pull requests.
+- The full unit suite and recovery-readiness check run locally before commits
+  are pushed. GitHub remains source storage with no hosted Actions usage.
 - Production receives an encrypted off-host backup every day.
 - Keep at least 7 daily, 5 weekly, and 12 monthly production snapshots.
 - The restic repository password and storage-account recovery information exist

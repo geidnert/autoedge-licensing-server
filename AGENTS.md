@@ -40,6 +40,13 @@ standing requirement that completed work must not remain only on one computer.
 - If a push or off-host backup check cannot be completed, say exactly what
   remains local before ending the task.
 
+## Zero-Cost GitHub Policy
+
+GitHub is source storage and version history for this repository. Run tests and
+recovery checks locally. Do not add, enable, or re-enable GitHub Actions, hosted
+runners, files under `.github/workflows/`, or other push/PR-triggered cloud CI
+without the repository owner's explicit approval in the same turn.
+
 ## Working Rules
 
 - Do not change product code for repo-memory cleanup tasks unless it is required
